@@ -1,0 +1,15 @@
+MODELS:
+  MULTILINGUAL_E5_LARGE_MODEL_PATH: "C:\\Users\\AtsushiSuzuki\\.cache\\huggingface\\hub\\models--intfloat--multilingual-e5-large\\snapshots\\ab10c1a7f42e74530fe7ae5be82e6d4f11a719eb"
+  CL_NAGOYA_RURI_LARGE_MODEL_PATH: "C:\\Users\\AtsushiSuzuki\\.cache\\huggingface\\hub\\models--cl-nagoya--ruri-large\\snapshots\\b002b3abdd50a07f60b0b6776d09f549f9971a53"
+  JAPANESE_RERANKER_CROSS_ENCODER_LARGE_V1_PATH: "C:\\Users\\AtsushiSuzuki\\.cache\\huggingface\\hub\\models--hotchpotch--japanese-reranker-cross-encoder-large-v1\\snapshots\\0f59bc79f24a7e5fa57781e603ad224e62553c22"
+  RURI_RERANKER_LARGE_PATH: C:\\Users\\AtsushiSuzuki\\.cache\\huggingface\\hub\\models--cl-nagoya--ruri-reranker-large\\snapshots\\010b79ca3eb4d55b32abb63a1822278f29e9c809
+  MIXTRAL8X7BInstV01_MODEL_PATH: "C:\\to\\the\\model\\folder\\path"
+  OTHER_MODEL_PATH: "/test/tmp/other-model"
+  TEST_MODEL_PATH: "/test/tmp/test-model"
+
+DATABASES:
+  USE_BM25: "True"  # Set to "True" to enable BM25
+  BM25_PATH: "None"  # Set to "None" for in-memory mode or provide a file path
+  USE_CHROMADB: "True"  # Set to "True" to enable ChromaDB
+  CHROMADB_COLLECTION_NAME: "dataframe_collection"  # Name of the ChromaDB collection
+  CHROMADB_FOLDER_PATH: "None"  # Folder path for ChromaDB storage, or "None" for in-memory
