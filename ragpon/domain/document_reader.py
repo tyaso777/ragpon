@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 import chardet
 import docx
 import fitz
+import pptx
 import pypdf
 from bs4 import BeautifulSoup
 
@@ -186,7 +187,7 @@ class WordReader(AbstractDocumentReader):
                             unit_index=para_num + start_page_number,
                             metadata={
                                 "file_path": self.filepath,
-                                "paragraph_number": para_num + start_page_number,
+                                "page_number": para_num + start_page_number,
                             },
                         )
                     )
@@ -195,6 +196,37 @@ class WordReader(AbstractDocumentReader):
             logger.error(f"Error reading Word file: {e}")
             raise IOError(f"Error reading Word file: {e}")
         return paragraphs_text
+
+
+class PowerPointReader(AbstractDocumentReader):
+    """
+    Document reader for PowerPoint (.pptx) files.
+    """
+
+    def read_document(self, start_page_number: int = 1) -> list[ChunkSourceInfo]:
+        slides_text = []
+        try:
+            presentation = pptx.Presentation(self.filepath)
+            for slide_num, slide in enumerate(presentation.slides):
+                text = "\n".join(
+                    [shape.text for shape in slide.shapes if hasattr(shape, "text")]
+                )
+                if text.strip():  # Avoid empty slides
+                    slides_text.append(
+                        ChunkSourceInfo(
+                            text=text,
+                            unit_index=slide_num + start_page_number,
+                            metadata={
+                                "file_path": self.filepath,
+                                "page_number": slide_num + start_page_number,
+                            },
+                        )
+                    )
+            logger.debug(f"Read {len(slides_text)} slides from PowerPoint file.")
+        except Exception as e:
+            logger.error(f"Error reading PowerPoint file: {e}")
+            raise IOError(f"Error reading PowerPoint file: {e}")
+        return slides_text
 
 
 class AbstractDocumentReaderFactory(ABC):
@@ -236,6 +268,9 @@ class ExtensionBasedDocumentReaderFactory(AbstractDocumentReaderFactory):
         elif file_path.lower().endswith(".docx"):
             logger.debug("Creating WordReader for file.")
             return WordReader(file_path)
+        elif file_path.lower().endswith(".pptx"):
+            logger.debug("Creating PowerPointReader for file.")
+            return PowerPointReader(file_path)
         else:
             logger.error("Unsupported file type.")
             raise ValueError("Unsupported file type")
