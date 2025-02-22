@@ -2,12 +2,13 @@ from typing import Any, Callable, Optional, Type, TypeVar
 
 import chromadb
 from chromadb import Documents, Embeddings, GetResult
+from chromadb.config import Settings
 
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.domain.domain import BaseDocument, Document
+from ragpon.ml_models.embedding_model import ChromaDBEmbeddingAdapter
 from ragpon.repository.abstract_repository import AbstractRepository
 from ragpon.repository.search_results_formatter import ChromaDBResultsFormatter
-from ragpon.ml_models.embedding_model import ChromaDBEmbeddingAdapter
 
 # Initialize logger
 logger = get_library_logger(__name__)
@@ -40,10 +41,14 @@ class ChromaDBRepository(AbstractRepository[TMetadata, TResult]):
         self.formatter = ChromaDBResultsFormatter(result_class=result_class)
         try:
             if folder_path:
-                self.client = chromadb.PersistentClient(folder_path)
+                self.client = chromadb.PersistentClient(
+                    folder_path, settings=Settings(anonymized_telemetry=False)
+                )
                 logger.info("Using persistent storage at: %s", folder_path)
             else:
-                self.client = chromadb.Client()
+                self.client = chromadb.Client(
+                    settings=Settings(anonymized_telemetry=False)
+                )
             self.collection = self.client.get_or_create_collection(
                 name=self.collection_name,
                 embedding_function=self.embed_func,
@@ -245,7 +250,10 @@ class ChromaDBRepository(AbstractRepository[TMetadata, TResult]):
 
             # Combine text from surrounding documents
             combined_text = "".join(
-                [txt.removeprefix(self.passage_prefix) for txt in surrounding_docs["documents"]]
+                [
+                    txt.removeprefix(self.passage_prefix)
+                    for txt in surrounding_docs["documents"]
+                ]
             )
 
             # Create an enhanced document
