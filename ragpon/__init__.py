@@ -30,6 +30,7 @@ from ragpon.ml_models import (
     MultilingualE5LargeEmbedder,
     Reranker,
     RuriLargeEmbedder,
+    RuriLargeEmbedderCTranslate2,
     RuriRerankerLargeEvaluator,
 )
 from ragpon.repository import (

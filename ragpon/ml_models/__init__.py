@@ -5,6 +5,7 @@ from ragpon.ml_models.embedding_model import (
     CosineSimilarityCalculator,
     MultilingualE5LargeEmbedder,
     RuriLargeEmbedder,
+    RuriLargeEmbedderCTranslate2,
 )
 from ragpon.ml_models.large_language_model import (
     AbstractLargeLanguageModel,
