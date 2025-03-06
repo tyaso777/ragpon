@@ -15,7 +15,7 @@ class Config:
     """
     Configuration manager that prioritizes values in the following order:
     1. Environment variables
-    2. User-defined configuration file (YAML or JSON format)
+    2. User-defined configuration file (YAML or JSON format) or provided dictionary
     3. Default values
     """
 
@@ -39,26 +39,34 @@ class Config:
         },
     }
 
-    def __init__(self, config_file: str | Path | None = None, encoding: str = "utf-8"):
+    def __init__(
+        self, config_file: str | Path | dict | None = None, encoding: str = "utf-8"
+    ):
         """
         Initialize the Config manager.
 
         Args:
-            config_file (str | Path | None, optional):
-                Optional path or Path object to a configuration file (YAML or JSON).
+            config_file (str | Path | dict | None, optional):
+                Optional path or Path object to a configuration file (YAML or JSON) or a dict containing configuration.
                 Defaults to None, which leads to ~/.my_library_config.yaml.
             encoding (str, optional):
                 Encoding to use when reading/writing the config file.
                 Defaults to "utf-8".
         """
-        self.config_file = (
-            Path(config_file)
-            if config_file
-            else Path.home() / ".my_library_config.yaml"
-        )
         self.encoding = encoding
-        logger.info(f"Initializing Config with config file: {self.config_file}")
-        self.config = self._load_config_file()
+
+        if isinstance(config_file, dict):
+            self.config = config_file
+            self.config_file = None
+            logger.info("Initialized Config from provided dictionary.")
+        else:
+            self.config_file = (
+                Path(config_file)
+                if config_file
+                else Path.home() / ".my_library_config.yaml"
+            )
+            logger.info(f"Initializing Config with config file: {self.config_file}")
+            self.config = self._load_config_file()
 
     def _load_config_file(self) -> dict:
         """
@@ -94,7 +102,7 @@ class Config:
         """
         Retrieve a configuration value with the following priority:
           1) Environment variables
-          2) self.config (loaded from file)
+          2) self.config (loaded from file or provided dict)
           3) DEFAULTS
           4) default argument
 
@@ -162,19 +170,34 @@ class Config:
         config_section[keys[-1]] = value
         logger.info(f"Set configuration key '{key}' to value: {value}")
 
-    def save(self) -> None:
+    def save(self, path: str | Path | None = None) -> None:
         """
         Save the current user-defined configuration to the configuration file.
+        Optionally, an alternative path can be provided.
+
+        If the configuration was initialized from a dict (i.e. no file path), and no path is provided,
+        saving is skipped.
+
+        Args:
+            path (str | Path | None, optional): An alternative file path for saving the configuration.
+                Defaults to None.
         """
+        target_path = Path(path) if path is not None else self.config_file
+
+        if target_path is None:
+            logger.warning(
+                "No config file path provided. This configuration is in-memory only and will not be saved."
+            )
+            return
         try:
-            with open(self.config_file, "w", encoding=self.encoding) as f:
-                if self.config_file.suffix in {".yaml", ".yml"}:
+            with open(target_path, "w", encoding=self.encoding) as f:
+                if target_path.suffix in {".yaml", ".yml"}:
                     yaml.dump(self.config, f, default_flow_style=False)
-                elif self.config_file.suffix == ".json":
+                elif target_path.suffix == ".json":
                     json.dump(self.config, f, indent=4)
                 else:
                     raise ValueError("Unsupported config file format.")
-            logger.info(f"Configuration saved to: {self.config_file}")
+            logger.info(f"Configuration saved to: {target_path}")
         except IOError as e:
-            logger.error(f"Failed to save configuration file {self.config_file}: {e}")
+            logger.error(f"Failed to save configuration file {target_path}: {e}")
             raise RuntimeError(f"Error saving configuration file: {e}")
