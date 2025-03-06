@@ -1,7 +1,9 @@
 # %%
+import os
 from abc import ABC, abstractmethod
 from typing import Sequence, Union
 
+import ctranslate2
 import numpy as np
 import torch.nn.functional as F
 from chromadb import Documents, EmbeddingFunction, Embeddings
@@ -328,6 +330,108 @@ class RuriLargeEmbedder(AbstractEmbeddingModel):
             return embeddings
         except Exception as e:
             logger.error(f"Error embedding batch of texts: {e}")
+            raise
+
+
+class RuriLargeEmbedderCTranslate2(AbstractEmbeddingModel):
+    def __init__(
+        self,
+        config: Config,
+        query_prefix: str = "クエリ: ",
+        passage_prefix: str = "文章: ",
+    ):
+        """
+        Initializes the RuriLargeEmbedder using the CTranslate2 converted version of "cl-nagoya/ruri-large".
+
+        Args:
+            config (Config): Configuration object to load model paths.
+            query_prefix (str): Prefix to prepend to queries.
+            passage_prefix (str): Prefix to prepend to passages.
+        """
+        try:
+            base_model_path = config.get("MODELS.CL_NAGOYA_RURI_LARGE_MODEL_PATH")
+            model_path = os.path.join(base_model_path, "ct2-model")
+
+            if not base_model_path:
+                raise ValueError("Model path for cl-nagoya-ruri-large is not set.")
+
+            self.tokenizer = AutoTokenizer.from_pretrained(base_model_path)
+            self.model = ctranslate2.Encoder(model_path, device="cpu")
+
+            self.query_prefix = query_prefix
+            self.passage_prefix = passage_prefix
+
+            logger.info("RuriLargeEmbedderCTranslate2 initialized successfully.")
+        except Exception as e:
+            logger.error(f"Failed to initialize RuriLargeEmbedderCTranslate2: {e}")
+            raise
+
+    def embed_single(self, text: str, use_prefix: str = "None") -> list[list[float]]:
+        """
+        Compute embedding for a single text input.
+
+        Args:
+            text (str): Text to embed.
+            use_prefix (str): Specifies which prefix to use. Options:
+                              - "query": Use query prefix.
+                              - "passage": Use passage prefix.
+                              - "None": No prefix.
+
+        Returns:
+            list[list[float]]: Embedded representation.
+        """
+        try:
+            if use_prefix == "query":
+                text = self.query_prefix + text
+            elif use_prefix == "passage":
+                text = self.passage_prefix + text
+
+            inputs = self.tokenizer(
+                [text], padding=True, truncation=True, return_tensors="np"
+            )
+            input_ids = inputs["input_ids"].tolist()
+            outputs = self.model.forward_batch(input_ids)
+            embedding = np.mean(outputs.last_hidden_state, axis=1).tolist()
+
+            logger.info("Single text embedded successfully using CTranslate2.")
+            return embedding
+        except Exception as e:
+            logger.error(f"Error embedding single text: {e}")
+            raise
+
+    def embed_batch(
+        self, texts: list[str], use_prefix: str = "None"
+    ) -> list[list[float]]:
+        """
+        Embed a batch of texts using the CTranslate2 embedding model.
+
+        Args:
+            texts (list[str]): Texts to embed.
+            use_prefix (str): Specifies which prefix to use. Options:
+                              - "query": Use query prefix.
+                              - "passage": Use passage prefix.
+                              - "None": No prefix.
+
+        Returns:
+            list[list[float]]: List of embeddings.
+        """
+        try:
+            if use_prefix == "query":
+                texts = [self.query_prefix + t for t in texts]
+            elif use_prefix == "passage":
+                texts = [self.passage_prefix + t for t in texts]
+
+            inputs = self.tokenizer(
+                texts, padding=True, truncation=True, return_tensors="np"
+            )
+            input_ids = inputs["input_ids"].tolist()
+            outputs = self.model.forward_batch(input_ids)
+            embeddings = np.mean(outputs.last_hidden_state, axis=1).tolist()
+
+            logger.info("Batch embedding with CTranslate2 completed successfully.")
+            return embeddings
+        except Exception as e:
+            logger.error(f"Error in batch embedding with CTranslate2: {e}")
             raise
 
 
