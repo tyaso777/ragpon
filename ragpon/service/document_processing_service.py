@@ -1,4 +1,5 @@
 # %%
+from collections import OrderedDict, defaultdict
 from typing import Any
 
 import pandas as pd
@@ -366,3 +367,181 @@ class DocumentProcessingService:
             )
 
         return reranked_results
+
+    def rerank_results_by_score_fusion(
+        self, search_results: dict[str, list[Document]], alpha: float = 0.7
+    ) -> dict[str, list[Document]]:
+        """Performs ranking by score fusion between BM25+ and ChromaDB results.
+
+        Args:
+            search_results (dict[str, list[Document]]): A dictionary containing lists of Document objects.
+            alpha (float, optional): Weight for BM25+ score (default: 0.7).
+
+        Returns:
+            dict[str, list[Document]]: A dictionary with reranked results in descending order.
+        """
+        logger.info("Reranking results using score fusion (BM25+ & ChromaDB).")
+
+        # Copy search results to avoid modifying the original data
+        reranked_search_results = {
+            "bm25": [
+                Document(
+                    base_document=doc.base_document,
+                    enhanced_text=doc.enhanced_text,
+                    rerank=0.0,
+                )
+                for doc in search_results.get("bm25", [])
+            ],
+            "chroma": [
+                Document(
+                    base_document=doc.base_document,
+                    enhanced_text=doc.enhanced_text,
+                    rerank=0.0,
+                )
+                for doc in search_results.get("chroma", [])
+            ],
+        }
+
+        # Create a dictionary to store distances {doc_id: [bm25_distance, chroma_distance]}
+        distance_dict = {}
+
+        for doc in reranked_search_results["bm25"]:
+            doc_id = doc.base_document.doc_id
+            distance_dict.setdefault(doc_id, [None, None])[0] = (
+                1 - doc.base_document.distance
+            )  # Convert to score
+
+        for doc in reranked_search_results["chroma"]:
+            doc_id = doc.base_document.doc_id
+            distance_dict.setdefault(doc_id, [None, None])[1] = (
+                1 - doc.base_document.distance
+            )  # Convert to score
+
+        # Compute fused score and assign to documents
+        for doc in reranked_search_results["bm25"]:
+            doc_id = doc.base_document.doc_id
+            bm25_score, chroma_score = distance_dict[doc_id]
+            doc.rerank = (
+                alpha * bm25_score + (1 - alpha) * chroma_score
+                if chroma_score is not None
+                else bm25_score
+            )
+
+        for doc in reranked_search_results["chroma"]:
+            doc_id = doc.base_document.doc_id
+            bm25_score, chroma_score = distance_dict[doc_id]
+            doc.rerank = (
+                alpha * bm25_score + (1 - alpha) * chroma_score
+                if bm25_score is not None
+                else chroma_score
+            )
+
+        # Sort results in descending order (higher score is better)
+        reranked_search_results["bm25"] = sorted(
+            reranked_search_results["bm25"], key=lambda x: x.rerank, reverse=True
+        )
+        reranked_search_results["chroma"] = sorted(
+            reranked_search_results["chroma"], key=lambda x: x.rerank, reverse=True
+        )
+
+        return reranked_search_results
+
+    def convert_search_results_to_dataframe(
+        self, search_results: dict[str, list[Document]]
+    ) -> pd.DataFrame:
+        """Converts search results into a flat DataFrame, merging BM25 and ChromaDB results for the same doc_id.
+
+        This method extracts all relevant fields from the search results while preserving the order of metadata fields as they appear.
+        The 'enhanced_text' and 'rerank_score' columns are placed at the end.
+
+        Args:
+            search_results (dict[str, list[Document]]): A dictionary containing lists of Document objects.
+
+        Returns:
+            pd.DataFrame: A structured DataFrame where each row represents a unique document with merged scores.
+        """
+        logger.info(
+            "Converting search results to a DataFrame with ordered metadata fields."
+        )
+
+        # Dictionary to store merged document data using doc_id as key
+        doc_dict = defaultdict(
+            lambda: OrderedDict(
+                {
+                    "source": set(),  # Stores all sources (bm25, chroma) where the doc appeared
+                    "doc_id": None,
+                    "text": None,
+                    "distance_bm25": None,
+                    "distance_ChromaDB": None,
+                }
+            )
+        )
+
+        metadata_order = (
+            OrderedDict()
+        )  # Keeps track of the first appearance order of metadata keys
+
+        # Iterate over both "bm25" and "chroma" results
+        for source, documents in search_results.items():
+            for doc in documents:
+                doc_id = doc.base_document.doc_id
+                db_name = doc.base_document.db_name  # Either "bm25" or "ChromaDB"
+                distance_col = f"distance_{db_name}"  # Format distance_{db_name}
+
+                # Ensure doc_id exists in the dictionary
+                if doc_id not in doc_dict:
+                    doc_dict[doc_id].update(
+                        {
+                            "doc_id": doc_id,
+                            "text": doc.base_document.text,
+                            "enhanced_text": doc.enhanced_text,  # Will be placed at the end
+                            "rerank_score": doc.rerank,  # Will be placed at the end
+                        }
+                    )
+
+                # Store source (bm25/chroma) and distance
+                doc_dict[doc_id]["source"].add(source)
+                doc_dict[doc_id][
+                    distance_col
+                ] = doc.base_document.distance  # Add distance_{db_name}
+
+                # Merge metadata dynamically while tracking the order they first appeared
+                for key, value in doc.base_document.metadata.items():
+                    if key not in metadata_order:
+                        metadata_order[key] = None  # Preserve order of first occurrence
+                    if key not in doc_dict[doc_id]:
+                        doc_dict[doc_id][
+                            key
+                        ] = value  # Add new metadata field if not already present
+
+        # Convert dictionary to a DataFrame
+        df = pd.DataFrame(doc_dict.values())
+
+        # Convert "source" from set to comma-separated string
+        df["source"] = df["source"].apply(lambda x: ", ".join(sorted(x)))
+
+        # Define fixed column order: Keep metadata fields in the order they first appeared
+        fixed_columns = [
+            "source",
+            "doc_id",
+            "text",
+            "distance_bm25",
+            "distance_ChromaDB",
+        ]
+        metadata_columns = [
+            col for col in metadata_order.keys() if col in df.columns
+        ]  # Preserve first-seen order
+        final_columns = (
+            fixed_columns + metadata_columns + ["enhanced_text", "rerank_score"]
+        )  # Move enhanced_text and rerank_score to the end
+
+        # Reorder DataFrame columns
+        df = df.reindex(
+            columns=[col for col in final_columns if col in df.columns], fill_value=None
+        )
+
+        logger.info(
+            f"Converted search results into a DataFrame with {len(df)} unique records."
+        )
+
+        return df
