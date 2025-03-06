@@ -30,22 +30,30 @@ class BM25Repository(AbstractRepository[TMetadata, TResult]):
 
     def __init__(
         self,
-        db_path: Optional[str],
         schema: Type[TMetadata],
         result_class: Type[TResult],
         tokenizer: AbstractTokenizer = SudachiTokenizer(),
+        db_path: Optional[str] = None,
+        db: Optional[SqliteDatabase] = None,
     ) -> None:
         """
         Initializes the BM25Repository.
 
         Args:
-            db_path (Optional[str]): Path to the SQLite database.
             schema (Type[TMetadata]): Schema class for the document structure.
+            result_class (Type[TResult]): The result document class.
             tokenizer (AbstractTokenizer): The tokenizer instance.
+            db (Optional[SqliteDatabase]): An existing SQLite connection.
+            db_path (Optional[str]): Path to the SQLite database if db is not provided.
         """
         logger.info("Initializing BM25Repository.")
-        self._db_path = db_path
-        self._db = self._connect_to_database()
+
+        if db is not None:
+            self._db = db
+        else:
+            self._db_path = db_path
+            self._db = self._connect_to_database()
+
         self._result_class = result_class
         self._models = DataModels(db=self._db, schema=schema)
         self._tokenizer = tokenizer
@@ -72,9 +80,18 @@ class BM25Repository(AbstractRepository[TMetadata, TResult]):
         """
         logger.info("Connecting to database.")
         db = SqliteDatabase(
-            ":memory:"
-            if self._db_path is None or self._db_path == ":memory:"
-            else self._db_path
+            (
+                ":memory:"
+                if self._db_path is None or self._db_path == ":memory:"
+                else self._db_path
+            ),
+            pragmas={
+                "journal_mode": "wal",  # Enable concurrent read access
+                "cache_size": -200000,  # Increase cache size for performance
+                "synchronous": "normal",  # Optimize write performance
+                "temp_store": "memory",  # Store temporary tables in memory for faster access
+            },
+            check_same_thread=False,  # **Allow multi-threaded access**
         )
         db.connect()
         logger.info("Database connected successfully.")
