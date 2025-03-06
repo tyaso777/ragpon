@@ -9,6 +9,7 @@ from ragpon import (
     DocumentProcessingService,
     JAGinzaChunkProcessor,
     RuriLargeEmbedder,
+    RuriLargeEmbedderCTranslate2,
     RuriRerankerLargeEvaluator,
 )
 
@@ -16,9 +17,7 @@ from ragpon import (
 with ir.as_file(ir.files("ragpon.examples")) as examples_dir:
     pdf_path = examples_dir / "投資信託とは.pdf"
     word_path = examples_dir / "ragponの使い方.docx"
-    pdf_config_path = examples_dir / "sample_config_for_pdf.yml"
-    df_config_path = examples_dir / "sample_config_for_dataframe.yml"
-    saving_db_config_path = examples_dir / "sample_config_for_saving_db.yml"
+    config_path = examples_dir / "sample_config.yml"
 
 # %%
 # 任意でロギングを設定する
@@ -31,9 +30,10 @@ logging.basicConfig(
 # %%
 # 例1:
 # - BM25, CHROMADBともにPATH指定なくin-memoryでのDB接続
-config = Config(pdf_config_path)
-print(config.config)
+config = Config(config_path)
+config.config
 
+# %%
 doc_service = DocumentProcessingService(config_or_config_path=config)
 
 # %%time
@@ -42,6 +42,7 @@ doc_service.process_file(str(pdf_path))
 doc_service.process_file(str(word_path))
 
 # %%
+%%time
 # 検索する
 doc_service.search(query="投資信託のリスク")
 
@@ -123,11 +124,12 @@ df = pd.DataFrame(data)
 df
 
 # %%
-config2 = Config(df_config_path)
-config2.config
+config = Config(config_path)
+config.set("DATABASES.CHROMADB_COLLECTION_NAME", "dataframe_collection")
+config.config
 
 # %%
-doc_service_2 = DocumentProcessingService(config_or_config_path=config2)
+doc_service_2 = DocumentProcessingService(config_or_config_path=config)
 
 # %%
 doc_service_2.process_dataframe(df=df, chunk_col_name="訪問記録", id_col_name="index")
@@ -155,17 +157,19 @@ reranked_results2
 # - embedding modelの変更: RuriLargeEmbedderの利用
 
 # %%
-config3 = Config(saving_db_config_path)
-config3.config
-
+config = Config(config_path)
+config.set("DATABASES.BM25_PATH", "D:\\Users\\AtsushiSuzuki\\OneDrive\\デスクトップ\\test\\ragpon\\ragpon\\examples\\db\\bm25")
+config.set("DATABASES.CHROMADB_FOLDER_PATH", "D:\\Users\\AtsushiSuzuki\\OneDrive\\デスクトップ\\test\\ragpon\\ragpon\\examples\\db")
+config.config
 
 # %%
 chunk_processor = JAGinzaChunkProcessor(chunk_size=300)
 
 # %%
 doc_service3 = DocumentProcessingService(
-    config_or_config_path=config3,
+    config_or_config_path=config,
     embedder=RuriLargeEmbedder(config=config),
+    # embedder=RuriLargeEmbedderCTranslate2(config=config),
     chunk_processor=chunk_processor,
     relevance_evaluator=RuriRerankerLargeEvaluator(config=config),
 )
@@ -181,6 +185,7 @@ doc_service3 = DocumentProcessingService(
 # %%
 search_results = doc_service3.search("投資信託のリスク")
 enhanced_results = doc_service3.enhance_search_results(search_results)
+# %%
 reranked_results = doc_service3.rerank_results(
     query="投資信託のリスク", search_results=enhanced_results
 )
