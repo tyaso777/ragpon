@@ -1,62 +1,68 @@
-import json
-
 import requests
 import streamlit as st
 
 
 def main():
-    st.title("FastAPI (RAG + LLM) Streaming Test")
+    st.title("Search Regulations (Mock Auth with Chat UI)")
 
-    # Enter the URL of the FastAPI server
-    # For example, if running locally: "http://localhost:8000"
-    server_url = st.text_input("FastAPI Server URL", "http://localhost:8006")
+    # 1) Initialize conversation storage
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
 
-    # Specify the user ID, app name, and session ID (can be changed as needed)
-    user_id = st.text_input("User ID", "test_user")
-    app_name = st.text_input("App Name", "my_app")
+    # 2) Mock a user ID if there's no real auth
+    if "user_id" not in st.session_state:
+        st.session_state["user_id"] = "test_user"  # Placeholder
+
+    # 3) Fixed app name and FastAPI server URL
+    app_name = "search_regulations"
+    server_url = "http://localhost:8006"
+
+    # 4) Optional session ID input
     session_id = st.text_input("Session ID", "1234")
 
-    # Text area for the query (user_query)
-    user_query = st.text_area("Query", "Hello, how are you?")
+    # 5) Display the conversation so far
+    for msg in st.session_state["messages"]:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
 
-    if st.button("Send Query"):
-        if not server_url:
-            st.error("Please enter the FastAPI server URL.")
-            return
+    # 6) Provide a chat input box at the bottom
+    user_input = st.chat_input("Type your query here...")
 
-        # Construct the endpoint
-        # Example: http://localhost:8000/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries
-        endpoint = f"{server_url}/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries"
+    if user_input:
+        # (A) Show the user's message in the conversation
+        st.session_state["messages"].append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.write(user_input)
 
-        # Create the JSON request body
-        payload = {"query": user_query, "file": None, "is_private_session": False}
+        # (B) Send the user message to your FastAPI endpoint, streaming the response
+        endpoint = f"{server_url}/users/{st.session_state['user_id']}/apps/{app_name}/sessions/{session_id}/queries"
+        payload = {"query": user_input, "file": None, "is_private_session": False}
 
-        # Use stream=True to receive the response in a streaming manner
         try:
             response = requests.post(endpoint, json=payload, stream=True)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            st.error(f"Request failed: {e}")
+            # If the request fails, show an error bubble from the assistant
+            with st.chat_message("assistant"):
+                st.error(f"Request failed: {e}")
             return
 
-        # Read the response line by line, parsing the SSE (Server-Sent Events) format "data: ..."
-        st.write("### Response (Streaming):")
-        output_placeholder = st.empty()  # Placeholder to display the output
+        # (C) Stream the assistant's response line by line
+        partial_message_text = ""
+        with st.chat_message("assistant"):
+            # We use a placeholder to update the text progressively
+            assistant_msg_placeholder = st.empty()
 
-        accumulated_text = ""  # Accumulate the received text for display
+            for line in response.iter_lines(decode_unicode=True):
+                if line and line.startswith("data: "):
+                    chunk = line[len("data: ") :]
+                    partial_message_text += chunk
+                    assistant_msg_placeholder.write(partial_message_text)
 
-        for line in response.iter_lines(decode_unicode=True):
-            if line:
-                # With SSE, lines like "data: ..." will be returned repeatedly
-                if line.startswith("data: "):
-                    chunk = line[len("data: ") :]  # Remove the "data: " prefix
-                    # Accumulate the received string
-                    accumulated_text += chunk
-                    # Update the display in real time
-                    output_placeholder.write(accumulated_text)
-
-        # The streaming response has ended
-        st.success("Streaming completed.")
+        # (D) After streaming completes, save the full assistant message
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": partial_message_text}
+        )
 
 
 if __name__ == "__main__":
