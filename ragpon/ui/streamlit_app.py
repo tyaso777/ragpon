@@ -147,6 +147,8 @@ def main():
         st.session_state["user_id"] = "test_user"  # Mock user
     if "show_edit_form" not in st.session_state:
         st.session_state["show_edit_form"] = False
+    if "session_histories" not in st.session_state:
+        st.session_state["session_histories"] = {}  # { session_id: [messages], ... }
 
     user_id = st.session_state["user_id"]
     app_name = "search_regulations"
@@ -178,7 +180,9 @@ def main():
     selected_session_data = st.sidebar.radio(
         "Choose a session:",
         session_ids,
-        format_func=lambda x: x[1],  # x[1] is the session_name
+        format_func=lambda x: (
+            x[1] + " (Private)" if x[2] else x[1]
+        ),  # x[1] is the session_name, x[2] is is_private
         key="unique_session_radio",
     )
 
@@ -214,10 +218,18 @@ def main():
             st.rerun()
     else:
         # If the form is not shown, assume we're selecting an existing session
-        st.session_state["current_session"] = selected_session_data[0]
-        st.session_state["messages"] = mock_fetch_session_history(
-            server_url, user_id, app_name, selected_session_data[0]
-        )
+        selected_session_id = selected_session_data[0]
+        st.session_state["current_session"] = selected_session_id
+
+        # If we haven't loaded this session before, fetch from the server
+        if selected_session_id not in st.session_state["session_histories"]:
+            history = mock_fetch_session_history(
+                server_url, user_id, app_name, selected_session_id
+            )
+            st.session_state["session_histories"][selected_session_id] = history
+
+        # Now point a local variable to the chosen session's messages
+        messages = st.session_state["session_histories"][selected_session_id]
 
     # Display which session is active
     st.write(f"**Current Session**: {st.session_state['current_session']}")
@@ -285,7 +297,7 @@ def main():
             st.rerun()
 
     # 4) Show the existing conversation messages
-    for msg in st.session_state["messages"]:
+    for msg in messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
@@ -293,7 +305,7 @@ def main():
     user_input = st.chat_input("Type your query here...")
     if user_input:
         # (A) Add user message to local state
-        st.session_state["messages"].append({"role": "user", "content": user_input})
+        messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.write(user_input)
 
@@ -323,9 +335,7 @@ def main():
                     assistant_msg_placeholder.write(partial_message_text)
 
         # (D) Save final assistant message
-        st.session_state["messages"].append(
-            {"role": "assistant", "content": partial_message_text}
-        )
+        messages.append({"role": "assistant", "content": partial_message_text})
 
 
 if __name__ == "__main__":
