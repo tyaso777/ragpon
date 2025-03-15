@@ -286,6 +286,8 @@ def main() -> None:
         st.session_state["show_edit_form"] = False
     if "session_histories" not in st.session_state:
         st.session_state["session_histories"] = {}  # { session_id: [messages], ... }
+    if "show_create_form" not in st.session_state:
+        st.session_state["show_create_form"] = False
 
     user_id: str = st.session_state["user_id"]
     app_name: str = "search_regulations"
@@ -301,13 +303,11 @@ def main() -> None:
     session_ids: list[list] = st.session_state["session_ids"]
 
     # 3) Sidebar: pick a session or create a new one
-
-    # Create form visibility flag
-    if "show_create_form" not in st.session_state:
-        st.session_state["show_create_form"] = False
-
+    st.sidebar.write("## Create New Session")
     # Button to show the "Create New Session" form
-    create_button_clicked: bool = st.sidebar.button("Create New Session")
+    create_button_clicked: bool = st.sidebar.button(
+        "Create New Session", key="create_button"
+    )
     if create_button_clicked:
         st.session_state["show_create_form"] = True
 
@@ -323,7 +323,7 @@ def main() -> None:
         )
 
         # Button to finalize session creation
-        if st.sidebar.button("Create"):
+        if st.sidebar.button("Create", key="finalize_create_button"):
             # Generate a new session ID
             new_session_id: str = str(uuid.uuid4())
             # Insert [session_id, session_name, is_private_session] into session_ids
@@ -343,7 +343,7 @@ def main() -> None:
 
             # Rerun to refresh the UI
             st.rerun()
-    # else:
+
     st.sidebar.write("## Session List")
 
     # Radio button to choose an existing session
