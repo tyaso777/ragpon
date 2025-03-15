@@ -371,16 +371,6 @@ def main() -> None:
 
     st.sidebar.write("## Session List")
 
-    # Radio button to choose an existing session
-    selected_session_data: SessionData = st.sidebar.radio(
-        "Choose a session:",
-        st.session_state["session_ids"][::-1],
-        format_func=lambda x: (
-            f"{x.session_name} (Private)" if x.is_private_session else x.session_name
-        ),
-        key="unique_session_radio",
-    )
-
     # If no session has been chosen yet, default to the first in the list
     if st.session_state["current_session"] is None:
         if len(st.session_state["session_ids"]) == 0:
@@ -411,6 +401,16 @@ def main() -> None:
                 app_name=app_name,
                 session_id=st.session_state["current_session"].session_id,
             )
+
+    # Radio button to choose an existing session
+    selected_session_data: SessionData = st.sidebar.radio(
+        "Choose a session:",
+        st.session_state["session_ids"][::-1],
+        format_func=lambda x: (
+            f"{x.session_name} (Private)" if x.is_private_session else x.session_name
+        ),
+        key="unique_session_radio",
+    )
 
     # If the form is not shown, assume we're selecting an existing session
     st.session_state["current_session"] = selected_session_data
