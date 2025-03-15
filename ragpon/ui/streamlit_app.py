@@ -1,14 +1,29 @@
 import uuid
+from dataclasses import dataclass
 
 import requests
 import streamlit as st
+
+
+@dataclass
+class SessionData:
+    """
+    Represents session information, including an ID, name, and privacy setting.
+    """
+
+    session_id: str
+    session_name: str
+    is_private_session: bool
+
 
 #################################
 # Mock or Real API Calls
 #################################
 
 
-def mock_fetch_session_ids(server_url: str, user_id: str, app_name: str) -> list[list]:
+def mock_fetch_session_ids(
+    server_url: str, user_id: str, app_name: str
+) -> list[SessionData]:
     """
     Simulate fetching a list of session data from the server.
     Each session is represented as [session_id, session_name, is_private_session].
@@ -19,13 +34,18 @@ def mock_fetch_session_ids(server_url: str, user_id: str, app_name: str) -> list
         app_name (str): The name of the application.
 
     Returns:
-        list[list]: A list of sessions. Each session is
-            [session_id (str), session_name (str), is_private_session (bool)].
+        list[SessionData]: A list of SessionData objects.
     """
     return [
-        ["1234", "Session 1234", False],
-        ["5678", "Session 5678", False],
-        ["9999", "Session 9999", True],
+        SessionData(
+            session_id="1234", session_name="Session 1234", is_private_session=False
+        ),
+        SessionData(
+            session_id="5678", session_name="Session 5678", is_private_session=False
+        ),
+        SessionData(
+            session_id="9999", session_name="Session 9999", is_private_session=True
+        ),
     ]
 
 
@@ -300,7 +320,7 @@ def main() -> None:
         )
 
     # 2) Fetch list of sessions from the server (mocked)
-    session_ids: list[list] = st.session_state["session_ids"]
+    # session_ids: list[list] = st.session_state["session_ids"]
 
     # 3) Sidebar: pick a session or create a new one
     st.sidebar.write("## Create New Session")
@@ -328,14 +348,19 @@ def main() -> None:
             new_session_id: str = str(uuid.uuid4())
             # Insert [session_id, session_name, is_private_session] into session_ids
             st.session_state["session_ids"].insert(
-                0, [new_session_id, new_session_name, new_session_is_private]
+                0,
+                SessionData(
+                    session_id=new_session_id,
+                    session_name=new_session_name,
+                    is_private_session=new_session_is_private,
+                ),
             )
             # Switch to the newly created session
-            st.session_state["current_session"] = [
-                new_session_id,
-                new_session_name,
-                new_session_is_private,
-            ]
+            st.session_state["current_session"] = SessionData(
+                session_id=new_session_id,
+                session_name=new_session_name,
+                is_private_session=new_session_is_private,
+            )
             st.session_state["messages"] = []
 
             # Hide the create form
@@ -347,42 +372,49 @@ def main() -> None:
     st.sidebar.write("## Session List")
 
     # Radio button to choose an existing session
-    selected_session_data: list = st.sidebar.radio(
+    selected_session_data: SessionData = st.sidebar.radio(
         "Choose a session:",
-        session_ids,
+        st.session_state["session_ids"],
         format_func=lambda x: (
-            x[1] + " (Private)" if x[2] else x[1]
-        ),  # x[1] is the session_name, x[2] is is_private
+            f"{x.session_name} (Private)" if x.is_private_session else x.session_name
+        ),
         key="unique_session_radio",
     )
 
     # If no session has been chosen yet, default to the first in the list
     if st.session_state["current_session"] is None:
-        if len(session_ids) == 0:
+        if len(st.session_state["session_ids"]) == 0:
             # Automatically create a new session if none exist
             new_session_id = str(uuid.uuid4())
             default_session_name = "Default Session"
             is_private = False
 
             st.session_state["session_ids"].append(
-                [new_session_id, default_session_name, is_private]
+                SessionData(
+                    session_id=new_session_id,
+                    session_name=default_session_name,
+                    is_private_session=is_private,
+                )
             )
-            st.session_state["current_session"] = [
-                new_session_id,
-                default_session_name,
-                is_private,
-            ]
+            st.session_state["current_session"] = SessionData(
+                session_id=new_session_id,
+                session_name=default_session_name,
+                is_private_session=is_private,
+            )
             st.session_state["messages"] = []
             st.rerun()
         else:
-            st.session_state["current_session"] = session_ids[0]
+            st.session_state["current_session"] = st.session_state["session_ids"][0]
             st.session_state["messages"] = mock_fetch_session_history(
-                server_url, user_id, app_name, session_ids[0][0]
+                server_url=server_url,
+                user_id=user_id,
+                app_name=app_name,
+                session_id=st.session_state["current_session"].session_id,
             )
 
     # If the form is not shown, assume we're selecting an existing session
     st.session_state["current_session"] = selected_session_data
-    selected_session_id: str = selected_session_data[0]
+    selected_session_id: str = selected_session_data.session_id
 
     # If we haven't loaded this session before, fetch from the server
     if selected_session_id not in st.session_state["session_histories"]:
@@ -408,8 +440,8 @@ def main() -> None:
         # Show a form to edit session name, privacy, or delete
         st.sidebar.write("### Edit or Delete Session")
 
-        current_name: str = selected_session_data[1]
-        current_is_private: bool = selected_session_data[2]
+        current_name: str = selected_session_data.session_name
+        current_is_private: bool = selected_session_data.is_private_session
 
         edited_session_name: str = st.sidebar.text_input(
             "Session Name",
@@ -430,37 +462,40 @@ def main() -> None:
             if delete_this_session:
                 # Perform delete
                 mock_patch_session_info(
-                    server_url,
-                    user_id,
-                    selected_session_data[0],
-                    edited_session_name,
-                    edited_is_private,
+                    server_url=server_url,
+                    user_id=user_id,
+                    session_id=selected_session_data.session_id,
+                    session_name=edited_session_name,
+                    is_private_session=edited_is_private,
                     is_deleted=True,
                 )
                 # Remove from local list
                 st.session_state["session_ids"] = [
                     s
                     for s in st.session_state["session_ids"]
-                    if s[0] != selected_session_data[0]
+                    if s.session_id != selected_session_data.session_id
                 ]
-                if st.session_state["current_session"][0] == selected_session_data[0]:
+                if (
+                    st.session_state["current_session"].session_id
+                    == selected_session_data.session_id
+                ):
                     st.session_state["current_session"] = None
                     st.session_state["messages"] = []
             else:
                 # Perform update (no delete)
                 mock_patch_session_info(
-                    server_url,
-                    user_id,
-                    selected_session_data[0],
-                    edited_session_name,
-                    edited_is_private,
+                    server_url=server_url,
+                    user_id=user_id,
+                    session_id=selected_session_data.session_id,
+                    session_name=edited_session_name,
+                    is_private_session=edited_is_private,
                     is_deleted=False,
                 )
                 # Update local data
                 for s in st.session_state["session_ids"]:
-                    if s[0] == selected_session_data[0]:
-                        s[1] = edited_session_name
-                        s[2] = edited_is_private
+                    if s.session_id == selected_session_data.session_id:
+                        s.session_name = edited_session_name
+                        s.is_private_session = edited_is_private
                         break
 
             st.session_state["show_edit_form"] = False
@@ -469,7 +504,7 @@ def main() -> None:
     # 4) Show the existing conversation messages
     #    We'll display them in order, but note each message has a "round_id".
     #    If the role is user, we add a trash button to delete that round.
-    session_id_for_display = st.session_state["current_session"][0]
+    session_id_for_display = st.session_state["current_session"].session_id
 
     # We'll track which round_ids we've displayed (user+assistant pairs).
     displayed_round_ids: set[str] = set()
@@ -479,7 +514,7 @@ def main() -> None:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
         # If this is a user message, display the trash button for that round
-        if msg["role"] == "user":
+        if msg["role"] == "assistant":
             # To avoid showing multiple trash buttons for the same round,
             # only show it once.
             if msg["round_id"] not in displayed_round_ids:
@@ -526,11 +561,11 @@ def main() -> None:
         # (B) Send the query to FastAPI (streaming)
         try:
             response: requests.Response = post_query_to_fastapi(
-                server_url,
-                st.session_state["user_id"],
-                app_name,
-                session_id_for_display,
-                user_input,
+                server_url=server_url,
+                user_id=st.session_state["user_id"],
+                app_name=app_name,
+                session_id=session_id_for_display,
+                user_query=user_input,
             )
         except requests.exceptions.RequestException as e:
             # If request fails, show error from assistant
