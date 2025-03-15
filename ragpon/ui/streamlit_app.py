@@ -38,13 +38,17 @@ def mock_fetch_session_ids(
     """
     return [
         SessionData(
-            session_id="1234", session_name="Session 1234", is_private_session=False
+            session_id="1234",
+            session_name="The First session",
+            is_private_session=False,
         ),
         SessionData(
             session_id="5678", session_name="Session 5678", is_private_session=False
         ),
         SessionData(
-            session_id="9999", session_name="Session 9999", is_private_session=True
+            session_id="9999",
+            session_name="Newest session 9999",
+            is_private_session=True,
         ),
     ]
 
@@ -313,14 +317,12 @@ def main() -> None:
     app_name: str = "search_regulations"
     server_url: str = "http://localhost:8006"  # fixed server URL
 
+    # 2) Fetch list of sessions from the server (mocked)
     # Ensure that session_ids is initialized
     if "session_ids" not in st.session_state:
         st.session_state["session_ids"] = mock_fetch_session_ids(
             server_url, user_id, app_name
         )
-
-    # 2) Fetch list of sessions from the server (mocked)
-    # session_ids: list[list] = st.session_state["session_ids"]
 
     # 3) Sidebar: pick a session or create a new one
     st.sidebar.write("## Create New Session")
@@ -346,14 +348,12 @@ def main() -> None:
         if st.sidebar.button("Create", key="finalize_create_button"):
             # Generate a new session ID
             new_session_id: str = str(uuid.uuid4())
-            # Insert [session_id, session_name, is_private_session] into session_ids
-            st.session_state["session_ids"].insert(
-                0,
+            st.session_state["session_ids"].append(
                 SessionData(
                     session_id=new_session_id,
                     session_name=new_session_name,
                     is_private_session=new_session_is_private,
-                ),
+                )
             )
             # Switch to the newly created session
             st.session_state["current_session"] = SessionData(
@@ -374,7 +374,7 @@ def main() -> None:
     # Radio button to choose an existing session
     selected_session_data: SessionData = st.sidebar.radio(
         "Choose a session:",
-        st.session_state["session_ids"],
+        st.session_state["session_ids"][::-1],
         format_func=lambda x: (
             f"{x.session_name} (Private)" if x.is_private_session else x.session_name
         ),
@@ -404,7 +404,7 @@ def main() -> None:
             st.session_state["messages"] = []
             st.rerun()
         else:
-            st.session_state["current_session"] = st.session_state["session_ids"][0]
+            st.session_state["current_session"] = st.session_state["session_ids"][-1]
             st.session_state["messages"] = mock_fetch_session_history(
                 server_url=server_url,
                 user_id=user_id,
