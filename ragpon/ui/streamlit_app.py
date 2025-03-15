@@ -319,7 +319,7 @@ def main() -> None:
             "Session Name", value="No title", key="create_session_name"
         )
         new_session_is_private: bool = st.sidebar.radio(
-            "Is Private?", options=[True, False]
+            "Is Private?", options=[True, False], key="create_is_private"
         )
 
         # Button to finalize session creation
@@ -420,6 +420,7 @@ def main() -> None:
             "Is Private?",
             options=[True, False],
             index=0 if current_is_private else 1,
+            key="edit_is_private",
         )
 
         # "Delete this session?" as a checkbox
