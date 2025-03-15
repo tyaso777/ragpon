@@ -327,11 +327,16 @@ def main() -> None:
     # 3) Sidebar: pick a session or create a new one
     st.sidebar.write("## Create New Session")
     # Button to show the "Create New Session" form
-    create_button_clicked: bool = st.sidebar.button(
-        "Create New Session", key="create_button"
+    if st.session_state["show_create_form"]:
+        create_label = "Cancel Create Session"
+    else:
+        create_label = "Create New Session"
+    toggle_create_button: bool = st.sidebar.button(
+        create_label, key="toggle_create_button"
     )
-    if create_button_clicked:
-        st.session_state["show_create_form"] = True
+    if toggle_create_button:
+        st.session_state["show_create_form"] = not st.session_state["show_create_form"]
+        st.rerun()
 
     # Show the create form if the user clicked "Create New Session"
     messages: list[dict] = []
@@ -377,7 +382,7 @@ def main() -> None:
             # Automatically create a new session if none exist
             new_session_id = str(uuid.uuid4())
             default_session_name = "Default Session"
-            is_private = False
+            is_private = True
 
             st.session_state["session_ids"].append(
                 SessionData(
@@ -431,10 +436,17 @@ def main() -> None:
 
     # Edit Session button (single button for both edit and delete)
     st.sidebar.write("## Manage Selected Session")
-    edit_button_clicked: bool = st.sidebar.button("Edit Session")
 
-    if edit_button_clicked:
-        st.session_state["show_edit_form"] = True
+    if st.session_state["show_edit_form"]:
+        edit_label = "Cancel Edit"
+    else:
+        edit_label = "Edit Session"
+
+    toggle_edit_button: bool = st.sidebar.button(edit_label, key="toggle_edit_button")
+
+    if toggle_edit_button:
+        st.session_state["show_edit_form"] = not st.session_state["show_edit_form"]
+        st.rerun()  # so the UI updates immediately
 
     if st.session_state["show_edit_form"]:
         # Show a form to edit session name, privacy, or delete
@@ -456,9 +468,11 @@ def main() -> None:
         )
 
         # "Delete this session?" as a checkbox
-        delete_this_session: bool = st.sidebar.checkbox("Delete this session?")
+        delete_this_session: bool = st.sidebar.checkbox(
+            "Delete this session?", key="delete_session"
+        )
 
-        if st.sidebar.button("Update"):
+        if st.sidebar.button("Update", key="update_session"):
             if delete_this_session:
                 # Perform delete
                 mock_patch_session_info(
