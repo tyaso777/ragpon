@@ -1,11 +1,9 @@
 # %%
 # FastAPI side
-import os
 from typing import Generator
 
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
-from openai import AzureOpenAI, OpenAI
 
 from ragpon import (
     BaseDocument,
@@ -17,6 +15,7 @@ from ragpon import (
     RuriLargeEmbedderCTranslate2,
 )
 from ragpon._utils.logging_helper import get_library_logger
+from ragpon.api.client_init import create_openai_client
 from ragpon.tokenizer import SudachiTokenizer
 
 app = FastAPI()
@@ -57,49 +56,7 @@ bm25_repo = BM25Repository(
     tokenizer=SudachiTokenizer(),
 )
 
-# Load environment variables
-OPENAI_TYPE = os.getenv("OPENAI_TYPE", "openai").lower()  # Default is "openai"
-
-# Settings for OpenAI
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-# Settings for Azure OpenAI
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
-AZURE_OPENAI_MODEL = os.getenv("AZURE_OPENAI_MODEL", "gpt-4o-mini")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-
-# Check required environment variables
-if OPENAI_TYPE == "azure":
-    required_vars = {
-        "AZURE_OPENAI_ENDPOINT": AZURE_OPENAI_ENDPOINT,
-        "AZURE_OPENAI_API_KEY": AZURE_OPENAI_API_KEY,
-        "AZURE_OPENAI_DEPLOYMENT": AZURE_OPENAI_DEPLOYMENT,
-    }
-else:
-    required_vars = {"OPENAI_API_KEY": OPENAI_API_KEY}
-
-missing_vars = [key for key, value in required_vars.items() if not value]
-if missing_vars:
-    raise ValueError(
-        f"Missing required environment variables: {', '.join(missing_vars)}"
-    )
-
-# Initialize the client
-if OPENAI_TYPE == "azure":
-    client = AzureOpenAI(
-        azure_endpoint=AZURE_OPENAI_ENDPOINT,
-        api_key=AZURE_OPENAI_API_KEY,
-        api_version=AZURE_OPENAI_API_VERSION,
-    )
-    MODEL_NAME = AZURE_OPENAI_MODEL
-    DEPLOYMENT_ID = AZURE_OPENAI_DEPLOYMENT
-else:
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    MODEL_NAME = OPENAI_MODEL
-    DEPLOYMENT_ID = None
+client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
 
 
 def stream_chat_completion(
@@ -109,7 +66,10 @@ def stream_chat_completion(
         kwargs = {
             "model": MODEL_NAME,
             "messages": [
-                {"role": "system", "content": "You are a helpful assistant. In your responses, please include the file names and page numbers that serve as the basis for your statements. Make sure the user can clearly see which documents and pages support your answers. If you do not have enough information, acknowledge that instead of making assumptions."},
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant. In your responses, please include the file names and page numbers that serve as the basis for your statements. Make sure the user can clearly see which documents and pages support your answers. If you do not have enough information, acknowledge that instead of making assumptions.",
+                },
                 {"role": "system", "content": f"Context: {contexts}"},
                 {"role": "user", "content": user_query},
             ],
