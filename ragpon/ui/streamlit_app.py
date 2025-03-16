@@ -60,13 +60,11 @@ def mock_fetch_session_history(
     Simulate fetching the conversation history for a given session.
     Replace with a real GET request when implemented:
       GET /users/{user_id}/apps/{app_name}/sessions/{session_id}/queries
-
-    Now each dict has keys:
-    - role (str)
-    - content (str)
-    - id (str): an internal message ID
-    - round_id (str): to group user+assistant pairs
-
+    Now each dict has:
+        - role (str): "user" or "assistant"
+        - content (str)
+        - id (str): a unique message identifier
+        - round_id (int): an integer representing the round (1-based) to group user+assistant pairs.
     Args:
         server_url (str): The URL of the backend server.
         user_id (str): The user ID associated with the session.
@@ -75,19 +73,6 @@ def mock_fetch_session_history(
 
     Returns:
         list[dict]: A list of messages with "role", "content", "id", and "round_id".
-    """
-
-
-def mock_fetch_session_history(
-    server_url: str, user_id: str, app_name: str, session_id: str
-) -> list[dict]:
-    """
-    Simulate fetching the conversation history for a given session.
-    Now each dict has:
-        - role (str): "user" or "assistant"
-        - content (str)
-        - id (str): a unique message identifier
-        - round_id (int): an integer representing the round (1-based)
     """
     if session_id == "1234":
         return [
@@ -285,6 +270,22 @@ def mock_delete_round(
     endpoint = f"{server_url}/sessions/{session_id}/rounds/{round_id}"
     payload = {"is_deleted": True, "deleted_by": deleted_by}
     print(f"[MOCK DELETE] endpoint={endpoint}, payload={payload}")
+
+
+def mock_patch_feedback(llm_output_id: str, feedback: str, reason: str) -> None:
+    """
+    Simulate sending feedback to FastAPI:
+      PATCH /llm_outputs/{id}
+    Body: { "feedback": "good"|"bad", "reason": "..." }
+
+    Args:
+        llm_output_id (str): The unique ID of the LLM output (msg["id"]).
+        feedback (str): "good" or "bad".
+        reason (str): The user's explanation or comment.
+    """
+    endpoint = f"/llm_outputs/{llm_output_id}"
+    payload = {"feedback": feedback, "reason": reason}
+    print(f"[MOCK PATCH] {endpoint}, payload={payload}")
 
 
 #################################
@@ -533,24 +534,66 @@ def main() -> None:
             # only show it once.
             if msg["round_id"] not in displayed_round_ids:
                 displayed_round_ids.add(msg["round_id"])
-                # [CHANGE] Add a trash icon button to delete user+assistant pair
-                delete_key: str = f"delete_{msg['round_id']}"
-                if st.button("🗑️", key=delete_key, help="Delete this round"):
-                    # 1) Call mock_delete_round
-                    mock_delete_round(
-                        server_url=server_url,
-                        session_id=session_id_for_display,
-                        round_id=msg["round_id"],
-                        deleted_by=user_id,
-                    )
-                    # 2) Remove user+assistant messages with this round_id locally
-                    updated_msgs: list[dict] = [
-                        m for m in messages if m["round_id"] != msg["round_id"]
-                    ]
-                    st.session_state["session_histories"][
-                        session_id_for_display
-                    ] = updated_msgs
-                    st.rerun()
+            # We'll show three buttons: Trash, Good, Bad
+            col_trash, col_good, col_bad = st.columns([1, 1, 1])
+
+            # Trash icon button
+            if col_trash.button(
+                "🗑️", key=f"delete_{msg['round_id']}", help="Delete this round"
+            ):
+                mock_delete_round(
+                    server_url=server_url,
+                    session_id=session_id_for_display,
+                    round_id=msg["round_id"],
+                    deleted_by=user_id,
+                )
+                # 2) Remove user+assistant messages with this round_id locally
+                updated_msgs: list[dict] = [
+                    m for m in messages if m["round_id"] != msg["round_id"]
+                ]
+                st.session_state["session_histories"][
+                    session_id_for_display
+                ] = updated_msgs
+                st.rerun()
+
+            # Good button
+            if col_good.button("Good", key=f"good_{msg['id']}"):
+                st.session_state["feedback_form_id"] = msg["id"]
+                st.session_state["feedback_form_type"] = "good"
+                st.rerun()
+
+            # Bad button
+            if col_bad.button("Bad", key=f"bad_{msg['id']}"):
+                st.session_state["feedback_form_id"] = msg["id"]
+                st.session_state["feedback_form_type"] = "bad"
+                st.rerun()
+
+    # Check if we have a pending feedback form
+    if (
+        "feedback_form_id" in st.session_state
+        and st.session_state["feedback_form_id"] is not None
+    ):
+        st.write("### Provide feedback")
+        feedback_reason = st.text_area("Reason (optional)", key="feedback_reason")
+
+        if st.button("Submit Feedback", key="submit_feedback"):
+            llm_output_id = st.session_state["feedback_form_id"]
+            feedback_type = st.session_state["feedback_form_type"]  # "good" or "bad"
+            reason_text = feedback_reason
+
+            # 1) Call our mock patch function
+            mock_patch_feedback(llm_output_id, feedback_type, reason_text)
+
+            # 2) Reset the form
+            st.session_state["feedback_form_id"] = None
+            st.session_state["feedback_form_type"] = None
+            st.rerun()
+
+        # If you want a Cancel button for feedback:
+        if st.button("Cancel Feedback", key="cancel_feedback"):
+            st.session_state["feedback_form_id"] = None
+            st.session_state["feedback_form_type"] = None
+            st.rerun()
 
     # 5) Chat input at the bottom to continue conversation
     user_input: str = st.chat_input("Type your query here...")
