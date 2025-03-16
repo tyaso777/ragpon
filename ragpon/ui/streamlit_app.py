@@ -194,12 +194,18 @@ def mock_fetch_session_history(
 
 
 def post_query_to_fastapi(
-    server_url: str, user_id: str, app_name: str, session_id: str, user_query: str
+    server_url: str,
+    user_id: str,
+    app_name: str,
+    session_id: str,
+    user_query: str,
+    user_msg_id: str,
+    system_msg_id: str,
+    assistant_msg_id: str,
+    round_id: int,
 ) -> requests.Response:
     """
-    Simulate (or actually do) a POST to FastAPI's RAG+LLM endpoint:
-      POST /users/{user_id}/apps/{app_name}/sessions/{session_id}/queries
-    with stream=True to get partial responses.
+    Sends a POST request to FastAPI's RAG+LLM endpoint with stream=True.
 
     Args:
         server_url (str): The URL of the backend server.
@@ -207,6 +213,10 @@ def post_query_to_fastapi(
         app_name (str): The name of the application.
         session_id (str): The session ID for which the query is posted.
         user_query (str): The user's query text to be processed by the LLM.
+        user_msg_id (str): The UUID for the user's message.
+        system_msg_id (str): The UUID for the system message.
+        assistant_msg_id (str): The UUID for the assistant's message.
+        round_id (int): The round number computed on the client side.
 
     Returns:
         requests.Response: A streaming Response object from the server.
@@ -214,12 +224,19 @@ def post_query_to_fastapi(
     endpoint = (
         f"{server_url}/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries"
     )
-    payload = {"query": user_query, "file": None, "is_private_session": False}
 
-    # Make a streaming POST request
+    # NOTE: I deleted file option. If it's necessary, use multipart/form-data for file uploads.
+    payload = {
+        "query": user_query,
+        "user_msg_id": user_msg_id,
+        "system_msg_id": system_msg_id,
+        "assistant_msg_id": assistant_msg_id,
+        "round_id": round_id,
+    }
+
     response = requests.post(endpoint, json=payload, stream=True)
     response.raise_for_status()
-    return response  # We'll handle the streaming in the main code
+    return response
 
 
 def mock_patch_session_info(
@@ -601,18 +618,23 @@ def main() -> None:
     # 5) Chat input at the bottom to continue conversation
     user_input: str = st.chat_input("Type your query here...")
     if user_input:
-        # We generate a new round_id for this user+assistant pair
+        # 1) Compute the next round_id
         if len(messages) > 0:
             last_round_id = max(msg.round_id for msg in messages)
             new_round_id: str = last_round_id + 1
         else:
             new_round_id: str = 0
 
-        # (A) Add user message to local state
+        # 2) Generate UUIDs for user/system/assistant messages
+        user_msg_id = str(uuid.uuid4())
+        system_msg_id = str(uuid.uuid4())
+        assistant_msg_id = str(uuid.uuid4())
+
+        # 3) Add the user's message to local state
         user_msg: Message = Message(
             role="user",
             content=user_input,
-            id=f"usr-{new_round_id}",
+            id=user_msg_id,
             round_id=new_round_id,
         )
         messages.append(user_msg)
@@ -620,7 +642,7 @@ def main() -> None:
         with st.chat_message("user"):
             st.write(user_input)
 
-        # (B) Send the query to FastAPI (streaming)
+        # 4) Post to FastAPI (streaming)
         try:
             response: requests.Response = post_query_to_fastapi(
                 server_url=server_url,
@@ -628,6 +650,10 @@ def main() -> None:
                 app_name=app_name,
                 session_id=session_id_for_display,
                 user_query=user_input,
+                user_msg_id=user_msg_id,
+                system_msg_id=system_msg_id,
+                assistant_msg_id=assistant_msg_id,
+                round_id=new_round_id,
             )
         except requests.exceptions.RequestException as e:
             # If request fails, show error from assistant
@@ -635,7 +661,7 @@ def main() -> None:
                 st.error(f"Request failed: {e}")
             return
 
-        # (C) Stream partial assistant responses
+        # 5) Stream partial assistant responses
         partial_message_text: str = ""
         with st.chat_message("assistant"):
             assistant_msg_placeholder = st.empty()
@@ -645,11 +671,11 @@ def main() -> None:
                     partial_message_text += chunk
                     assistant_msg_placeholder.write(partial_message_text)
 
-        # (D) Save final assistant message
+        # 6) Save final assistant message
         assistant_msg: Message = Message(
             role="assistant",
             content=partial_message_text,
-            id=f"ast-{new_round_id}",
+            id=assistant_msg_id,
             round_id=new_round_id,
         )
         messages.append(assistant_msg)
