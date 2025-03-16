@@ -16,6 +16,18 @@ class SessionData:
     is_private_session: bool
 
 
+@dataclass
+class Message:
+    """
+    Represents a single chat message with role, content, ID, and round ID.
+    """
+
+    role: str  # "user" or "assistant"
+    content: str
+    id: str
+    round_id: int
+
+
 #################################
 # Mock or Real API Calls
 #################################
@@ -55,136 +67,127 @@ def mock_fetch_session_ids(
 
 def mock_fetch_session_history(
     server_url: str, user_id: str, app_name: str, session_id: str
-) -> list[dict]:
+) -> list[Message]:
     """
     Simulate fetching the conversation history for a given session.
     Replace with a real GET request when implemented:
       GET /users/{user_id}/apps/{app_name}/sessions/{session_id}/queries
-    Now each dict has:
-        - role (str): "user" or "assistant"
-        - content (str)
-        - id (str): a unique message identifier
-        - round_id (int): an integer representing the round (1-based) to group user+assistant pairs.
+
     Args:
-        server_url (str): The URL of the backend server.
-        user_id (str): The user ID associated with the session.
-        app_name (str): The name of the application.
-        session_id (str): The session ID for which to fetch conversation history.
+        server_url (str): The URL of the backend server (not used in this mock).
+        user_id (str): The ID of the user who owns the session (not used in this mock).
+        app_name (str): The name of the application (not used in this mock).
+        session_id (str): The unique identifier of the session to retrieve history for.
 
     Returns:
-        list[dict]: A list of messages with "role", "content", "id", and "round_id".
+        list[Message]: A list of Message objects representing the conversation history.
     """
+
     if session_id == "1234":
         return [
-            # Round 1
-            {
-                "role": "user",
-                "content": "Hi, how can I use this system (session 1234)?",
-                "id": "usr-1234-1",
-                "round_id": 1,
-            },
-            {
-                "role": "assistant",
-                "content": "Hello! You can ask me anything in 1234.",
-                "id": "ast-1234-1",
-                "round_id": 1,
-            },
-            # Round 2
-            {
-                "role": "user",
-                "content": "Could you explain more features for 1234?",
-                "id": "usr-1234-2",
-                "round_id": 2,
-            },
-            {
-                "role": "assistant",
-                "content": "Sure, here are some more features...",
-                "id": "ast-1234-2",
-                "round_id": 2,
-            },
-            # Round 3
-            {
-                "role": "user",
-                "content": "Got it. Any advanced tips for session 1234?",
-                "id": "usr-1234-3",
-                "round_id": 3,
-            },
-            {
-                "role": "assistant",
-                "content": "Yes, here are advanced tips...",
-                "id": "ast-1234-3",
-                "round_id": 3,
-            },
+            Message(
+                role="user",
+                content="Hi, how can I use this system (session 1234)?",
+                id="usr-1234-1",
+                round_id=1,
+            ),
+            Message(
+                role="assistant",
+                content="Hello! You can ask me anything in 1234.",
+                id="ast-1234-1",
+                round_id=1,
+            ),
+            Message(
+                role="user",
+                content="Could you explain more features for 1234?",
+                id="usr-1234-2",
+                round_id=2,
+            ),
+            Message(
+                role="assistant",
+                content="Sure, here are some more features...",
+                id="ast-1234-2",
+                round_id=2,
+            ),
+            Message(
+                role="user",
+                content="Got it. Any advanced tips for session 1234?",
+                id="usr-1234-3",
+                round_id=3,
+            ),
+            Message(
+                role="assistant",
+                content="Yes, here are advanced tips...",
+                id="ast-1234-3",
+                round_id=3,
+            ),
         ]
 
     elif session_id == "5678":
         return [
-            # Round 1
-            {
-                "role": "user",
-                "content": "Hello from session 5678! (Round 1)",
-                "id": "usr-5678-1",
-                "round_id": 1,
-            },
-            {
-                "role": "assistant",
-                "content": "Hi! This is the 5678 conversation. (Round 1)",
-                "id": "ast-5678-1",
-                "round_id": 1,
-            },
-            # Round 2
-            {
-                "role": "user",
-                "content": "Let's discuss something else in 5678. (Round 2)",
-                "id": "usr-5678-2",
-                "round_id": 2,
-            },
-            {
-                "role": "assistant",
-                "content": "Sure, here's more about 5678. (Round 2)",
-                "id": "ast-5678-2",
-                "round_id": 2,
-            },
-            # Round 3
-            {
-                "role": "user",
-                "content": "Any final points for 5678? (Round 3)",
-                "id": "usr-5678-3",
-                "round_id": 3,
-            },
-            {
-                "role": "assistant",
-                "content": "Yes, final remarks on 5678... (Round 3)",
-                "id": "ast-5678-3",
-                "round_id": 3,
-            },
+            Message(
+                role="user",
+                content="Hello from session 5678! (Round 1)",
+                id="usr-5678-1",
+                round_id=1,
+            ),
+            Message(
+                role="assistant",
+                content="Hi! This is the 5678 conversation. (Round 1)",
+                id="ast-5678-1",
+                round_id=1,
+            ),
+            Message(
+                role="user",
+                content="Let's discuss something else in 5678. (Round 2)",
+                id="usr-5678-2",
+                round_id=2,
+            ),
+            Message(
+                role="assistant",
+                content="Sure, here's more about 5678. (Round 2)",
+                id="ast-5678-2",
+                round_id=2,
+            ),
+            Message(
+                role="user",
+                content="Any final points for 5678? (Round 3)",
+                id="usr-5678-3",
+                round_id=3,
+            ),
+            Message(
+                role="assistant",
+                content="Yes, final remarks on 5678... (Round 3)",
+                id="ast-5678-3",
+                round_id=3,
+            ),
         ]
     elif session_id == "9999":
         return [
-            {
-                "role": "user",
-                "content": "Session 9999: RAG testing.",
-                "id": "usr-9999-1",
-                "round_id": 1,
-            },
-            {
-                "role": "assistant",
-                "content": "Sure, let's test RAG in session 9999.",
-                "id": "ast-9999-1",
-                "round_id": 1,
-            },
-            {
-                "role": "user",
-                "content": "Second user message for 9999.",
-                "id": "usr-9999-2",
-                "round_id": 2,
-            },
-            {
-                "role": "assistant",
-                "content": "Second assistant reply for 9999.",
-                "id": "ast-9999-2",
-                "round_id": 2,
-            },
+            Message(
+                role="user",
+                content="Session 9999: RAG testing.",
+                id="usr-9999-1",
+                round_id=1,
+            ),
+            Message(
+                role="assistant",
+                content="Sure, let's test RAG in session 9999.",
+                id="ast-9999-1",
+                round_id=1,
+            ),
+            Message(
+                role="user",
+                content="Second user message for 9999.",
+                id="usr-9999-2",
+                round_id=2,
+            ),
+            Message(
+                role="assistant",
+                content="Second assistant reply for 9999.",
+                id="ast-9999-2",
+                round_id=2,
+            ),
         ]
     else:
         return []
@@ -526,30 +529,30 @@ def main() -> None:
 
     for msg in messages:
         # Only create the chat message block once per message
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+        with st.chat_message(msg.role):
+            st.write(msg.content)
         # If this is a user message, display the trash button for that round
-        if msg["role"] == "assistant":
+        if msg.role == "assistant":
             # To avoid showing multiple trash buttons for the same round,
             # only show it once.
-            if msg["round_id"] not in displayed_round_ids:
-                displayed_round_ids.add(msg["round_id"])
+            if msg.round_id not in displayed_round_ids:
+                displayed_round_ids.add(msg.round_id)
             # We'll show three buttons: Trash, Good, Bad
             col_trash, col_good, col_bad = st.columns([1, 1, 1])
 
             # Trash icon button
             if col_trash.button(
-                "🗑️", key=f"delete_{msg['round_id']}", help="Delete this round"
+                "🗑️", key=f"delete_{msg.round_id}", help="Delete this round"
             ):
                 mock_delete_round(
                     server_url=server_url,
                     session_id=session_id_for_display,
-                    round_id=msg["round_id"],
+                    round_id=msg.round_id,
                     deleted_by=user_id,
                 )
                 # 2) Remove user+assistant messages with this round_id locally
-                updated_msgs: list[dict] = [
-                    m for m in messages if m["round_id"] != msg["round_id"]
+                updated_msgs: list[Message] = [
+                    m for m in messages if m.round_id != msg.round_id
                 ]
                 st.session_state["session_histories"][
                     session_id_for_display
@@ -557,14 +560,14 @@ def main() -> None:
                 st.rerun()
 
             # Good button
-            if col_good.button("Good", key=f"good_{msg['id']}"):
-                st.session_state["feedback_form_id"] = msg["id"]
+            if col_good.button("Good", key=f"good_{msg.id}"):
+                st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "good"
                 st.rerun()
 
             # Bad button
-            if col_bad.button("Bad", key=f"bad_{msg['id']}"):
-                st.session_state["feedback_form_id"] = msg["id"]
+            if col_bad.button("Bad", key=f"bad_{msg.id}"):
+                st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "bad"
                 st.rerun()
 
@@ -604,12 +607,12 @@ def main() -> None:
         # TODO: new_round_idは本当はpost_query_to_fastapiの中で生成されるべき
 
         # (A) Add user message to local state
-        user_msg: dict = {
-            "role": "user",
-            "content": user_input,
-            "id": f"usr-{new_round_id}",
-            "round_id": new_round_id,
-        }
+        user_msg: Message = Message(
+            role="user",
+            content=user_input,
+            id=f"usr-{new_round_id}",
+            round_id=new_round_id,
+        )
         messages.append(user_msg)
 
         with st.chat_message("user"):
@@ -641,12 +644,12 @@ def main() -> None:
                     assistant_msg_placeholder.write(partial_message_text)
 
         # (D) Save final assistant message
-        assistant_msg: dict = {
-            "role": "assistant",
-            "content": partial_message_text,
-            "id": f"ast-{new_round_id}",
-            "round_id": new_round_id,
-        }
+        assistant_msg: Message = Message(
+            role="assistant",
+            content=partial_message_text,
+            id=f"ast-{new_round_id}",
+            round_id=new_round_id,
+        )
         messages.append(assistant_msg)
         st.rerun()
 
