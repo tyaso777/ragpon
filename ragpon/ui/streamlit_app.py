@@ -89,37 +89,37 @@ def mock_fetch_session_history(
                 role="user",
                 content="Hi, how can I use this system (session 1234)?",
                 id="usr-1234-1",
-                round_id=1,
+                round_id=0,
             ),
             Message(
                 role="assistant",
                 content="Hello! You can ask me anything in 1234.",
                 id="ast-1234-1",
-                round_id=1,
+                round_id=0,
             ),
             Message(
                 role="user",
                 content="Could you explain more features for 1234?",
                 id="usr-1234-2",
-                round_id=2,
+                round_id=1,
             ),
             Message(
                 role="assistant",
                 content="Sure, here are some more features...",
                 id="ast-1234-2",
-                round_id=2,
+                round_id=1,
             ),
             Message(
                 role="user",
                 content="Got it. Any advanced tips for session 1234?",
                 id="usr-1234-3",
-                round_id=3,
+                round_id=2,
             ),
             Message(
                 role="assistant",
                 content="Yes, here are advanced tips...",
                 id="ast-1234-3",
-                round_id=3,
+                round_id=2,
             ),
         ]
 
@@ -129,37 +129,37 @@ def mock_fetch_session_history(
                 role="user",
                 content="Hello from session 5678! (Round 1)",
                 id="usr-5678-1",
-                round_id=1,
+                round_id=0,
             ),
             Message(
                 role="assistant",
                 content="Hi! This is the 5678 conversation. (Round 1)",
                 id="ast-5678-1",
-                round_id=1,
+                round_id=0,
             ),
             Message(
                 role="user",
                 content="Let's discuss something else in 5678. (Round 2)",
                 id="usr-5678-2",
-                round_id=2,
+                round_id=1,
             ),
             Message(
                 role="assistant",
                 content="Sure, here's more about 5678. (Round 2)",
                 id="ast-5678-2",
-                round_id=2,
+                round_id=1,
             ),
             Message(
                 role="user",
                 content="Any final points for 5678? (Round 3)",
                 id="usr-5678-3",
-                round_id=3,
+                round_id=2,
             ),
             Message(
                 role="assistant",
                 content="Yes, final remarks on 5678... (Round 3)",
                 id="ast-5678-3",
-                round_id=3,
+                round_id=2,
             ),
         ]
     elif session_id == "9999":
@@ -168,25 +168,25 @@ def mock_fetch_session_history(
                 role="user",
                 content="Session 9999: RAG testing.",
                 id="usr-9999-1",
-                round_id=1,
+                round_id=0,
             ),
             Message(
                 role="assistant",
                 content="Sure, let's test RAG in session 9999.",
                 id="ast-9999-1",
-                round_id=1,
+                round_id=0,
             ),
             Message(
                 role="user",
                 content="Second user message for 9999.",
                 id="usr-9999-2",
-                round_id=2,
+                round_id=1,
             ),
             Message(
                 role="assistant",
                 content="Second assistant reply for 9999.",
                 id="ast-9999-2",
-                round_id=2,
+                round_id=1,
             ),
         ]
     else:
@@ -602,9 +602,11 @@ def main() -> None:
     user_input: str = st.chat_input("Type your query here...")
     if user_input:
         # We generate a new round_id for this user+assistant pair
-        new_round_id: str = str(uuid.uuid4())
-
-        # TODO: new_round_idは本当はpost_query_to_fastapiの中で生成されるべき
+        if len(messages) > 0:
+            last_round_id = max(msg.round_id for msg in messages)
+            new_round_id: str = last_round_id + 1
+        else:
+            new_round_id: str = 0
 
         # (A) Add user message to local state
         user_msg: Message = Message(
