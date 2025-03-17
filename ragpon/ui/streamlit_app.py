@@ -178,13 +178,13 @@ def mock_fetch_session_history(
             ),
             Message(
                 role="user",
-                content="Second user message for 9999.",
+                content="アルプスの少女ハイジが好きです。",
                 id="usr-9999-2",
                 round_id=1,
             ),
             Message(
                 role="assistant",
-                content="Second assistant reply for 9999.",
+                content="「アルプスの少女ハイジ」は、スイスのアルプス山脈を舞台にした心温まる物語ですね。ハイジの純粋さや自然への愛、友人との絆が描かれていて、多くの人に愛されています。特に、山の美しい風景や、彼女が祖父と過ごす場面は印象的です。あなたの好きなキャラクターやエピソードはありますか？",
                 id="ast-9999-2",
                 round_id=1,
             ),
@@ -198,7 +198,7 @@ def post_query_to_fastapi(
     user_id: str,
     app_name: str,
     session_id: str,
-    user_query: str,
+    messages_list: list[dict],
     user_msg_id: str,
     system_msg_id: str,
     assistant_msg_id: str,
@@ -212,7 +212,7 @@ def post_query_to_fastapi(
         user_id (str): The user ID.
         app_name (str): The name of the application.
         session_id (str): The session ID for which the query is posted.
-        user_query (str): The user's query text to be processed by the LLM.
+        messages_list (list[dict]): A list of messages, each with {"role", "content"}.
         user_msg_id (str): The UUID for the user's message.
         system_msg_id (str): The UUID for the system message.
         assistant_msg_id (str): The UUID for the assistant's message.
@@ -227,7 +227,7 @@ def post_query_to_fastapi(
 
     # NOTE: I deleted file option. If it's necessary, use multipart/form-data for file uploads.
     payload = {
-        "query": user_query,
+        "messages": messages_list,
         "user_msg_id": user_msg_id,
         "system_msg_id": system_msg_id,
         "assistant_msg_id": assistant_msg_id,
@@ -618,6 +618,13 @@ def main() -> None:
     # 5) Chat input at the bottom to continue conversation
     user_input: str = st.chat_input("Type your query here...")
     if user_input:
+
+        # 0) Build the array of dicts for the last N or all messages
+        N: int = 6  # Number of messages to keep in the UI
+        messages_to_send = []
+        for msg in messages[-N:]:
+            messages_to_send.append({"role": msg.role, "content": msg.content})
+
         # 1) Compute the next round_id
         if len(messages) > 0:
             last_round_id = max(msg.round_id for msg in messages)
@@ -638,6 +645,7 @@ def main() -> None:
             round_id=new_round_id,
         )
         messages.append(user_msg)
+        messages_to_send.append({"role": "user", "content": user_input})
 
         with st.chat_message("user"):
             st.write(user_input)
@@ -649,7 +657,7 @@ def main() -> None:
                 user_id=st.session_state["user_id"],
                 app_name=app_name,
                 session_id=session_id_for_display,
-                user_query=user_input,
+                messages_list=messages_to_send,
                 user_msg_id=user_msg_id,
                 system_msg_id=system_msg_id,
                 assistant_msg_id=assistant_msg_id,

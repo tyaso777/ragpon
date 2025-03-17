@@ -130,7 +130,7 @@ def stream_chat_completion(
     user_msg_id: str,
     system_msg_id: str,
     assistant_msg_id: str,
-    user_query: str,
+    messages: list[dict],
     retrieved_contexts_str: str,
 ) -> Generator[str, None, None]:
     """
@@ -150,7 +150,8 @@ def stream_chat_completion(
         user_msg_id (str): Unique identifier for the user's message.
         system_msg_id (str): Unique identifier for the system message.
         assistant_msg_id (str): Unique identifier for the assistant's message.
-        user_query (str): The user's query text to be processed by the LLM.
+        messages (list[dict]): A list of messages in the format:
+            [ { "role": "user"/"assistant"/"system", "content": "..." }, ... ]
         retrieved_contexts_str (str): A string containing retrieved context data
             (e.g., from RAG search) to be provided to the LLM.
 
@@ -167,20 +168,30 @@ def stream_chat_completion(
     rerank_model = None  # If you want to pass something else, do so
 
     try:
+        # 1) Build the OpenAI messages array
+        #    We can prepend system instructions + RAG context, then append the conversation
+        openai_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful assistant. In your responses, please "
+                    "include the file names and page numbers that serve as "
+                    "the basis for your statements..."
+                ),
+            },
+            {
+                "role": "system",
+                "content": f"Context: {retrieved_contexts_str}",
+            },
+        ]
+        # Now extend with each item in 'messages'
+        # (We assume each item in messages is already {"role": ..., "content": ...})
+        openai_messages.extend(messages)
+        print(f"{messages=}")
+
         kwargs = {
             "model": MODEL_NAME,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful assistant. In your responses, please "
-                        "include the file names and page numbers that serve as "
-                        "the basis for your statements..."
-                    ),
-                },
-                {"role": "system", "content": f"Context: {retrieved_contexts_str}"},
-                {"role": "user", "content": user_query},
-            ],
+            "messages": openai_messages,
             "temperature": 0.7,
             "stream": True,
         }
@@ -195,6 +206,12 @@ def stream_chat_completion(
                 content = chunk.choices[0].delta.content
                 accumulated_content += content
                 yield f"data: {content}\n\n"
+
+        user_query = ""
+        for msg in reversed(messages):
+            if msg["role"] == "user":
+                user_query = msg["content"]
+                break
 
         # (B) Once streaming is finished, do the mock DB insert
         mock_insert_three_records(
@@ -243,12 +260,19 @@ async def handle_query(user_id: str, app_name: str, session_id: str, request: Re
         system_msg_id = data.get("system_msg_id", "")
         assistant_msg_id = data.get("assistant_msg_id", "")
         round_id = data.get("round_id", 0)
-        user_query = data.get("query", "")
+        messages_list = data.get("messages", [])  # an array of {role, content}
+        # user_query = data.get("query", "")
     except Exception as e:
         return StreamingResponse(
             iter([f"data: Error parsing request: {str(e)}\n\n"]),
             media_type="text/event-stream",
         )
+
+    user_query = ""
+    for msg in reversed(messages_list):
+        if msg["role"] == "user":
+            user_query = msg["content"]
+            break
 
     top_k_for_chroma = 20
     top_k_for_bm25 = 5
@@ -290,7 +314,7 @@ async def handle_query(user_id: str, app_name: str, session_id: str, request: Re
             user_msg_id=user_msg_id,
             system_msg_id=system_msg_id,
             assistant_msg_id=assistant_msg_id,
-            user_query=user_query,
+            messages=messages_list,
             retrieved_contexts_str=retrieved_contexts_str,
         ),
         media_type="text/event-stream",
