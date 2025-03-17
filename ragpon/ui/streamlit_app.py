@@ -321,8 +321,6 @@ def main() -> None:
     st.title("RAG + LLM with Multiple Sessions (Mock)")
 
     # 1) Initialize session_state items
-    if "messages" not in st.session_state:
-        st.session_state["messages"] = []
     if "current_session" not in st.session_state:
         st.session_state["current_session"] = None
     if "user_id" not in st.session_state:
@@ -387,7 +385,6 @@ def main() -> None:
                 session_name=new_session_name,
                 is_private_session=new_session_is_private,
             )
-            st.session_state["messages"] = []
 
             # Hide the create form
             st.session_state["show_create_form"] = False
@@ -417,16 +414,9 @@ def main() -> None:
                 session_name=default_session_name,
                 is_private_session=is_private,
             )
-            st.session_state["messages"] = []
             st.rerun()
         else:
             st.session_state["current_session"] = st.session_state["session_ids"][-1]
-            st.session_state["messages"] = mock_fetch_session_history(
-                server_url=server_url,
-                user_id=user_id,
-                app_name=app_name,
-                session_id=st.session_state["current_session"].session_id,
-            )
 
     # Radio button to choose an existing session
     selected_session_data: SessionData = st.sidebar.radio(
@@ -445,7 +435,10 @@ def main() -> None:
     # If we haven't loaded this session before, fetch from the server
     if selected_session_id not in st.session_state["session_histories"]:
         history: list[dict] = mock_fetch_session_history(
-            server_url, user_id, app_name, selected_session_id
+            server_url=server_url,
+            user_id=user_id,
+            app_name=app_name,
+            session_id=selected_session_id,
         )
         st.session_state["session_histories"][selected_session_id] = history
 
@@ -515,7 +508,6 @@ def main() -> None:
                     == selected_session_data.session_id
                 ):
                     st.session_state["current_session"] = None
-                    st.session_state["messages"] = []
             else:
                 # Perform update (no delete)
                 mock_patch_session_info(
