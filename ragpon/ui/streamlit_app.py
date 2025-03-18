@@ -1,5 +1,6 @@
 import uuid
 from dataclasses import dataclass
+from itertools import islice
 
 import requests
 import streamlit as st
@@ -26,6 +27,37 @@ class Message:
     content: str
     id: str
     round_id: int
+    is_deleted: bool = False  # Default to not deleted
+
+
+def last_n_non_deleted(messages: list[Message], n: int) -> list[Message]:
+    """Returns the last n non-deleted messages in chronological order.
+
+    This function traverses the list of messages from newest to oldest, filters
+    out any messages that have `is_deleted=True`, and then takes up to `n` items.
+    It reverses that subset so the final result is oldest-to-newest.
+
+    Example:
+        Suppose you have 6 messages: M1, M2, M3, M4, M5, M6 (in ascending order).
+        Let M4 and M5 be `is_deleted=True`. If you call:
+            last_n_non_deleted(messages, 3)
+        you might get [M2, M3, M6] in ascending order, ignoring the deleted
+        messages and only returning 3 of the most recent non-deleted ones.
+
+    Args:
+        messages (list[Message]): The full conversation history, assumed to be
+            in ascending chronological order (oldest first).
+        n (int): The maximum number of non-deleted messages to return.
+
+    Returns:
+        list[Message]: Up to n messages (in ascending chronological order)
+        that have `is_deleted=False`. If there are fewer than n non-deleted
+        messages total, all of them are returned.
+    """
+    reversed_filtered = (m for m in reversed(messages) if not m.is_deleted)
+    newest_non_deleted = list(islice(reversed_filtered, n))
+    newest_non_deleted.reverse()
+    return newest_non_deleted
 
 
 #################################
@@ -90,36 +122,42 @@ def mock_fetch_session_history(
                 content="Hi, how can I use this system (session 1234)?",
                 id="usr-1234-1",
                 round_id=0,
+                is_deleted=False,
             ),
             Message(
                 role="assistant",
                 content="Hello! You can ask me anything in 1234.",
                 id="ast-1234-1",
                 round_id=0,
+                is_deleted=False,
             ),
             Message(
                 role="user",
-                content="Could you explain more features for 1234?",
+                content="この質問は捨てられましたか？",
                 id="usr-1234-2",
                 round_id=1,
+                is_deleted=True,
             ),
             Message(
                 role="assistant",
-                content="Sure, here are some more features...",
+                content="この回答が見えていたら失敗です。",
                 id="ast-1234-2",
                 round_id=1,
+                is_deleted=True,
             ),
             Message(
                 role="user",
                 content="Got it. Any advanced tips for session 1234?",
                 id="usr-1234-3",
                 round_id=2,
+                is_deleted=False,
             ),
             Message(
                 role="assistant",
                 content="Yes, here are advanced tips...",
                 id="ast-1234-3",
                 round_id=2,
+                is_deleted=False,
             ),
         ]
 
@@ -130,36 +168,42 @@ def mock_fetch_session_history(
                 content="Hello from session 5678! (Round 1)",
                 id="usr-5678-1",
                 round_id=0,
+                is_deleted=False,
             ),
             Message(
                 role="assistant",
                 content="Hi! This is the 5678 conversation. (Round 1)",
                 id="ast-5678-1",
                 round_id=0,
+                is_deleted=False,
             ),
             Message(
                 role="user",
                 content="Let's discuss something else in 5678. (Round 2)",
                 id="usr-5678-2",
                 round_id=1,
+                is_deleted=False,
             ),
             Message(
                 role="assistant",
                 content="Sure, here's more about 5678. (Round 2)",
                 id="ast-5678-2",
                 round_id=1,
+                is_deleted=False,
             ),
             Message(
                 role="user",
                 content="Any final points for 5678? (Round 3)",
                 id="usr-5678-3",
                 round_id=2,
+                is_deleted=False,
             ),
             Message(
                 role="assistant",
                 content="Yes, final remarks on 5678... (Round 3)",
                 id="ast-5678-3",
                 round_id=2,
+                is_deleted=False,
             ),
         ]
     elif session_id == "9999":
@@ -169,24 +213,28 @@ def mock_fetch_session_history(
                 content="Session 9999: RAG testing.",
                 id="usr-9999-1",
                 round_id=0,
+                is_deleted=False,
             ),
             Message(
                 role="assistant",
                 content="Sure, let's test RAG in session 9999.",
                 id="ast-9999-1",
                 round_id=0,
+                is_deleted=False,
             ),
             Message(
                 role="user",
                 content="アルプスの少女ハイジが好きです。",
                 id="usr-9999-2",
                 round_id=1,
+                is_deleted=False,
             ),
             Message(
                 role="assistant",
                 content="「アルプスの少女ハイジ」は、スイスのアルプス山脈を舞台にした心温まる物語ですね。ハイジの純粋さや自然への愛、友人との絆が描かれていて、多くの人に愛されています。特に、山の美しい風景や、彼女が祖父と過ごす場面は印象的です。あなたの好きなキャラクターやエピソードはありますか？",
                 id="ast-9999-2",
                 round_id=1,
+                is_deleted=False,
             ),
         ]
     else:
@@ -335,6 +383,7 @@ def main() -> None:
     user_id: str = st.session_state["user_id"]
     app_name: str = "search_regulations"
     server_url: str = "http://localhost:8006"  # fixed server URL
+    N: int = 6  # Number of messages to keep in the UI
 
     # 2) Fetch list of sessions from the server (mocked)
     # Ensure that session_ids is initialized
@@ -537,6 +586,8 @@ def main() -> None:
     displayed_round_ids: set[str] = set()
 
     for msg in messages:
+        if msg.is_deleted:
+            continue
         # Only create the chat message block once per message
         with st.chat_message(msg.role):
             st.write(msg.content)
@@ -560,12 +611,10 @@ def main() -> None:
                     deleted_by=user_id,
                 )
                 # 2) Remove user+assistant messages with this round_id locally
-                updated_msgs: list[Message] = [
-                    m for m in messages if m.round_id != msg.round_id
-                ]
-                st.session_state["session_histories"][
-                    session_id_for_display
-                ] = updated_msgs
+                for m in messages:
+                    if m.round_id == msg.round_id:
+                        m.is_deleted = True
+                st.session_state["session_histories"][session_id_for_display] = messages
                 st.rerun()
 
             # Good button
@@ -612,10 +661,10 @@ def main() -> None:
     if user_input:
 
         # 0) Build the array of dicts for the last N or all messages
-        N: int = 6  # Number of messages to keep in the UI
-        messages_to_send = []
-        for msg in messages[-N:]:
-            messages_to_send.append({"role": msg.role, "content": msg.content})
+        last_msgs = last_n_non_deleted(messages, N)
+        messages_to_send = [
+            {"role": msg.role, "content": msg.content} for msg in last_msgs
+        ]
 
         # 1) Compute the next round_id
         if len(messages) > 0:
@@ -635,6 +684,7 @@ def main() -> None:
             content=user_input,
             id=user_msg_id,
             round_id=new_round_id,
+            is_deleted=False,
         )
         messages.append(user_msg)
         messages_to_send.append({"role": "user", "content": user_input})
@@ -677,6 +727,7 @@ def main() -> None:
             content=partial_message_text,
             id=assistant_msg_id,
             round_id=new_round_id,
+            is_deleted=False,
         )
         messages.append(assistant_msg)
         st.rerun()
