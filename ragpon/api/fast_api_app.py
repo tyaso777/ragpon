@@ -187,7 +187,6 @@ def stream_chat_completion(
         # Now extend with each item in 'messages'
         # (We assume each item in messages is already {"role": ..., "content": ...})
         openai_messages.extend(messages)
-        print(f"{messages=}")
 
         kwargs = {
             "model": MODEL_NAME,
