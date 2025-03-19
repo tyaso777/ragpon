@@ -320,9 +320,49 @@ def build_context_string(rag_results: dict) -> str:
     return "\n".join(lines)
 
 
+@app.get("/users/{user_id}/apps/{app_name}/sessions")
+async def list_sessions(user_id: str, app_name: str) -> list[dict]:
+    """
+    Returns a list of sessions for the specified user and application.
+
+    This function currently returns mock data that matches the shape
+    of SessionData. In a real-world implementation, you would query
+    your database or other persistent storage for the sessions
+    belonging to the given user and application.
+
+    Args:
+        user_id (str): The ID of the user.
+        app_name (str): The name of the application.
+
+    Returns:
+        list[dict]: A list of session objects. Each session object
+        contains the keys "session_id", "session_name", and
+        "is_private_session".
+    """
+    logger.info(f"Fetching sessions for user_id={user_id}, app_name={app_name}")
+    # For now, return mock data that matches the shape of SessionData
+    mock_sessions = [
+        {
+            "session_id": "1234",
+            "session_name": "The First session",
+            "is_private_session": False,
+        },
+        {
+            "session_id": "5678",
+            "session_name": "Session 5678",
+            "is_private_session": False,
+        },
+        {
+            "session_id": "9999",
+            "session_name": "Newest session 9999",
+            "is_private_session": True,
+        },
+    ]
+    return mock_sessions
+
+
 @app.post("/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries")
 async def handle_query(user_id: str, app_name: str, session_id: str, request: Request):
-    # (Same as before)
     try:
         data = await request.json()
         user_msg_id = data.get("user_msg_id", "")

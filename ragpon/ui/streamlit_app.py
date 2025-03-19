@@ -101,36 +101,49 @@ def last_n_non_deleted(messages: list[Message], n: int) -> list[Message]:
 #################################
 
 
-def mock_fetch_session_ids(
-    server_url: str, user_id: str, app_name: str
+def fetch_session_ids(
+    server_url: str,
+    user_id: str,
+    app_name: str,
 ) -> list[SessionData]:
     """
-    Simulate fetching a list of session data from the server.
-    Each session is represented as [session_id, session_name, is_private_session].
+    Fetch a list of session data from the FastAPI server via GET:
+      GET /users/{user_id}/apps/{app_name}/sessions
+
+    Each session is expected to have:
+        {
+            "session_id": str,
+            "session_name": str,
+            "is_private_session": bool
+        }
 
     Args:
-        server_url (str): The URL of the backend server.
+        server_url (str): The base URL of the backend server.
         user_id (str): The user ID for which to fetch sessions.
         app_name (str): The name of the application.
 
     Returns:
         list[SessionData]: A list of SessionData objects.
     """
-    return [
-        SessionData(
-            session_id="1234",
-            session_name="The First session",
-            is_private_session=False,
-        ),
-        SessionData(
-            session_id="5678", session_name="Session 5678", is_private_session=False
-        ),
-        SessionData(
-            session_id="9999",
-            session_name="Newest session 9999",
-            is_private_session=True,
-        ),
-    ]
+    endpoint = f"{server_url}/users/{user_id}/apps/{app_name}/sessions"
+    response = requests.get(endpoint)
+    response.raise_for_status()
+
+    # Expecting a JSON array of objects
+    data = response.json()
+
+    # Convert each JSON object into a SessionData instance
+    session_list = []
+    for item in data:
+        session_list.append(
+            SessionData(
+                session_id=item["session_id"],
+                session_name=item["session_name"],
+                is_private_session=item["is_private_session"],
+            )
+        )
+
+    return session_list
 
 
 def mock_fetch_session_history(
@@ -424,7 +437,7 @@ def main() -> None:
     # 2) Fetch list of sessions from the server (mocked)
     # Ensure that session_ids is initialized
     if "session_ids" not in st.session_state:
-        st.session_state["session_ids"] = mock_fetch_session_ids(
+        st.session_state["session_ids"] = fetch_session_ids(
             server_url, user_id, app_name
         )
 
