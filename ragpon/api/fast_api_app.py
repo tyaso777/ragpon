@@ -17,6 +17,7 @@ from ragpon import (
 )
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.api.client_init import create_openai_client
+from ragpon.domain.chat import Message
 from ragpon.tokenizer import SudachiTokenizer
 
 app = FastAPI()
@@ -361,8 +362,164 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
     return mock_sessions
 
 
+@app.get(
+    "/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries",
+    response_model=list[Message],
+)
+async def list_session_queries(
+    user_id: str, app_name: str, session_id: str
+) -> list[Message]:
+    """
+    Retrieve the conversation history for the specified session from mock data.
+
+    Args:
+        user_id (str): The ID of the user who owns the session.
+        app_name (str): The name of the application.
+        session_id (str): The ID of the session to retrieve messages from.
+
+    Returns:
+        list[Message]: A list of messages, each represented by a Message dataclass.
+    """
+    logger.info(
+        f"Retrieving queries for user_id={user_id}, app_name={app_name}, session_id={session_id}"
+    )
+
+    # Mocked session history data (replace with actual DB or logic).
+    # For demonstration, we do a simple if-else to pick which messages to return.
+    # In reality, you'd query your DB or another data source.
+    if session_id == "1234":
+        return [
+            Message(
+                role="user",
+                content="Hi, how can I use this system (session 1234)?",
+                id="usr-1234-1",
+                round_id=0,
+                is_deleted=False,
+            ),
+            Message(
+                role="assistant",
+                content="Hello! You can ask me anything in 1234.",
+                id="ast-1234-1",
+                round_id=0,
+                is_deleted=False,
+            ),
+            Message(
+                role="user",
+                content="この質問は捨てられましたか？",
+                id="usr-1234-2",
+                round_id=1,
+                is_deleted=True,
+            ),
+            Message(
+                role="assistant",
+                content="この回答が見えていたら失敗です。",
+                id="ast-1234-2",
+                round_id=1,
+                is_deleted=True,
+            ),
+            Message(
+                role="user",
+                content="Got it. Any advanced tips for session 1234?",
+                id="usr-1234-3",
+                round_id=2,
+                is_deleted=False,
+            ),
+            Message(
+                role="assistant",
+                content="Yes, here are advanced tips...",
+                id="ast-1234-3",
+                round_id=2,
+                is_deleted=False,
+            ),
+        ]
+    elif session_id == "5678":
+        return [
+            Message(
+                role="user",
+                content="Hello from session 5678! (Round 1)",
+                id="usr-5678-1",
+                round_id=0,
+                is_deleted=False,
+            ),
+            Message(
+                role="assistant",
+                content="Hi! This is the 5678 conversation. (Round 1)",
+                id="ast-5678-1",
+                round_id=0,
+                is_deleted=False,
+            ),
+            Message(
+                role="user",
+                content="Let's discuss something else in 5678. (Round 2)",
+                id="usr-5678-2",
+                round_id=1,
+                is_deleted=False,
+            ),
+            Message(
+                role="assistant",
+                content="Sure, here's more about 5678. (Round 2)",
+                id="ast-5678-2",
+                round_id=1,
+                is_deleted=False,
+            ),
+            Message(
+                role="user",
+                content="Any final points for 5678? (Round 3)",
+                id="usr-5678-3",
+                round_id=2,
+                is_deleted=False,
+            ),
+            Message(
+                role="assistant",
+                content="Yes, final remarks on 5678... (Round 3)",
+                id="ast-5678-3",
+                round_id=2,
+                is_deleted=False,
+            ),
+        ]
+    elif session_id == "9999":
+        return [
+            Message(
+                role="user",
+                content="Session 9999: RAG testing.",
+                id="usr-9999-1",
+                round_id=0,
+                is_deleted=False,
+            ),
+            Message(
+                role="assistant",
+                content="Sure, let's test RAG in session 9999.",
+                id="ast-9999-1",
+                round_id=0,
+                is_deleted=False,
+            ),
+            Message(
+                role="user",
+                content="アルプスの少女ハイジが好きです。",
+                id="usr-9999-2",
+                round_id=1,
+                is_deleted=False,
+            ),
+            Message(
+                role="assistant",
+                content=(
+                    "「アルプスの少女ハイジ」は、スイスのアルプス山脈を舞台にした"
+                    "心温まる物語ですね..."
+                ),
+                id="ast-9999-2",
+                round_id=1,
+                is_deleted=False,
+            ),
+        ]
+    else:
+        # Return an empty list if the session_id is unrecognized
+        return []
+
+
 @app.post("/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries")
-async def handle_query(user_id: str, app_name: str, session_id: str, request: Request):
+async def handle_query(
+    user_id: str, app_name: str, session_id: str, request: Request
+) -> StreamingResponse:
     try:
         data = await request.json()
         user_msg_id = data.get("user_msg_id", "")

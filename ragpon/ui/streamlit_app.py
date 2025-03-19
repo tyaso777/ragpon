@@ -91,148 +91,41 @@ def fetch_session_ids(
     return session_list
 
 
-def mock_fetch_session_history(
+def fetch_session_history(
     server_url: str, user_id: str, app_name: str, session_id: str
 ) -> list[Message]:
     """
-    Simulate fetching the conversation history for a given session.
-    Replace with a real GET request when implemented:
-      GET /users/{user_id}/apps/{app_name}/sessions/{session_id}/queries
+    Fetches the conversation history for a given session from FastAPI.
 
     Args:
-        server_url (str): The URL of the backend server (not used in this mock).
-        user_id (str): The ID of the user who owns the session (not used in this mock).
-        app_name (str): The name of the application (not used in this mock).
-        session_id (str): The unique identifier of the session to retrieve history for.
+        server_url (str): The URL of the backend server (e.g. "http://localhost:8006").
+        user_id (str): The ID of the user who owns the session.
+        app_name (str): The name of the application.
+        session_id (str): The unique identifier of the session.
 
     Returns:
         list[Message]: A list of Message objects representing the conversation history.
     """
+    endpoint = (
+        f"{server_url}/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries"
+    )
+    response = requests.get(endpoint)
+    response.raise_for_status()
+    data = response.json()  # This should be a list of dicts
 
-    if session_id == "1234":
-        return [
-            Message(
-                role="user",
-                content="Hi, how can I use this system (session 1234)?",
-                id="usr-1234-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Hello! You can ask me anything in 1234.",
-                id="ast-1234-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="user",
-                content="この質問は捨てられましたか？",
-                id="usr-1234-2",
-                round_id=1,
-                is_deleted=True,
-            ),
-            Message(
-                role="assistant",
-                content="この回答が見えていたら失敗です。",
-                id="ast-1234-2",
-                round_id=1,
-                is_deleted=True,
-            ),
-            Message(
-                role="user",
-                content="Got it. Any advanced tips for session 1234?",
-                id="usr-1234-3",
-                round_id=2,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Yes, here are advanced tips...",
-                id="ast-1234-3",
-                round_id=2,
-                is_deleted=False,
-            ),
-        ]
+    # Convert each dict to your local Message domain model
+    messages: list[Message] = []
+    for item in data:
+        msg = Message(
+            role=item["role"],
+            content=item["content"],
+            id=item["id"],
+            round_id=item["round_id"],
+            is_deleted=item["is_deleted"],
+        )
+        messages.append(msg)
 
-    elif session_id == "5678":
-        return [
-            Message(
-                role="user",
-                content="Hello from session 5678! (Round 1)",
-                id="usr-5678-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Hi! This is the 5678 conversation. (Round 1)",
-                id="ast-5678-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="user",
-                content="Let's discuss something else in 5678. (Round 2)",
-                id="usr-5678-2",
-                round_id=1,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Sure, here's more about 5678. (Round 2)",
-                id="ast-5678-2",
-                round_id=1,
-                is_deleted=False,
-            ),
-            Message(
-                role="user",
-                content="Any final points for 5678? (Round 3)",
-                id="usr-5678-3",
-                round_id=2,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Yes, final remarks on 5678... (Round 3)",
-                id="ast-5678-3",
-                round_id=2,
-                is_deleted=False,
-            ),
-        ]
-    elif session_id == "9999":
-        return [
-            Message(
-                role="user",
-                content="Session 9999: RAG testing.",
-                id="usr-9999-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Sure, let's test RAG in session 9999.",
-                id="ast-9999-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="user",
-                content="アルプスの少女ハイジが好きです。",
-                id="usr-9999-2",
-                round_id=1,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="「アルプスの少女ハイジ」は、スイスのアルプス山脈を舞台にした心温まる物語ですね。ハイジの純粋さや自然への愛、友人との絆が描かれていて、多くの人に愛されています。特に、山の美しい風景や、彼女が祖父と過ごす場面は印象的です。あなたの好きなキャラクターやエピソードはありますか？",
-                id="ast-9999-2",
-                round_id=1,
-                is_deleted=False,
-            ),
-        ]
-    else:
-        return []
+    return messages
 
 
 def post_query_to_fastapi(
@@ -477,7 +370,7 @@ def main() -> None:
 
     # If we haven't loaded this session before, fetch from the server
     if selected_session_id not in st.session_state["session_histories"]:
-        history: list[dict] = mock_fetch_session_history(
+        history: list[dict] = fetch_session_history(
             server_url=server_url,
             user_id=user_id,
             app_name=app_name,
