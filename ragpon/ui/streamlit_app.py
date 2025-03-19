@@ -174,7 +174,7 @@ def post_query_to_fastapi(
     return response
 
 
-def mock_patch_session_info(
+def patch_session_info(
     server_url: str,
     user_id: str,
     session_id: str,
@@ -183,7 +183,7 @@ def mock_patch_session_info(
     is_deleted: bool = False,
 ) -> None:
     """
-    Simulate (or actually do) a PATCH request to update session info.
+    Sends a PATCH request to update session info in the backend.
 
     Args:
         server_url (str): The URL of the backend server.
@@ -192,6 +192,9 @@ def mock_patch_session_info(
         session_name (str): The new session name.
         is_private_session (bool): The new is_private_session value.
         is_deleted (bool): Whether the session is being marked as deleted.
+
+    Raises:
+        requests.exceptions.RequestException: If the request fails.
     """
     endpoint = f"{server_url}/users/{user_id}/sessions/{session_id}"
     payload = {
@@ -200,11 +203,9 @@ def mock_patch_session_info(
         "is_deleted": is_deleted,
     }
 
-    # Here we simulate a patch call, but in a real scenario:
-    # response = requests.patch(endpoint, json=payload)
-    # response.raise_for_status()
-
-    print(f"[MOCK PATCH] endpoint={endpoint}, payload={payload}")
+    # Perform a real PATCH request
+    response = requests.patch(endpoint, json=payload)
+    response.raise_for_status()  # Raise an error if the request was unsuccessful
 
 
 def mock_delete_round(
@@ -425,7 +426,7 @@ def main() -> None:
         if st.sidebar.button("Update", key="update_session"):
             if delete_this_session:
                 # Perform delete
-                mock_patch_session_info(
+                patch_session_info(
                     server_url=server_url,
                     user_id=user_id,
                     session_id=selected_session_data.session_id,
@@ -446,7 +447,7 @@ def main() -> None:
                     st.session_state["current_session"] = None
             else:
                 # Perform update (no delete)
-                mock_patch_session_info(
+                patch_session_info(
                     server_url=server_url,
                     user_id=user_id,
                     session_id=selected_session_data.session_id,

@@ -3,7 +3,7 @@
 import json
 from typing import Generator
 
-from fastapi import FastAPI, Request
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import StreamingResponse
 
 from ragpon import (
@@ -17,7 +17,7 @@ from ragpon import (
 )
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.api.client_init import create_openai_client
-from ragpon.domain.chat import Message
+from ragpon.domain.chat import Message, SessionUpdate
 from ragpon.tokenizer import SudachiTokenizer
 
 app = FastAPI()
@@ -514,6 +514,38 @@ async def list_session_queries(
     else:
         # Return an empty list if the session_id is unrecognized
         return []
+
+
+@app.patch("/users/{user_id}/sessions/{session_id}")
+async def patch_session_info(
+    user_id: str,
+    session_id: str,
+    update_data: SessionUpdate = Body(...),
+):
+    """
+    Mock endpoint to receive session update data. Prints out the received
+    fields instead of actually updating a database.
+
+    Args:
+        user_id (str): The user ID associated with the session.
+        session_id (str): The ID of the session to be updated.
+        update_data (SessionUpdate): The body payload containing the new
+            session name, privacy flag, and deletion flag.
+
+    Returns:
+        dict: A simple confirmation response indicating success.
+    """
+    logger.info(
+        f"Received PATCH for user_id={user_id}, session_id={session_id} "
+        f"with session_name='{update_data.session_name}', "
+        f"is_private_session={update_data.is_private_session}, "
+        f"is_deleted={update_data.is_deleted}"
+    )
+
+    # Here you'd normally update your DB record:
+    #   e.g. db.update_session(session_id, update_data.session_name, ...)
+
+    return {"status": "ok", "detail": "Mock update successful (no DB logic)."}
 
 
 @app.post("/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries")
