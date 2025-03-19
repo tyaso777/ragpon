@@ -4,7 +4,7 @@ import json
 from typing import Generator
 
 from fastapi import Body, FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ragpon import (
     BaseDocument,
@@ -17,7 +17,12 @@ from ragpon import (
 )
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.api.client_init import create_openai_client
-from ragpon.domain.chat import Message, SessionUpdate
+from ragpon.domain.chat import (
+    DeleteRoundPayload,
+    Message,
+    PatchFeedbackPayload,
+    SessionUpdate,
+)
 from ragpon.tokenizer import SudachiTokenizer
 
 app = FastAPI()
@@ -546,6 +551,22 @@ async def patch_session_info(
     #   e.g. db.update_session(session_id, update_data.session_name, ...)
 
     return {"status": "ok", "detail": "Mock update successful (no DB logic)."}
+
+
+@app.delete("/sessions/{session_id}/rounds/{round_id}")
+async def delete_round(session_id: str, round_id: str, payload: DeleteRoundPayload):
+    # Here we just log or print, but in real code you would update the DB
+    return JSONResponse(
+        {"status": "ok", "msg": "Round deleted (mock DB logic pending)"}
+    )
+
+
+@app.patch("/llm_outputs/{llm_output_id}")
+async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
+    # Here we just log or print, but in real code you would update the DB
+    return JSONResponse(
+        {"status": "ok", "msg": "Feedback patched (mock DB logic pending)"}
+    )
 
 
 @app.post("/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries")

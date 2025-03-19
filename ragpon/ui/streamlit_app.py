@@ -208,14 +208,11 @@ def patch_session_info(
     response.raise_for_status()  # Raise an error if the request was unsuccessful
 
 
-def mock_delete_round(
+def delete_round(
     server_url: str, session_id: str, round_id: str, deleted_by: str
 ) -> None:
     """
-    Simulate deleting a round from the conversation history in the backend.
-    In reality you'd call:
-      DELETE /sessions/{session_id}/rounds/{round_id}
-    with a JSON body: {"is_deleted": True, "deleted_by": <user_id>}
+    Calls the FastAPI endpoint to delete a round (logical delete).
 
     Args:
         server_url (str): The backend server URL.
@@ -225,23 +222,28 @@ def mock_delete_round(
     """
     endpoint = f"{server_url}/sessions/{session_id}/rounds/{round_id}"
     payload = {"is_deleted": True, "deleted_by": deleted_by}
-    print(f"[MOCK DELETE] endpoint={endpoint}, payload={payload}")
+    # Make a DELETE request with a JSON body
+    response = requests.delete(endpoint, json=payload)
+    response.raise_for_status()
 
 
-def mock_patch_feedback(llm_output_id: str, feedback: str, reason: str) -> None:
+def patch_feedback(
+    server_url: str, llm_output_id: str, feedback: str, reason: str
+) -> None:
     """
-    Simulate sending feedback to FastAPI:
-      PATCH /llm_outputs/{id}
-    Body: { "feedback": "good"|"bad", "reason": "..." }
+    Calls the FastAPI endpoint to patch feedback for a given LLM output ID.
 
     Args:
-        llm_output_id (str): The unique ID of the LLM output (msg["id"]).
-        feedback (str): "good" or "bad".
-        reason (str): The user's explanation or comment.
+        server_url (str): The backend server URL.
+        llm_output_id (str): The ID of the LLM output to patch feedback on.
+        feedback (str): "good" or "bad" feedback type.
+        reason (str): The user's explanation or comment for the feedback.
     """
-    endpoint = f"/llm_outputs/{llm_output_id}"
+    endpoint = f"{server_url}/llm_outputs/{llm_output_id}"
     payload = {"feedback": feedback, "reason": reason}
-    print(f"[MOCK PATCH] {endpoint}, payload={payload}")
+    # Make a PATCH request with a JSON body
+    response = requests.patch(endpoint, json=payload)
+    response.raise_for_status()
 
 
 #################################
@@ -492,7 +494,7 @@ def main() -> None:
             if col_trash.button(
                 "🗑️", key=f"delete_{msg.round_id}", help="Delete this round"
             ):
-                mock_delete_round(
+                delete_round(
                     server_url=server_url,
                     session_id=session_id_for_display,
                     round_id=msg.round_id,
@@ -531,7 +533,12 @@ def main() -> None:
             reason_text = feedback_reason
 
             # 1) Call our mock patch function
-            mock_patch_feedback(llm_output_id, feedback_type, reason_text)
+            patch_feedback(
+                server_url=server_url,
+                llm_output_id=llm_output_id,
+                feedback=feedback_type,
+                reason=reason_text,
+            )
 
             # 2) Reset the form
             st.session_state["feedback_form_id"] = None

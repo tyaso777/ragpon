@@ -54,3 +54,28 @@ class Message(BaseModel):
                 "is_deleted": False,
             }
         }
+
+
+class SessionUpdate(BaseModel):
+    """
+    Represents the incoming data to update a session.
+
+    Attributes:
+        session_name (str): The new session name.
+        is_private_session (bool): Whether the session is private.
+        is_deleted (bool): Whether the session is being marked as deleted.
+    """
+
+    session_name: str
+    is_private_session: bool
+    is_deleted: bool = False
+
+
+class DeleteRoundPayload(BaseModel):
+    is_deleted: bool
+    deleted_by: str
+
+
+class PatchFeedbackPayload(BaseModel):
+    feedback: str
+    reason: str
