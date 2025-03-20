@@ -280,6 +280,97 @@ def patch_feedback(
 
 
 #################################
+# Utility / Helper Functions
+#################################
+
+
+def load_session_ids(server_url: str, user_id: str, app_name: str) -> list[SessionData]:
+    """
+    Loads the list of sessions from the server and returns them as a list of SessionData.
+    This was originally inline in the main() function, but refactored for clarity.
+    """
+    # Ensure that session_ids is initialized in the session state.
+    if "session_ids" not in st.session_state:
+        st.session_state["session_ids"] = fetch_session_ids(
+            server_url, user_id, app_name
+        )
+    return st.session_state["session_ids"]
+
+
+def show_create_session_form(server_url: str, user_id: str, app_name: str) -> None:
+    """
+    Renders the UI for creating a new session in the sidebar, and handles the
+    logic of creating the session via put_session_info().
+
+    Args:
+        server_url (str): The base URL for the server.
+        user_id (str): The user ID for whom the session is being created.
+        app_name (str): The application name under which the session is managed.
+    """
+    st.sidebar.write("## Create New Session")
+    # Decide the toggle label
+    if st.session_state["show_create_form"]:
+        create_label = "Cancel Create Session"
+    else:
+        create_label = "Create New Session"
+    # Toggle button for showing/hiding the create session form
+    toggle_create_button: bool = st.sidebar.button(
+        create_label, key="toggle_create_button"
+    )
+    if toggle_create_button:
+        st.session_state["show_create_form"] = not st.session_state["show_create_form"]
+        st.rerun()
+
+    # If the user has toggled the create form on, display it
+    if st.session_state["show_create_form"]:
+        # Input fields for new session
+        new_session_name: str = st.sidebar.text_input(
+            "Session Name", value="No title", key="create_session_name"
+        )
+        new_session_is_private: bool = st.sidebar.radio(
+            "Is Private?", options=[True, False], key="create_is_private"
+        )
+
+        # Button to finalize session creation
+        if st.sidebar.button("Create", key="finalize_create_button"):
+            # Generate a new session ID
+            new_session_id: str = str(uuid.uuid4())
+            try:
+                put_session_info(
+                    server_url=server_url,
+                    user_id=user_id,
+                    session_id=new_session_id,
+                    session_name=new_session_name,
+                    is_private_session=new_session_is_private,
+                )
+
+                # Update local session state
+                st.session_state["session_ids"].append(
+                    SessionData(
+                        session_id=new_session_id,
+                        session_name=new_session_name,
+                        is_private_session=new_session_is_private,
+                    )
+                )
+
+                # Switch to the newly created session
+                st.session_state["current_session"] = SessionData(
+                    session_id=new_session_id,
+                    session_name=new_session_name,
+                    is_private_session=new_session_is_private,
+                )
+
+                # Hide the create form
+                st.session_state["show_create_form"] = False
+
+                # Rerun to refresh the UI
+                st.rerun()
+
+            except requests.exceptions.RequestException as exc:
+                st.error(f"Failed to create a new session: {exc}")
+
+
+#################################
 # Streamlit App
 #################################
 
@@ -306,75 +397,15 @@ def main() -> None:
     user_id: str = st.session_state["user_id"]
     app_name: str = "search_regulations"
     server_url: str = "http://localhost:8006"  # fixed server URL
-    N: int = 6  # Number of messages to keep in the UI
+    num_of_prev_msg_with_llm: int = (
+        6  # Number of messages to keep in the chat with the assistant
+    )
 
-    # 2) Fetch list of sessions from the server (mocked)
-    # Ensure that session_ids is initialized
-    if "session_ids" not in st.session_state:
-        st.session_state["session_ids"] = fetch_session_ids(
-            server_url, user_id, app_name
-        )
+    # 2) Fetch list of sessions from the server.
+    load_session_ids(server_url=server_url, user_id=user_id, app_name=app_name)
 
     # 3) Sidebar: pick a session or create a new one
-    st.sidebar.write("## Create New Session")
-    # Button to show the "Create New Session" form
-    if st.session_state["show_create_form"]:
-        create_label = "Cancel Create Session"
-    else:
-        create_label = "Create New Session"
-    toggle_create_button: bool = st.sidebar.button(
-        create_label, key="toggle_create_button"
-    )
-    if toggle_create_button:
-        st.session_state["show_create_form"] = not st.session_state["show_create_form"]
-        st.rerun()
-
-    # Show the create form if the user clicked "Create New Session"
-    messages: list[dict] = []
-    if st.session_state["show_create_form"]:
-        # Input fields for new session
-        new_session_name: str = st.sidebar.text_input(
-            "Session Name", value="No title", key="create_session_name"
-        )
-        new_session_is_private: bool = st.sidebar.radio(
-            "Is Private?", options=[True, False], key="create_is_private"
-        )
-
-        # Button to finalize session creation
-        if st.sidebar.button("Create", key="finalize_create_button"):
-            # Generate a new session ID
-            new_session_id: str = str(uuid.uuid4())
-            try:
-                put_session_info(
-                    server_url=server_url,
-                    user_id=user_id,
-                    session_id=new_session_id,
-                    session_name=new_session_name,
-                    is_private_session=new_session_is_private,
-                )
-
-                st.session_state["session_ids"].append(
-                    SessionData(
-                        session_id=new_session_id,
-                        session_name=new_session_name,
-                        is_private_session=new_session_is_private,
-                    )
-                )
-                # Switch to the newly created session
-                st.session_state["current_session"] = SessionData(
-                    session_id=new_session_id,
-                    session_name=new_session_name,
-                    is_private_session=new_session_is_private,
-                )
-
-                # Hide the create form
-                st.session_state["show_create_form"] = False
-
-                # Rerun to refresh the UI
-                st.rerun()
-
-            except requests.exceptions.RequestException as exc:
-                st.error(f"Failed to create a new session: {exc}")
+    show_create_session_form(server_url=server_url, user_id=user_id, app_name=app_name)
 
     st.sidebar.write("## Session List")
 
@@ -600,8 +631,8 @@ def main() -> None:
     user_input: str = st.chat_input("Type your query here...")
     if user_input:
 
-        # 0) Build the array of dicts for the last N or all messages
-        last_msgs = last_n_non_deleted(messages, N)
+        # 0) Build the array of dicts for the last num_of_prev_msg_with_llm or all messages
+        last_msgs = last_n_non_deleted(messages, num_of_prev_msg_with_llm)
         messages_to_send = [
             {"role": msg.role, "content": msg.content} for msg in last_msgs
         ]
