@@ -21,6 +21,7 @@ from ragpon.domain.chat import (
     DeleteRoundPayload,
     Message,
     PatchFeedbackPayload,
+    SessionCreate,
     SessionUpdate,
 )
 from ragpon.tokenizer import SudachiTokenizer
@@ -519,6 +520,33 @@ async def list_session_queries(
     else:
         # Return an empty list if the session_id is unrecognized
         return []
+
+
+@app.put("/users/{user_id}/sessions/{session_id}")
+async def create_session(
+    user_id: str, session_id: str, session_data: SessionCreate = Body(...)
+):
+    """
+    Mock endpoint to create a new session. Prints out the received fields instead of actually creating a new session.
+
+    Args:
+        user_id (str): The user ID associated with the session.
+        session_id (str): The ID of the new session.
+        session_data (SessionUpdate): The body payload containing the new session name, privacy flag, and deletion flag.
+
+    Returns:
+        dict: A simple confirmation response indicating success.
+    """
+    logger.info(
+        f"Received PUT for user_id={user_id}, session_id={session_id} "
+        f"with session_name='{session_data.session_name}', "
+        f"is_private_session={session_data.is_private_session}, "
+        f"is_deleted={session_data.is_deleted}"
+    )
+
+    # Here you'd normally create a new session in your DB:
+
+    return {"status": "ok", "detail": "Mock creation successful (no DB logic)."}
 
 
 @app.patch("/users/{user_id}/sessions/{session_id}")

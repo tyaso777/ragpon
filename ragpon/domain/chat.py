@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -15,9 +16,11 @@ class SessionData(BaseModel):
     Represents session information, including an ID, name, and privacy setting.
     """
 
-    session_id: str
-    session_name: str
-    is_private_session: bool
+    session_id: str = Field(..., description="The unique identifier for the session.")
+    session_name: str = Field(..., description="The name of the session.")
+    is_private_session: bool = Field(
+        ..., description="Indicates if the session is private."
+    )
 
 
 class Message(BaseModel):
@@ -56,6 +59,25 @@ class Message(BaseModel):
         }
 
 
+class SessionCreate(BaseModel):
+    """
+    Represents the incoming data for creating a new session.
+
+    Attributes:
+        session_name (str): The name of the new session.
+        is_private_session (bool): Whether the session is private.
+        is_deleted (bool): Whether the session is marked as deleted.
+    """
+
+    session_name: str = Field(..., description="The new session's name/title.")
+    is_private_session: bool = Field(
+        False, description="Whether this session is private."
+    )
+    is_deleted: bool = Field(
+        False, description="Whether this session is marked as deleted."
+    )
+
+
 class SessionUpdate(BaseModel):
     """
     Represents the incoming data to update a session.
@@ -66,16 +88,26 @@ class SessionUpdate(BaseModel):
         is_deleted (bool): Whether the session is being marked as deleted.
     """
 
-    session_name: str
-    is_private_session: bool
-    is_deleted: bool = False
+    session_name: str = Field(None, description="The new session name.")
+    is_private_session: bool = Field(
+        None, description="Whether the session is private."
+    )
+    is_deleted: bool = Field(
+        None, description="Whether the session is marked as deleted."
+    )
 
 
 class DeleteRoundPayload(BaseModel):
-    is_deleted: bool
-    deleted_by: str
+    is_deleted: bool = Field(
+        True, description="Whether the round is marked as deleted."
+    )
+    deleted_by: str = Field(
+        ..., description="The user or assistant who marked the round as deleted."
+    )
 
 
 class PatchFeedbackPayload(BaseModel):
-    feedback: str
-    reason: str
+    feedback: Literal["good", "bad"] = Field(
+        ..., description="The feedback message provided by the user."
+    )
+    reason: str | None = Field(None, description="The reason for the feedback, if any.")

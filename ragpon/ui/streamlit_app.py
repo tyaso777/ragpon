@@ -174,6 +174,39 @@ def post_query_to_fastapi(
     return response
 
 
+def put_session_info(
+    server_url: str,
+    user_id: str,
+    session_id: str,
+    session_name: str,
+    is_private_session: bool,
+    is_deleted: bool = False,
+) -> None:
+    """
+    Sends a PUT request to create or replace session info in the backend.
+
+    Args:
+        server_url (str): The URL of the backend server.
+        user_id (str): The user ID.
+        session_id (str): The session ID to be created or replaced.
+        session_name (str): The new session name.
+        is_private_session (bool): The new is_private_session value.
+        is_deleted (bool): Whether the session is being marked as deleted.
+
+    Raises:
+        requests.exceptions.RequestException: If the request fails.
+    """
+    endpoint = f"{server_url}/users/{user_id}/sessions/{session_id}"
+    payload = {
+        "session_name": session_name,
+        "is_private_session": is_private_session,
+        "is_deleted": is_deleted,
+    }
+
+    response = requests.put(endpoint, json=payload)
+    response.raise_for_status()
+
+
 def patch_session_info(
     server_url: str,
     user_id: str,
@@ -311,25 +344,37 @@ def main() -> None:
         if st.sidebar.button("Create", key="finalize_create_button"):
             # Generate a new session ID
             new_session_id: str = str(uuid.uuid4())
-            st.session_state["session_ids"].append(
-                SessionData(
+            try:
+                put_session_info(
+                    server_url=server_url,
+                    user_id=user_id,
                     session_id=new_session_id,
                     session_name=new_session_name,
                     is_private_session=new_session_is_private,
                 )
-            )
-            # Switch to the newly created session
-            st.session_state["current_session"] = SessionData(
-                session_id=new_session_id,
-                session_name=new_session_name,
-                is_private_session=new_session_is_private,
-            )
 
-            # Hide the create form
-            st.session_state["show_create_form"] = False
+                st.session_state["session_ids"].append(
+                    SessionData(
+                        session_id=new_session_id,
+                        session_name=new_session_name,
+                        is_private_session=new_session_is_private,
+                    )
+                )
+                # Switch to the newly created session
+                st.session_state["current_session"] = SessionData(
+                    session_id=new_session_id,
+                    session_name=new_session_name,
+                    is_private_session=new_session_is_private,
+                )
 
-            # Rerun to refresh the UI
-            st.rerun()
+                # Hide the create form
+                st.session_state["show_create_form"] = False
+
+                # Rerun to refresh the UI
+                st.rerun()
+
+            except requests.exceptions.RequestException as exc:
+                st.error(f"Failed to create a new session: {exc}")
 
     st.sidebar.write("## Session List")
 
