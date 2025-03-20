@@ -297,7 +297,7 @@ def load_session_ids(server_url: str, user_id: str, app_name: str) -> list[Sessi
     return st.session_state["session_ids"]
 
 
-def show_create_session_form(server_url: str, user_id: str, app_name: str) -> None:
+def render_create_session_form(server_url: str, user_id: str, app_name: str) -> None:
     """
     Renders the UI for creating a new session in the sidebar, and handles the
     logic of creating the session via put_session_info().
@@ -370,42 +370,16 @@ def show_create_session_form(server_url: str, user_id: str, app_name: str) -> No
                 st.error(f"Failed to create a new session: {exc}")
 
 
-#################################
-# Streamlit App
-#################################
+def render_session_list(
+    user_id: str,
+    app_name: str,
+    server_url: str,
+) -> SessionData:
+    """Display the list of sessions in the sidebar and return the selected session.
 
-
-def main() -> None:
+    Returns:
+        SessionData: The session selected by the user in the sidebar.
     """
-    Main Streamlit application for demonstrating multi-session RAG+LLM
-    with an ability to delete (is_deleted) a round via a trash button.
-    """
-    st.title("RAG + LLM with Multiple Sessions (Mock)")
-
-    # 1) Initialize session_state items
-    if "current_session" not in st.session_state:
-        st.session_state["current_session"] = None
-    if "user_id" not in st.session_state:
-        st.session_state["user_id"] = "test_user"  # Mock user
-    if "show_edit_form" not in st.session_state:
-        st.session_state["show_edit_form"] = False
-    if "session_histories" not in st.session_state:
-        st.session_state["session_histories"] = {}  # { session_id: [messages], ... }
-    if "show_create_form" not in st.session_state:
-        st.session_state["show_create_form"] = False
-
-    user_id: str = st.session_state["user_id"]
-    app_name: str = "search_regulations"
-    server_url: str = "http://localhost:8006"  # fixed server URL
-    num_of_prev_msg_with_llm: int = (
-        6  # Number of messages to keep in the chat with the assistant
-    )
-
-    # 2) Fetch list of sessions from the server.
-    load_session_ids(server_url=server_url, user_id=user_id, app_name=app_name)
-
-    # 3) Sidebar: pick a session or create a new one
-    show_create_session_form(server_url=server_url, user_id=user_id, app_name=app_name)
 
     st.sidebar.write("## Session List")
 
@@ -431,6 +405,7 @@ def main() -> None:
             )
             st.rerun()
         else:
+            # Default to the most recent session
             st.session_state["current_session"] = st.session_state["session_ids"][-1]
 
     # Radio button to choose an existing session
@@ -443,30 +418,41 @@ def main() -> None:
         key="unique_session_radio",
     )
 
-    # If the form is not shown, assume we're selecting an existing session
+    # Update the current session in session_state
     st.session_state["current_session"] = selected_session_data
     selected_session_id: str = selected_session_data.session_id
 
     # If we haven't loaded this session before, fetch from the server
     if selected_session_id not in st.session_state["session_histories"]:
-        history: list[dict] = fetch_session_history(
-            server_url=server_url,
-            user_id=user_id,
-            app_name=app_name,
-            session_id=selected_session_id,
+        st.session_state["session_histories"][selected_session_id] = (
+            fetch_session_history(
+                server_url=server_url,
+                user_id=user_id,
+                app_name=app_name,
+                session_id=selected_session_id,
+            )
         )
-        st.session_state["session_histories"][selected_session_id] = history
+    return selected_session_data
 
-    # Now point a local variable to the chosen session's messages
-    messages: list[dict] = st.session_state["session_histories"][selected_session_id]
 
+def render_edit_session_form(user_id: str, server_url: str) -> None:
+    """Display the edit/delete form for the currently selected session.
+
+    Args:
+        server_url (str): The base URL of the FastAPI server.
+        user_id (str): The ID of the current user.
+
+    Side Effects:
+        - Potentially calls `patch_session_info` to delete or update session data.
+        - Updates local session list and current session in Streamlit state.
+        - Reruns the Streamlit app after certain user actions.
+    """
     # Display which session is active
     st.write(f"**Current Session**: {st.session_state['current_session']}")
 
     # Edit Session button (single button for both edit and delete)
     st.sidebar.write("## Manage Selected Session")
-
-    if st.session_state["show_edit_form"]:
+    if st.session_state.get("show_edit_form", False):
         edit_label = "Cancel Edit"
     else:
         edit_label = "Edit Session"
@@ -474,15 +460,21 @@ def main() -> None:
     toggle_edit_button: bool = st.sidebar.button(edit_label, key="toggle_edit_button")
 
     if toggle_edit_button:
-        st.session_state["show_edit_form"] = not st.session_state["show_edit_form"]
+        st.session_state["show_edit_form"] = not st.session_state.get(
+            "show_edit_form", False
+        )
         st.rerun()  # so the UI updates immediately
 
-    if st.session_state["show_edit_form"]:
-        # Show a form to edit session name, privacy, or delete
+    # Show or hide the edit form
+    if st.session_state.get("show_edit_form", False):
         st.sidebar.write("### Edit or Delete Session")
+        current_session = st.session_state["current_session"]
+        if current_session is None:
+            st.warning("No session is currently selected.")
+            return
 
-        current_name: str = selected_session_data.session_name
-        current_is_private: bool = selected_session_data.is_private_session
+        current_name: str = current_session.session_name
+        current_is_private: bool = current_session.is_private_session
 
         edited_session_name: str = st.sidebar.text_input(
             "Session Name",
@@ -507,7 +499,7 @@ def main() -> None:
                 patch_session_info(
                     server_url=server_url,
                     user_id=user_id,
-                    session_id=selected_session_data.session_id,
+                    session_id=current_session.session_id,
                     session_name=edited_session_name,
                     is_private_session=edited_is_private,
                     is_deleted=True,
@@ -516,11 +508,11 @@ def main() -> None:
                 st.session_state["session_ids"] = [
                     s
                     for s in st.session_state["session_ids"]
-                    if s.session_id != selected_session_data.session_id
+                    if s.session_id != current_session.session_id
                 ]
                 if (
                     st.session_state["current_session"].session_id
-                    == selected_session_data.session_id
+                    == current_session.session_id
                 ):
                     st.session_state["current_session"] = None
             else:
@@ -528,14 +520,14 @@ def main() -> None:
                 patch_session_info(
                     server_url=server_url,
                     user_id=user_id,
-                    session_id=selected_session_data.session_id,
+                    session_id=current_session.session_id,
                     session_name=edited_session_name,
                     is_private_session=edited_is_private,
                     is_deleted=False,
                 )
                 # Update local data
                 for s in st.session_state["session_ids"]:
-                    if s.session_id == selected_session_data.session_id:
+                    if s.session_id == current_session.session_id:
                         s.session_name = edited_session_name
                         s.is_private_session = edited_is_private
                         break
@@ -543,27 +535,45 @@ def main() -> None:
             st.session_state["show_edit_form"] = False
             st.rerun()
 
-    # 4) Show the existing conversation messages
-    #    We'll display them in order, but note each message has a "round_id".
-    #    If the role is user, we add a trash button to delete that round.
-    session_id_for_display = st.session_state["current_session"].session_id
 
-    # We'll track which round_ids we've displayed (user+assistant pairs).
-    displayed_round_ids: set[str] = set()
+def render_chat_messages(
+    messages: list[Message],
+    server_url: str,
+    session_id_for_display: str,
+    user_id: str,
+) -> None:
+    """
+    Renders the existing conversation messages, including
+    Trash/Good/Bad buttons for assistant messages.
+
+    Args:
+        messages (list[Message]): The list of messages in the conversation.
+        server_url (str): The base URL of the FastAPI server.
+        session_id_for_display (str): The current session's ID.
+        user_id (str): The user ID for the current user.
+
+    Side Effects:
+        - Displays each message via st.chat_message
+        - If user clicks Trash, calls delete_round(...)
+          and marks relevant messages as deleted in local state
+        - If user clicks Good/Bad, sets st.session_state["feedback_form_id"]
+          and st.session_state["feedback_form_type"]
+    """
+    displayed_round_ids: set[int] = set()
 
     for msg in messages:
         if msg.is_deleted:
             continue
-        # Only create the chat message block once per message
+
         with st.chat_message(msg.role):
             st.write(msg.content)
-        # If this is a user message, display the trash button for that round
+
+        # For assistant messages, show the row of Trash/Good/Bad
         if msg.role == "assistant":
-            # To avoid showing multiple trash buttons for the same round,
-            # only show it once.
+            # Only show one trash button per round
             if msg.round_id not in displayed_round_ids:
                 displayed_round_ids.add(msg.round_id)
-            # We'll show three buttons: Trash, Good, Bad
+
             col_trash, col_good, col_bad = st.columns([1, 1, 1])
 
             # Trash icon button
@@ -576,7 +586,7 @@ def main() -> None:
                     round_id=msg.round_id,
                     deleted_by=user_id,
                 )
-                # 2) Remove user+assistant messages with this round_id locally
+                # Mark messages from that round as deleted
                 for m in messages:
                     if m.round_id == msg.round_id:
                         m.is_deleted = True
@@ -595,7 +605,21 @@ def main() -> None:
                 st.session_state["feedback_form_type"] = "bad"
                 st.rerun()
 
-    # Check if we have a pending feedback form
+
+def render_feedback_form(server_url: str) -> None:
+    """
+    Checks if we have a pending feedback form and, if so, displays it.
+    Handles submission (calling patch_feedback) and cancellation.
+
+    Args:
+        server_url (str): The base URL of the FastAPI server.
+
+    Side Effects:
+        - If there's a pending form, shows text area + buttons.
+        - On submit, calls patch_feedback(...) and resets state.
+        - On cancel, resets feedback form state.
+        - Potentially reruns the app after submit/cancel.
+    """
     if (
         "feedback_form_id" in st.session_state
         and st.session_state["feedback_form_id"] is not None
@@ -608,7 +632,6 @@ def main() -> None:
             feedback_type = st.session_state["feedback_form_type"]  # "good" or "bad"
             reason_text = feedback_reason
 
-            # 1) Call our mock patch function
             patch_feedback(
                 server_url=server_url,
                 llm_output_id=llm_output_id,
@@ -616,41 +639,63 @@ def main() -> None:
                 reason=reason_text,
             )
 
-            # 2) Reset the form
+            # Reset the form
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
             st.rerun()
 
-        # If you want a Cancel button for feedback:
         if st.button("Cancel Feedback", key="cancel_feedback"):
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
             st.rerun()
 
-    # 5) Chat input at the bottom to continue conversation
+
+def render_user_chat_input(
+    messages: list[Message],
+    server_url: str,
+    user_id: str,
+    app_name: str,
+    session_id_for_display: str,
+    num_of_prev_msg_with_llm: int,
+) -> None:
+    """
+    Displays a chat input box and, if the user enters text, sends it to the backend
+    and streams the assistant's response.
+
+    Args:
+        messages (list[Message]): The current conversation messages.
+        server_url (str): The base URL of the FastAPI server.
+        user_id (str): The ID of the current user.
+        app_name (str): The name of the application.
+        session_id_for_display (str): The session ID for which messages are posted.
+        num_of_prev_msg_with_llm (int): Number of previous messages to send to the LLM.
+
+    Side Effects:
+        - If the user enters text, appends a user message to `messages`.
+        - Calls post_query_to_fastapi(...) to get a streaming response.
+        - Streams partial responses and appends final assistant message.
+        - Potentially reruns the app after completion.
+    """
     user_input: str = st.chat_input("Type your query here...")
     if user_input:
-
-        # 0) Build the array of dicts for the last num_of_prev_msg_with_llm or all messages
+        # 0) Build the short array of recent non-deleted messages
         last_msgs = last_n_non_deleted(messages, num_of_prev_msg_with_llm)
-        messages_to_send = [
-            {"role": msg.role, "content": msg.content} for msg in last_msgs
-        ]
+        messages_to_send = [{"role": m.role, "content": m.content} for m in last_msgs]
 
         # 1) Compute the next round_id
         if len(messages) > 0:
-            last_round_id = max(msg.round_id for msg in messages)
-            new_round_id: str = last_round_id + 1
+            last_round_id = max(m.round_id for m in messages)
+            new_round_id: int = last_round_id + 1
         else:
-            new_round_id: str = 0
+            new_round_id: int = 0
 
         # 2) Generate UUIDs for user/system/assistant messages
         user_msg_id = str(uuid.uuid4())
         system_msg_id = str(uuid.uuid4())
         assistant_msg_id = str(uuid.uuid4())
 
-        # 3) Add the user's message to local state
-        user_msg: Message = Message(
+        # 3) Add the user's message locally
+        user_msg = Message(
             role="user",
             content=user_input,
             id=user_msg_id,
@@ -665,9 +710,9 @@ def main() -> None:
 
         # 4) Post to FastAPI (streaming)
         try:
-            response: requests.Response = post_query_to_fastapi(
+            response = post_query_to_fastapi(
                 server_url=server_url,
-                user_id=st.session_state["user_id"],
+                user_id=user_id,
                 app_name=app_name,
                 session_id=session_id_for_display,
                 messages_list=messages_to_send,
@@ -677,7 +722,6 @@ def main() -> None:
                 round_id=new_round_id,
             )
         except requests.exceptions.RequestException as e:
-            # If request fails, show error from assistant
             with st.chat_message("assistant"):
                 st.error(f"Request failed: {e}")
             return
@@ -693,7 +737,7 @@ def main() -> None:
                     assistant_msg_placeholder.write(partial_message_text)
 
         # 6) Save final assistant message
-        assistant_msg: Message = Message(
+        assistant_msg = Message(
             role="assistant",
             content=partial_message_text,
             id=assistant_msg_id,
@@ -702,6 +746,78 @@ def main() -> None:
         )
         messages.append(assistant_msg)
         st.rerun()
+
+
+#################################
+# Streamlit App
+#################################
+
+
+def main() -> None:
+    """
+    Main Streamlit application for demonstrating multi-session RAG+LLM
+    with an ability to delete (is_deleted) a round via a trash button.
+    """
+    st.title("RAG + LLM with Multiple Sessions (Mock)")
+
+    # Step 1: Initialize session state
+    if "current_session" not in st.session_state:
+        st.session_state["current_session"] = None
+    if "user_id" not in st.session_state:
+        st.session_state["user_id"] = "test_user"  # Mock user
+    if "show_edit_form" not in st.session_state:
+        st.session_state["show_edit_form"] = False
+    if "session_histories" not in st.session_state:
+        st.session_state["session_histories"] = {}  # { session_id: [messages], ... }
+    if "show_create_form" not in st.session_state:
+        st.session_state["show_create_form"] = False
+
+    user_id: str = st.session_state["user_id"]
+    app_name: str = "search_regulations"
+    server_url: str = "http://localhost:8006"  # fixed server URL
+    num_of_prev_msg_with_llm: int = (
+        6  # Number of messages to keep in the chat with the assistant
+    )
+
+    # Step 2: Fetch list of sessions
+    load_session_ids(server_url=server_url, user_id=user_id, app_name=app_name)
+
+    # Step 3: Sidebar creation form
+    render_create_session_form(
+        server_url=server_url, user_id=user_id, app_name=app_name
+    )
+
+    # Step 4: Sidebar session list
+    render_session_list(user_id=user_id, app_name=app_name, server_url=server_url)
+
+    # Step 5: Sidebar edit/delete form
+    render_edit_session_form(user_id=user_id, server_url=server_url)
+
+    # Step 6: Display conversation messages
+    session_id_for_display = st.session_state["current_session"].session_id
+    messages: list[Message] = st.session_state["session_histories"][
+        session_id_for_display
+    ]
+
+    render_chat_messages(
+        messages=messages,
+        server_url=server_url,
+        session_id_for_display=session_id_for_display,
+        user_id=user_id,
+    )
+
+    # Step 7: Handle feedback form
+    render_feedback_form(server_url=server_url)
+
+    # Step 8: Handle new user input
+    render_user_chat_input(
+        messages=messages,
+        server_url=server_url,
+        user_id=user_id,
+        app_name=app_name,
+        session_id_for_display=session_id_for_display,
+        num_of_prev_msg_with_llm=num_of_prev_msg_with_llm,
+    )
 
 
 if __name__ == "__main__":
