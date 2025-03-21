@@ -138,6 +138,7 @@ def post_query_to_fastapi(
     system_msg_id: str,
     assistant_msg_id: str,
     round_id: int,
+    rag_mode: str,
 ) -> requests.Response:
     """
     Sends a POST request to FastAPI's RAG+LLM endpoint with stream=True.
@@ -152,6 +153,9 @@ def post_query_to_fastapi(
         system_msg_id (str): The UUID for the system message.
         assistant_msg_id (str): The UUID for the assistant's message.
         round_id (int): The round number computed on the client side.
+        rag_mode (str): How to use RAG. One of:
+            "RAG (Optimized Query)", "RAG (Standard)", or "No RAG".
+            Defaults to "RAG (Optimized Query)".
 
     Returns:
         requests.Response: A streaming Response object from the server.
@@ -167,6 +171,7 @@ def post_query_to_fastapi(
         "system_msg_id": system_msg_id,
         "assistant_msg_id": assistant_msg_id,
         "round_id": round_id,
+        "rag_mode": rag_mode,
     }
 
     response = requests.post(endpoint, json=payload, stream=True)
@@ -659,7 +664,8 @@ def render_user_chat_input(
     num_of_prev_msg_with_llm: int,
 ) -> None:
     """
-    Displays a chat input box and, if the user enters text, sends it to the backend
+    Displays a radio button to select a RAG usage mode, a chat input box,
+    and if the user enters text, sends it to the backend with the chosen RAG mode
     and streams the assistant's response.
 
     Args:
@@ -671,30 +677,43 @@ def render_user_chat_input(
         num_of_prev_msg_with_llm (int): Number of previous messages to send to the LLM.
 
     Side Effects:
+        - Displays a radio button to pick how to use RAG (or not).
         - If the user enters text, appends a user message to `messages`.
         - Calls post_query_to_fastapi(...) to get a streaming response.
         - Streams partial responses and appends final assistant message.
         - Potentially reruns the app after completion.
     """
+
+    # 1) Let user pick the RAG usage mode.
+    st.sidebar.write("## RAG Usage Mode")
+    rag_mode: str = st.sidebar.radio(
+        "Choose RAG usage mode",
+        options=["RAG (Optimized Query)", "RAG (Standard)", "No RAG"],
+        index=0,  # default to the first option
+        key="rag_mode_radio",
+    )
+
+    # 2) Provide a chat input box for the user to type their query.
     user_input: str = st.chat_input("Type your query here...")
+
     if user_input:
-        # 0) Build the short array of recent non-deleted messages
+        # 2a) Build the short array of recent non-deleted messages
         last_msgs = last_n_non_deleted(messages, num_of_prev_msg_with_llm)
         messages_to_send = [{"role": m.role, "content": m.content} for m in last_msgs]
 
-        # 1) Compute the next round_id
+        # 2b) Compute the next round_id
         if len(messages) > 0:
             last_round_id = max(m.round_id for m in messages)
             new_round_id: int = last_round_id + 1
         else:
             new_round_id: int = 0
 
-        # 2) Generate UUIDs for user/system/assistant messages
+        # 2c) Generate UUIDs for user/system/assistant messages
         user_msg_id = str(uuid.uuid4())
         system_msg_id = str(uuid.uuid4())
         assistant_msg_id = str(uuid.uuid4())
 
-        # 3) Add the user's message locally
+        # 2d) Add the user's message locally
         user_msg = Message(
             role="user",
             content=user_input,
@@ -705,10 +724,11 @@ def render_user_chat_input(
         messages.append(user_msg)
         messages_to_send.append({"role": "user", "content": user_input})
 
+        # Display the user message immediately
         with st.chat_message("user"):
             st.write(user_input)
 
-        # 4) Post to FastAPI (streaming)
+        # 3) Post to FastAPI (streaming)
         try:
             response = post_query_to_fastapi(
                 server_url=server_url,
@@ -720,13 +740,14 @@ def render_user_chat_input(
                 system_msg_id=system_msg_id,
                 assistant_msg_id=assistant_msg_id,
                 round_id=new_round_id,
+                rag_mode=rag_mode,
             )
         except requests.exceptions.RequestException as e:
             with st.chat_message("assistant"):
                 st.error(f"Request failed: {e}")
             return
 
-        # 5) Stream partial assistant responses
+        # 4) Stream partial assistant responses
         partial_message_text: str = ""
         with st.chat_message("assistant"):
             assistant_msg_placeholder = st.empty()
@@ -736,7 +757,7 @@ def render_user_chat_input(
                     partial_message_text += chunk
                     assistant_msg_placeholder.write(partial_message_text)
 
-        # 6) Save final assistant message
+        # 5) Save final assistant message
         assistant_msg = Message(
             role="assistant",
             content=partial_message_text,

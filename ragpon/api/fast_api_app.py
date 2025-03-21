@@ -1,6 +1,7 @@
 # %%
 # FastAPI side
 import json
+import logging
 from typing import Generator
 
 from fastapi import Body, FastAPI, Request
@@ -45,11 +46,11 @@ embedder = ChromaDBEmbeddingAdapter(RuriLargeEmbedderCTranslate2(config=config))
 # Initialize logger
 logger = get_library_logger(__name__)
 
-# import logging
+# logging settings for debugging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
-# logging.basicConfig(
-#     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-# )
 
 chroma_repo = ChromaDBRepository(
     collection_name="pdf_collection",
@@ -86,6 +87,8 @@ def mock_insert_three_records(
     total_stream_content: str,
     llm_model: str,
     rerank_model: str | None,
+    rag_mode: str,
+    optimized_queries: list[str] | None = None,
 ) -> None:
     """
     Mocks inserting three records (user/system/assistant) into the DB.
@@ -105,6 +108,8 @@ def mock_insert_three_records(
         total_stream_content (str): The complete assistant's streamed response.
         llm_model (str): The model name used (e.g., GPT-4).
         rerank_model (str | None): The reranker model, if any (None here).
+        rag_mode (str): The mode used for generating queries from RAG results.
+        optimized_queries (list[str] | None): The optimized queries, if any.
     """
     logger.info("[MOCK INSERT] Storing 3 records in the DB with the following data:")
     logger.info(
@@ -121,9 +126,15 @@ def mock_insert_three_records(
         assistant_msg_id,
     )
     logger.info("  user_query=%s", user_query)
-    # logger.info("  retrieved_contexts_str=%s", retrieved_contexts_str)
+    logger.info("  retrieved_contexts_str=%s", retrieved_contexts_str)
     logger.info("  total_stream_content=%s", total_stream_content)
-    logger.info("  llm_model=%s, rerank_model=%s", llm_model, rerank_model)
+    logger.info(
+        "  llm_model=%s, rerank_model=%s, rag_mode=%s",
+        llm_model,
+        rerank_model,
+        rag_mode,
+    )
+    logger.info("  optimized_queries=%s", str(optimized_queries))
 
 
 def generate_queries_from_history(
@@ -209,6 +220,8 @@ def stream_chat_completion(
     assistant_msg_id: str,
     messages: list[dict],
     retrieved_contexts_str: str,
+    rag_mode: str,
+    optimized_queries: list[str] | None = None,
 ) -> Generator[str, None, None]:
     """
     Generates a streaming response for the user's query by calling the LLM, then
@@ -231,10 +244,13 @@ def stream_chat_completion(
             [ { "role": "user"/"assistant"/"system", "content": "..." }, ... ]
         retrieved_contexts_str (str): A string containing retrieved context data
             (e.g., from RAG search) to be provided to the LLM.
+        rag_mode (str): The mode to use for generating queries from rag results.
+        optimized_queries (list[str] | None, optional): A list of optimized queries.
 
     Yields:
         str: SSE data chunks in the format "data: ...\\n\\n" for each partial response
-        from the LLM. Also yields a final "[DONE]" marker if streaming completes
+        from the LLM. Also yields a
+        final "[DONE]" marker if streaming completes
         successfully.
 
     Raises:
@@ -246,24 +262,30 @@ def stream_chat_completion(
 
     try:
         # 1) Build the OpenAI messages array
-        #    We can prepend system instructions + RAG context, then append the conversation
-        openai_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful assistant. In your responses, please "
-                    "include the file names and page numbers that serve as "
-                    "the basis for your statements..."
-                ),
-            },
-            {
-                "role": "system",
-                "content": f"Context: {retrieved_contexts_str}",
-            },
-        ]
-        # Now extend with each item in 'messages'
-        # (We assume each item in messages is already {"role": ..., "content": ...})
-        openai_messages.extend(messages)
+        if rag_mode == "No RAG":
+            openai_messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+            ]
+            openai_messages.extend(messages)
+        else:
+            #    We can prepend system instructions + RAG context, then append the conversation
+            openai_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful assistant. In your responses, please "
+                        "include the file names and page numbers that serve as "
+                        "the basis for your statements..."
+                    ),
+                },
+                {
+                    "role": "system",
+                    "content": f"Context: {retrieved_contexts_str}",
+                },
+            ]
+            # Now extend with each item in 'messages'
+            # (We assume each item in messages is already {"role": ..., "content": ...})
+            openai_messages.extend(messages)
 
         kwargs = {
             "model": MODEL_NAME,
@@ -303,6 +325,8 @@ def stream_chat_completion(
             total_stream_content=accumulated_content,
             llm_model=MODEL_NAME,
             rerank_model=rerank_model,
+            rag_mode=rag_mode,
+            optimized_queries=optimized_queries,
         )
 
     except Exception as e:
@@ -608,7 +632,7 @@ async def handle_query(
         assistant_msg_id = data.get("assistant_msg_id", "")
         round_id = data.get("round_id", 0)
         messages_list = data.get("messages", [])  # an array of {role, content}
-        # user_query = data.get("query", "")
+        rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
     except Exception as e:
         return StreamingResponse(
             iter([f"data: Error parsing request: {str(e)}\n\n"]),
@@ -621,29 +645,53 @@ async def handle_query(
             user_query = msg["content"]
             break
 
-    # Example usage of generate_queries_from_history, if needed:
-    instructions = (
-        "Your task is to reconstruct the user’s request from the conversation above so it can "
-        "effectively retrieve relevant documents using both vector search and BM25+ search in **Japanese**. "
-        "If needed, split the request into multiple queries. You must respond **only** with "
-        "strictly valid JSON, containing an array of objects, each with a single 'query' key. "
-        "No extra text or explanation is allowed. For example:\n"
-        "[\n"
-        '  {"query": "Example query 1"},\n'
-        '  {"query": "Example query 2"}\n'
-        "]\n"
-        "If only one query is sufficient, you may include just one object. Make sure you "
-        "accurately capture the user’s intent, adding any relevant context if necessary to "
-        "produce clear, natural-sounding queries."
-    )
-
-    try:
-        optimized_queries = generate_queries_from_history(messages_list, instructions)
-        logger.info(f"Optimized queries from LLM: {optimized_queries}")
-    except ValueError as exc:
-        logger.warning(
-            f"Failed to generate optimized queries. Using fallback. Error: {exc}"
+    if rag_mode == "No RAG":
+        retrieved_contexts_str = ""
+        return StreamingResponse(
+            stream_chat_completion(
+                user_id=user_id,
+                session_id=session_id,
+                app_name=app_name,
+                round_id=round_id,
+                user_msg_id=user_msg_id,
+                system_msg_id=system_msg_id,
+                assistant_msg_id=assistant_msg_id,
+                messages=messages_list,
+                retrieved_contexts_str=retrieved_contexts_str,
+                rag_mode=rag_mode,
+                optimized_queries=None,
+            ),
+            media_type="text/event-stream",
         )
+
+    if rag_mode == "RAG (Optimized Query)":
+        # Example usage of generate_queries_from_history, if needed:
+        instructions = (
+            "Your task is to reconstruct the user’s request from the conversation above so it can "
+            "effectively retrieve relevant documents using both vector search and BM25+ search in **Japanese**. "
+            "If needed, split the request into multiple queries. You must respond **only** with "
+            "strictly valid JSON, containing an array of objects, each with a single 'query' key. "
+            "No extra text or explanation is allowed. For example:\n"
+            "[\n"
+            '  {"query": "Example query 1"},\n'
+            '  {"query": "Example query 2"}\n'
+            "]\n"
+            "If only one query is sufficient, you may include just one object. Make sure you "
+            "accurately capture the user’s intent, adding any relevant context if necessary to "
+            "produce clear, natural-sounding queries."
+        )
+
+        try:
+            optimized_queries = generate_queries_from_history(
+                messages_list, instructions
+            )
+            logger.info(f"Optimized queries from LLM: {optimized_queries}")
+        except ValueError as exc:
+            logger.warning(
+                f"Failed to generate optimized queries. Using fallback. Error: {exc}"
+            )
+            optimized_queries = [user_query]
+    else:
         optimized_queries = [user_query]
 
     search_results = {
@@ -697,6 +745,8 @@ async def handle_query(
             assistant_msg_id=assistant_msg_id,
             messages=messages_list,
             retrieved_contexts_str=retrieved_contexts_str,
+            rag_mode=rag_mode,
+            optimized_queries=optimized_queries,
         ),
         media_type="text/event-stream",
     )
