@@ -139,6 +139,7 @@ def post_query_to_fastapi(
     assistant_msg_id: str,
     round_id: int,
     rag_mode: str,
+    use_reranker: bool,
 ) -> requests.Response:
     """
     Sends a POST request to FastAPI's RAG+LLM endpoint with stream=True.
@@ -156,6 +157,7 @@ def post_query_to_fastapi(
         rag_mode (str): How to use RAG. One of:
             "RAG (Optimized Query)", "RAG (Standard)", or "No RAG".
             Defaults to "RAG (Optimized Query)".
+        use_reranker (bool): Whether to use the reranker.
 
     Returns:
         requests.Response: A streaming Response object from the server.
@@ -172,6 +174,7 @@ def post_query_to_fastapi(
         "assistant_msg_id": assistant_msg_id,
         "round_id": round_id,
         "rag_mode": rag_mode,
+        "use_reranker": use_reranker,
     }
 
     response = requests.post(endpoint, json=payload, stream=True)
@@ -315,9 +318,9 @@ def render_create_session_form(server_url: str, user_id: str, app_name: str) -> 
     st.sidebar.write("## Create New Session")
     # Decide the toggle label
     if st.session_state["show_create_form"]:
-        create_label = "Cancel Create Session"
+        create_label = "🆕Cancel Create Session"
     else:
-        create_label = "Create New Session"
+        create_label = "🆕Create New Session"
     # Toggle button for showing/hiding the create session form
     toggle_create_button: bool = st.sidebar.button(
         create_label, key="toggle_create_button"
@@ -330,10 +333,10 @@ def render_create_session_form(server_url: str, user_id: str, app_name: str) -> 
     if st.session_state["show_create_form"]:
         # Input fields for new session
         new_session_name: str = st.sidebar.text_input(
-            "Session Name", value="No title", key="create_session_name"
+            "📛Session Name", value="No title", key="create_session_name"
         )
         new_session_is_private: bool = st.sidebar.radio(
-            "Is Private?", options=[True, False], key="create_is_private"
+            "🙈Is Private?", options=[True, False], key="create_is_private"
         )
 
         # Button to finalize session creation
@@ -386,7 +389,7 @@ def render_session_list(
         SessionData: The session selected by the user in the sidebar.
     """
 
-    st.sidebar.write("## Session List")
+    st.sidebar.write("## 👉Session List")
 
     # If no session has been chosen yet, default to the first in the list
     if st.session_state["current_session"] is None:
@@ -416,7 +419,7 @@ def render_session_list(
     # Radio button to choose an existing session
     selected_session_data: SessionData = st.sidebar.radio(
         "Choose a session:",
-        st.session_state["session_ids"][::-1],
+        sorted(st.session_state["session_ids"], key=lambda x: x.session_name),
         format_func=lambda x: (
             f"{x.session_name} (Private)" if x.is_private_session else x.session_name
         ),
@@ -458,9 +461,9 @@ def render_edit_session_form(user_id: str, server_url: str) -> None:
     # Edit Session button (single button for both edit and delete)
     st.sidebar.write("## Manage Selected Session")
     if st.session_state.get("show_edit_form", False):
-        edit_label = "Cancel Edit"
+        edit_label = "✏️Cancel Edit"
     else:
-        edit_label = "Edit Session"
+        edit_label = "✏️Edit Session"
 
     toggle_edit_button: bool = st.sidebar.button(edit_label, key="toggle_edit_button")
 
@@ -482,21 +485,19 @@ def render_edit_session_form(user_id: str, server_url: str) -> None:
         current_is_private: bool = current_session.is_private_session
 
         edited_session_name: str = st.sidebar.text_input(
-            "Session Name",
+            "📛Session Name",
             value=current_name,
             key="edit_session_name",
         )
         edited_is_private: bool = st.sidebar.radio(
-            "Is Private?",
+            "🙈Is Private?",
             options=[True, False],
             index=0 if current_is_private else 1,
             key="edit_is_private",
         )
 
         # "Delete this session?" as a checkbox
-        delete_this_session: bool = st.sidebar.checkbox(
-            "Delete this session?", key="delete_session"
-        )
+        delete_this_session: bool = st.sidebar.checkbox("🗑️", key="delete_session")
 
         if st.sidebar.button("Update", key="update_session"):
             if delete_this_session:
@@ -599,13 +600,13 @@ def render_chat_messages(
                 st.rerun()
 
             # Good button
-            if col_good.button("Good", key=f"good_{msg.id}"):
+            if col_good.button("😊", key=f"good_{msg.id}"):
                 st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "good"
                 st.rerun()
 
             # Bad button
-            if col_bad.button("Bad", key=f"bad_{msg.id}"):
+            if col_bad.button("😞", key=f"bad_{msg.id}"):
                 st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "bad"
                 st.rerun()
@@ -678,6 +679,7 @@ def render_user_chat_input(
 
     Side Effects:
         - Displays a radio button to pick how to use RAG (or not).
+        - Displays a radio button to pick whether to use the reranker.
         - If the user enters text, appends a user message to `messages`.
         - Calls post_query_to_fastapi(...) to get a streaming response.
         - Streams partial responses and appends final assistant message.
@@ -685,12 +687,21 @@ def render_user_chat_input(
     """
 
     # 1) Let user pick the RAG usage mode.
-    st.sidebar.write("## RAG Usage Mode")
+    st.sidebar.write("## 🔍RAG Mode")
     rag_mode: str = st.sidebar.radio(
-        "Choose RAG usage mode",
+        "Choose RAG mode:",
         options=["RAG (Optimized Query)", "RAG (Standard)", "No RAG"],
         index=0,  # default to the first option
         key="rag_mode_radio",
+    )
+
+    st.sidebar.write("## 🔀Use Reranker")
+    use_reranker: bool = st.sidebar.radio(
+        label="Choose whether to use the Reranker:",
+        options=[False],  # Only one option for now
+        format_func=lambda x: "Yes" if x else "No",  # 表示を"Yes"/"No"に変換
+        index=0,  # Default to "No"
+        key="use_reranker_radio",
     )
 
     # 2) Provide a chat input box for the user to type their query.
@@ -741,6 +752,7 @@ def render_user_chat_input(
                 assistant_msg_id=assistant_msg_id,
                 round_id=new_round_id,
                 rag_mode=rag_mode,
+                use_reranker=use_reranker,
             )
         except requests.exceptions.RequestException as e:
             with st.chat_message("assistant"):

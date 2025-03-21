@@ -89,6 +89,7 @@ def mock_insert_three_records(
     rerank_model: str | None,
     rag_mode: str,
     optimized_queries: list[str] | None = None,
+    use_reranker: bool = False,
 ) -> None:
     """
     Mocks inserting three records (user/system/assistant) into the DB.
@@ -135,6 +136,7 @@ def mock_insert_three_records(
         rag_mode,
     )
     logger.info("  optimized_queries=%s", str(optimized_queries))
+    logger.info("  use_reranker=%s", use_reranker)
 
 
 def generate_queries_from_history(
@@ -222,6 +224,7 @@ def stream_chat_completion(
     retrieved_contexts_str: str,
     rag_mode: str,
     optimized_queries: list[str] | None = None,
+    use_reranker: bool = False,
 ) -> Generator[str, None, None]:
     """
     Generates a streaming response for the user's query by calling the LLM, then
@@ -246,6 +249,7 @@ def stream_chat_completion(
             (e.g., from RAG search) to be provided to the LLM.
         rag_mode (str): The mode to use for generating queries from rag results.
         optimized_queries (list[str] | None, optional): A list of optimized queries.
+        use_reanker (bool, optional): Whether to use a reranker model. Defaults to False.
 
     Yields:
         str: SSE data chunks in the format "data: ...\\n\\n" for each partial response
@@ -327,6 +331,7 @@ def stream_chat_completion(
             rerank_model=rerank_model,
             rag_mode=rag_mode,
             optimized_queries=optimized_queries,
+            use_reranker=use_reranker,
         )
 
     except Exception as e:
@@ -633,6 +638,7 @@ async def handle_query(
         round_id = data.get("round_id", 0)
         messages_list = data.get("messages", [])  # an array of {role, content}
         rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
+        use_reranker = data.get("use_reranker", False)
     except Exception as e:
         return StreamingResponse(
             iter([f"data: Error parsing request: {str(e)}\n\n"]),
@@ -660,6 +666,7 @@ async def handle_query(
                 retrieved_contexts_str=retrieved_contexts_str,
                 rag_mode=rag_mode,
                 optimized_queries=None,
+                use_reranker=use_reranker,
             ),
             media_type="text/event-stream",
         )
@@ -731,6 +738,8 @@ async def handle_query(
     )
 
     # please write rerank process
+    if use_reranker:
+        pass
 
     retrieved_contexts_str = build_context_string(enhanced_results)
 
@@ -747,6 +756,7 @@ async def handle_query(
             retrieved_contexts_str=retrieved_contexts_str,
             rag_mode=rag_mode,
             optimized_queries=optimized_queries,
+            use_reranker=use_reranker,
         ),
         media_type="text/event-stream",
     )
