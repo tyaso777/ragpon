@@ -28,6 +28,9 @@ class ChromaDBRepository(AbstractRepository[TMetadata, TResult]):
         similarity: str = "cosine",
         folder_path: Optional[str] = None,
         batch_size: int = 100,
+        connection_mode: str = "local",  # "local" or "http"
+        http_url: Optional[str] = None,
+        port: Optional[int] = None,
     ):
         logger.info("Initializing ChromaDB for collection: %s", collection_name)
         self.collection_name = collection_name
@@ -39,8 +42,25 @@ class ChromaDBRepository(AbstractRepository[TMetadata, TResult]):
         self.metadata_class = metadata_class
         self.result_class = result_class
         self.formatter = ChromaDBResultsFormatter(result_class=result_class)
+        self.connection_mode = connection_mode
         try:
-            if folder_path:
+            if connection_mode == "http":
+                missing_params = []
+                if not http_url:
+                    missing_params.append("http_url")
+                if not port:
+                    missing_params.append("port")
+                if missing_params:
+                    raise ValueError(
+                        f"The following parameters are missing for HTTP connection mode: {', '.join(missing_params)}"
+                    )
+                self.client = chromadb.HttpClient(
+                    host=http_url,
+                    port=port,
+                    settings=Settings(anonymized_telemetry=False),
+                )
+                logger.info("Using HTTP connection at: %s", http_url)
+            elif folder_path:
                 self.client = chromadb.PersistentClient(
                     folder_path, settings=Settings(anonymized_telemetry=False)
                 )
@@ -161,8 +181,19 @@ class ChromaDBRepository(AbstractRepository[TMetadata, TResult]):
             raise
 
     def search(
-        self, query: str, top_k: int = 10, where: Optional[dict] = None
+        self,
+        query: str,
+        top_k: int = 10,
+        where: Optional[dict] = None,
+        query_embeddings: Optional[list] = None,
     ) -> list[TResult]:
+        if self.connection_mode == "http" and query_embeddings is None:
+            logger.error(
+                "HTTP connection mode requires query_embeddings to be provided, but got None."
+            )
+            raise ValueError(
+                "query_embeddings must be provided when using HTTP connection mode."
+            )
         try:
             logger.info(
                 "Searching in collection: %s with query: '%s'",
@@ -170,19 +201,31 @@ class ChromaDBRepository(AbstractRepository[TMetadata, TResult]):
                 query,
             )
 
-            prefixed_query = f"{self.query_prefix}{query}"
-
-            if where is None:
-                search_result = self.collection.query(
-                    query_texts=prefixed_query,
-                    n_results=top_k,
-                )
+            if query_embeddings is not None:
+                if where is None:
+                    search_result = self.collection.query(
+                        query_embeddings=query_embeddings,
+                        n_results=top_k,
+                    )
+                else:
+                    search_result = self.collection.query(
+                        query_embeddings=query_embeddings,
+                        n_results=top_k,
+                        where=where,
+                    )
             else:
-                search_result = self.collection.query(
-                    query_texts=prefixed_query,
-                    n_results=top_k,
-                    where=where,
-                )
+                prefixed_query = f"{self.query_prefix}{query}"
+                if where is None:
+                    search_result = self.collection.query(
+                        query_texts=prefixed_query,
+                        n_results=top_k,
+                    )
+                else:
+                    search_result = self.collection.query(
+                        query_texts=prefixed_query,
+                        n_results=top_k,
+                        where=where,
+                    )
             results = self.formatter.format(search_result)
             logger.info(
                 "Search completed successfully. Retrieved %d results.", len(results)
