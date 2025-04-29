@@ -185,6 +185,7 @@ def post_query_to_fastapi(
 def put_session_info(
     server_url: str,
     user_id: str,
+    app_name: str,
     session_id: str,
     session_name: str,
     is_private_session: bool,
@@ -204,7 +205,7 @@ def put_session_info(
     Raises:
         requests.exceptions.RequestException: If the request fails.
     """
-    endpoint = f"{server_url}/users/{user_id}/sessions/{session_id}"
+    endpoint = f"{server_url}/users/{user_id}/apps/{app_name}/sessions/{session_id}"
     payload = {
         "session_name": session_name,
         "is_private_session": is_private_session,
@@ -347,6 +348,7 @@ def render_create_session_form(server_url: str, user_id: str, app_name: str) -> 
                 put_session_info(
                     server_url=server_url,
                     user_id=user_id,
+                    app_name=app_name,
                     session_id=new_session_id,
                     session_name=new_session_name,
                     is_private_session=new_session_is_private,
@@ -791,7 +793,7 @@ def main() -> None:
     Main Streamlit application for demonstrating multi-session RAG+LLM
     with an ability to delete (is_deleted) a round via a trash button.
     """
-    st.title("RAG + LLM with Multiple Sessions (Mock)")
+    st.title("RAG + LLM Streamlit App")
 
     # Step 1: Initialize session state
     if "current_session" not in st.session_state:

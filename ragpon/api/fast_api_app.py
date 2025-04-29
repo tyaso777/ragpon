@@ -2,10 +2,14 @@
 # FastAPI side
 import json
 import logging
+from datetime import datetime
 from typing import Generator
 
-from fastapi import Body, FastAPI, Request
+import psycopg2
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from psycopg2 import errors
+from psycopg2.pool import SimpleConnectionPool
 
 from ragpon import (
     BaseDocument,
@@ -28,6 +32,26 @@ from ragpon.domain.chat import (
 from ragpon.tokenizer import SudachiTokenizer
 
 app = FastAPI()
+
+db_pool = SimpleConnectionPool(
+    minconn=1,
+    maxconn=10,
+    host="localhost",
+    dbname="postgres",
+    user="postgres",
+    password="postgres123",
+)
+
+
+def get_connection():
+    """Fetch a connection from the pool."""
+    return db_pool.getconn()
+
+
+def put_connection(conn):
+    """Return a connection to the pool."""
+    db_pool.putconn(conn)
+
 
 config = Config(
     config_file=r"D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\examples\sample_config.yml"
@@ -74,7 +98,7 @@ bm25_repo = BM25Repository(
 client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
 
 
-def mock_insert_three_records(
+def insert_three_records(
     user_id: str,
     session_id: str,
     app_name: str,
@@ -90,53 +114,96 @@ def mock_insert_three_records(
     rag_mode: str,
     optimized_queries: list[str] | None = None,
     use_reranker: bool = False,
+    connection: psycopg2.extensions.connection | None = None,
 ) -> None:
     """
-    Mocks inserting three records (user/system/assistant) into the DB.
-    In reality, you'd do a single transaction with three INSERT statements
-    or something similar.
+    Inserts three message records (user, system, assistant) into the messages table
+    using explicit UUIDs and a single atomic transaction.
 
     Args:
-        user_id (str): The user ID.
-        session_id (str): The session ID.
-        app_name (str): The app name.
+        user_id: user id.
+        session_id: UUID of the session.
+        app_name: Application name.
         round_id (int): The round number.
-        user_msg_id (str): ID for the user message.
-        system_msg_id (str): ID for the system message (if any).
-        assistant_msg_id (str): ID for the assistant message.
-        user_query (str): The user's query content.
-        retrieved_contexts_str (str): The retrieved context string from RAG.
-        total_stream_content (str): The complete assistant's streamed response.
-        llm_model (str): The model name used (e.g., GPT-4).
-        rerank_model (str | None): The reranker model, if any (None here).
-        rag_mode (str): The mode used for generating queries from RAG results.
-        optimized_queries (list[str] | None): The optimized queries, if any.
+        user_msg_id: UUID for the user message.
+        system_msg_id: UUID for the system message.
+        assistant_msg_id: UUID for the assistant message.
+        user_query: User input text.
+        retrieved_contexts_str: Context text retrieved from a knowledge base.
+        total_stream_content: Assistant's response content.
+        llm_model: Name of the LLM used (optional).
+        rerank_model: Name of the reranker used (optional).
+        rag_mode: Retrieval-Augmented Generation mode (optional).
+        use_reranker: Whether reranking was used.
+        connection: Active psycopg2 PostgreSQL connection.
     """
-    logger.info("[MOCK INSERT] Storing 3 records in the DB with the following data:")
-    logger.info(
-        "  user_id=%s, session_id=%s, app_name=%s, round_id=%d",
-        user_id,
-        session_id,
-        app_name,
-        round_id,
-    )
-    logger.info(
-        "  user_msg_id=%s, system_msg_id=%s, assistant_msg_id=%s",
-        user_msg_id,
-        system_msg_id,
-        assistant_msg_id,
-    )
-    logger.info("  user_query=%s", user_query)
-    logger.info("  retrieved_contexts_str=%s", retrieved_contexts_str)
-    logger.info("  total_stream_content=%s", total_stream_content)
-    logger.info(
-        "  llm_model=%s, rerank_model=%s, rag_mode=%s",
-        llm_model,
-        rerank_model,
-        rag_mode,
-    )
-    logger.info("  optimized_queries=%s", str(optimized_queries))
-    logger.info("  use_reranker=%s", use_reranker)
+    created_at = datetime.now()
+
+    system_content = retrieved_contexts_str
+    if optimized_queries:
+        system_content += "\n\n--- Optimized Queries ---\n" + "\n".join(
+            optimized_queries
+        )
+
+    records = [
+        {
+            "id": user_msg_id,
+            "message_type": "user",
+            "content": user_query,
+            "created_by": user_id,
+        },
+        {
+            "id": system_msg_id,
+            "message_type": "system",
+            "content": system_content,
+            "created_by": "system",
+        },
+        {
+            "id": assistant_msg_id,
+            "message_type": "assistant",
+            "content": total_stream_content,
+            "created_by": "assistant",
+        },
+    ]
+
+    with connection:
+        with connection.cursor() as cursor:
+            for record in records:
+                cursor.execute(
+                    """
+                    INSERT INTO messages (
+                        id, round_id, user_id, session_id, app_name,
+                        content, message_type,
+                        created_at, created_by,
+                        is_deleted,
+                        llm_model, use_reranker, rerank_model,
+                        rag_mode
+                    ) VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s,
+                        %s, %s,
+                        %s,
+                        %s, %s, %s,
+                        %s
+                    )
+                    """,
+                    (
+                        record["id"],
+                        round_id,
+                        user_id,
+                        session_id,
+                        app_name,
+                        record["content"],
+                        record["message_type"],
+                        created_at,
+                        record["created_by"],
+                        False,
+                        llm_model,
+                        use_reranker,
+                        rerank_model,
+                        rag_mode,
+                    ),
+                )
 
 
 def generate_queries_from_history(
@@ -185,7 +252,7 @@ def generate_queries_from_history(
     }
 
     if OPENAI_TYPE == "azure" and DEPLOYMENT_ID is not None:
-        kwargs["deployment_id"] = DEPLOYMENT_ID
+        kwargs["model"] = DEPLOYMENT_ID
 
     # 3) Call the OpenAI ChatCompletion API
     response = client.chat.completions.create(**kwargs)
@@ -225,6 +292,7 @@ def stream_chat_completion(
     rag_mode: str,
     optimized_queries: list[str] | None = None,
     use_reranker: bool = False,
+    conn: psycopg2.extensions.connection | None = None,
 ) -> Generator[str, None, None]:
     """
     Generates a streaming response for the user's query by calling the LLM, then
@@ -249,7 +317,8 @@ def stream_chat_completion(
             (e.g., from RAG search) to be provided to the LLM.
         rag_mode (str): The mode to use for generating queries from rag results.
         optimized_queries (list[str] | None, optional): A list of optimized queries.
-        use_reanker (bool, optional): Whether to use a reranker model. Defaults to False.
+        use_reranker (bool, optional): Whether to use a reranker model. Defaults to False.
+        conn (psycopg2.extensions.connection, optional): A live PostgreSQL connection used to insert records.
 
     Yields:
         str: SSE data chunks in the format "data: ...\\n\\n" for each partial response
@@ -298,16 +367,20 @@ def stream_chat_completion(
             "stream": True,
         }
         if OPENAI_TYPE == "azure":
-            kwargs["deployment_id"] = DEPLOYMENT_ID
+            kwargs["model"] = DEPLOYMENT_ID
 
         response = client.chat.completions.create(**kwargs)
 
         # (A) Yield chunks to the client and accumulate them
         for chunk in response:
-            if chunk.choices[0].delta.content is not None:
-                content = chunk.choices[0].delta.content
-                accumulated_content += content
-                yield f"data: {content}\n\n"
+            try:
+                if chunk.choices and chunk.choices[0].delta.content is not None:
+                    content = chunk.choices[0].delta.content
+                    accumulated_content += content
+                    yield f"data: {content}\n\n"
+            except (IndexError, AttributeError) as e:
+                logger.warning(f"Error processing chunk: {e}")
+                logger.debug(f"Problematic chunk: {chunk}")
 
         user_query = ""
         for msg in reversed(messages):
@@ -316,23 +389,29 @@ def stream_chat_completion(
                 break
 
         # (B) Once streaming is finished, do the mock DB insert
-        mock_insert_three_records(
-            user_id=user_id,
-            session_id=session_id,
-            app_name=app_name,
-            round_id=round_id,
-            user_msg_id=user_msg_id,
-            system_msg_id=system_msg_id,
-            assistant_msg_id=assistant_msg_id,
-            user_query=user_query,
-            retrieved_contexts_str=retrieved_contexts_str,
-            total_stream_content=accumulated_content,
-            llm_model=MODEL_NAME,
-            rerank_model=rerank_model,
-            rag_mode=rag_mode,
-            optimized_queries=optimized_queries,
-            use_reranker=use_reranker,
-        )
+
+        conn = get_connection()
+        try:
+            insert_three_records(
+                user_id=user_id,
+                session_id=session_id,
+                app_name=app_name,
+                round_id=round_id,
+                user_msg_id=user_msg_id,
+                system_msg_id=system_msg_id,
+                assistant_msg_id=assistant_msg_id,
+                user_query=user_query,
+                retrieved_contexts_str=retrieved_contexts_str,
+                total_stream_content=accumulated_content,
+                llm_model=MODEL_NAME,
+                rerank_model=rerank_model,
+                rag_mode=rag_mode,
+                optimized_queries=optimized_queries,
+                use_reranker=use_reranker,
+                connection=conn,
+            )
+        finally:
+            put_connection(conn)
 
     except Exception as e:
         yield f"data: Error during streaming: {str(e)}\n\n"
@@ -361,40 +440,49 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
     """
     Returns a list of sessions for the specified user and application.
 
-    This function currently returns mock data that matches the shape
-    of SessionData. In a real-world implementation, you would query
-    your database or other persistent storage for the sessions
-    belonging to the given user and application.
+    This fetches session_id, session_name, and is_private_session
+    from the sessions table where is_deleted = FALSE.
 
     Args:
         user_id (str): The ID of the user.
         app_name (str): The name of the application.
 
     Returns:
-        list[dict]: A list of session objects. Each session object
-        contains the keys "session_id", "session_name", and
-        "is_private_session".
+        list[dict]: A list of session objects.
     """
     logger.info(f"Fetching sessions for user_id={user_id}, app_name={app_name}")
-    # For now, return mock data that matches the shape of SessionData
-    mock_sessions = [
-        {
-            "session_id": "1234",
-            "session_name": "The First session",
-            "is_private_session": False,
-        },
-        {
-            "session_id": "5678",
-            "session_name": "Session 5678",
-            "is_private_session": False,
-        },
-        {
-            "session_id": "9999",
-            "session_name": "Newest session 9999",
-            "is_private_session": True,
-        },
-    ]
-    return mock_sessions
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT session_id, session_name, is_private_session
+                FROM sessions
+                WHERE user_id = %s
+                  AND app_name = %s
+                  AND is_deleted = FALSE
+                ORDER BY created_at DESC
+                """,
+                (user_id, app_name),
+            )
+            rows = cursor.fetchall()
+
+        sessions = [
+            {
+                "session_id": str(row[0]),
+                "session_name": row[1],
+                "is_private_session": row[2],
+            }
+            for row in rows
+        ]
+        return sessions
+
+    except Exception as e:
+        logger.exception("Failed to fetch sessions.")
+        raise HTTPException(status_code=500, detail="Failed to retrieve sessions.")
+    finally:
+        put_connection(conn)
 
 
 @app.get(
@@ -405,161 +493,64 @@ async def list_session_queries(
     user_id: str, app_name: str, session_id: str
 ) -> list[Message]:
     """
-    Retrieve the conversation history for the specified session from mock data.
-
-    Args:
-        user_id (str): The ID of the user who owns the session.
-        app_name (str): The name of the application.
-        session_id (str): The ID of the session to retrieve messages from.
-
-    Returns:
-        list[Message]: A list of messages, each represented by a Message dataclass.
+    Retrieve user and assistant messages for a specific session,
+    ensuring user_id and app_name match, ordered by round_id.
     """
+    conn = get_connection()
+
     logger.info(
-        f"Retrieving queries for user_id={user_id}, app_name={app_name}, session_id={session_id}"
+        f"Querying messages: user_id={user_id}, app_name={app_name}, session_id={session_id}"
     )
 
-    # Mocked session history data (replace with actual DB or logic).
-    # For demonstration, we do a simple if-else to pick which messages to return.
-    # In reality, you'd query your DB or another data source.
-    if session_id == "1234":
-        return [
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, round_id, message_type, content, is_deleted
+                FROM messages
+                WHERE user_id = %s
+                  AND app_name = %s
+                  AND session_id = %s
+                  AND message_type IN ('user', 'assistant')
+                ORDER BY round_id ASC
+                """,
+                (user_id, app_name, session_id),
+            )
+            rows = cursor.fetchall()
+
+        messages = [
             Message(
-                role="user",
-                content="Hi, how can I use this system (session 1234)?",
-                id="usr-1234-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Hello! You can ask me anything in 1234.",
-                id="ast-1234-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="user",
-                content="この質問は捨てられましたか？",
-                id="usr-1234-2",
-                round_id=1,
-                is_deleted=True,
-            ),
-            Message(
-                role="assistant",
-                content="この回答が見えていたら失敗です。",
-                id="ast-1234-2",
-                round_id=1,
-                is_deleted=True,
-            ),
-            Message(
-                role="user",
-                content="Got it. Any advanced tips for session 1234?",
-                id="usr-1234-3",
-                round_id=2,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Yes, here are advanced tips...",
-                id="ast-1234-3",
-                round_id=2,
-                is_deleted=False,
-            ),
+                id=str(row[0]),
+                round_id=row[1],
+                role=row[2],
+                content=row[3],
+                is_deleted=row[4],
+            )
+            for row in rows
         ]
-    elif session_id == "5678":
-        return [
-            Message(
-                role="user",
-                content="Hello from session 5678! (Round 1)",
-                id="usr-5678-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Hi! This is the 5678 conversation. (Round 1)",
-                id="ast-5678-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="user",
-                content="Let's discuss something else in 5678. (Round 2)",
-                id="usr-5678-2",
-                round_id=1,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Sure, here's more about 5678. (Round 2)",
-                id="ast-5678-2",
-                round_id=1,
-                is_deleted=False,
-            ),
-            Message(
-                role="user",
-                content="Any final points for 5678? (Round 3)",
-                id="usr-5678-3",
-                round_id=2,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Yes, final remarks on 5678... (Round 3)",
-                id="ast-5678-3",
-                round_id=2,
-                is_deleted=False,
-            ),
-        ]
-    elif session_id == "9999":
-        return [
-            Message(
-                role="user",
-                content="Session 9999: RAG testing.",
-                id="usr-9999-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content="Sure, let's test RAG in session 9999.",
-                id="ast-9999-1",
-                round_id=0,
-                is_deleted=False,
-            ),
-            Message(
-                role="user",
-                content="アルプスの少女ハイジが好きです。",
-                id="usr-9999-2",
-                round_id=1,
-                is_deleted=False,
-            ),
-            Message(
-                role="assistant",
-                content=(
-                    "「アルプスの少女ハイジ」は、スイスのアルプス山脈を舞台にした"
-                    "心温まる物語ですね..."
-                ),
-                id="ast-9999-2",
-                round_id=1,
-                is_deleted=False,
-            ),
-        ]
-    else:
-        # Return an empty list if the session_id is unrecognized
+
+        return messages
+
+    except Exception as e:
+        logger.exception("Failed to list session queries.")
         return []
+    finally:
+        put_connection(conn)
 
 
-@app.put("/users/{user_id}/sessions/{session_id}")
+@app.put("/users/{user_id}/apps/{app_name}/sessions/{session_id}")
 async def create_session(
-    user_id: str, session_id: str, session_data: SessionCreate = Body(...)
+    user_id: str,
+    app_name: str,
+    session_id: str,
+    session_data: SessionCreate = Body(...),
 ):
     """
     Mock endpoint to create a new session. Prints out the received fields instead of actually creating a new session.
 
     Args:
         user_id (str): The user ID associated with the session.
+        app_name (str): The name of the application context.
         session_id (str): The ID of the new session.
         session_data (SessionUpdate): The body payload containing the new session name, privacy flag, and deletion flag.
 
@@ -567,15 +558,53 @@ async def create_session(
         dict: A simple confirmation response indicating success.
     """
     logger.info(
-        f"Received PUT for user_id={user_id}, session_id={session_id} "
-        f"with session_name='{session_data.session_name}', "
+        f"Creating session: user_id={user_id}, app_name={app_name}, session_id={session_id}, "
+        f"session_name='{session_data.session_name}', "
         f"is_private_session={session_data.is_private_session}, "
         f"is_deleted={session_data.is_deleted}"
     )
 
-    # Here you'd normally create a new session in your DB:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO sessions (
+                    user_id, session_id, app_name, session_name,
+                    is_private_session, created_at, created_by,
+                    updated_at, updated_by, is_deleted, deleted_by
+                ) VALUES (
+                    %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s, %s
+                )
+                """,
+                (
+                    user_id,
+                    session_id,
+                    app_name,
+                    session_data.session_name,
+                    session_data.is_private_session,
+                    datetime.now(),
+                    user_id,
+                    datetime.now(),
+                    user_id,
+                    session_data.is_deleted,
+                    user_id,
+                ),
+            )
+            conn.commit()
+        return {"status": "ok", "detail": "Session created successfully."}
 
-    return {"status": "ok", "detail": "Mock creation successful (no DB logic)."}
+    except errors.UniqueViolation:
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="Session already exists.")
+    except Exception as e:
+        conn.rollback()
+        logger.exception("Failed to create session.")
+        raise HTTPException(status_code=500, detail="Internal server error.")
+    finally:
+        put_connection(conn)
 
 
 @app.patch("/users/{user_id}/sessions/{session_id}")
@@ -585,45 +614,171 @@ async def patch_session_info(
     update_data: SessionUpdate = Body(...),
 ):
     """
-    Mock endpoint to receive session update data. Prints out the received
-    fields instead of actually updating a database.
+    Updates session information in the sessions table.
 
     Args:
         user_id (str): The user ID associated with the session.
         session_id (str): The ID of the session to be updated.
-        update_data (SessionUpdate): The body payload containing the new
-            session name, privacy flag, and deletion flag.
+        update_data (SessionUpdate): New session name, flags, etc.
 
     Returns:
-        dict: A simple confirmation response indicating success.
+        dict: Status response.
     """
     logger.info(
-        f"Received PATCH for user_id={user_id}, session_id={session_id} "
-        f"with session_name='{update_data.session_name}', "
+        f"PATCH session info: user_id={user_id}, session_id={session_id}, "
+        f"session_name='{update_data.session_name}', "
         f"is_private_session={update_data.is_private_session}, "
         f"is_deleted={update_data.is_deleted}"
     )
 
-    # Here you'd normally update your DB record:
-    #   e.g. db.update_session(session_id, update_data.session_name, ...)
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE sessions
+                SET session_name = %s,
+                    is_private_session = %s,
+                    is_deleted = %s,
+                    updated_at = %s,
+                    updated_by = %s
+                WHERE user_id = %s
+                  AND session_id = %s
+                """,
+                (
+                    update_data.session_name,
+                    update_data.is_private_session,
+                    update_data.is_deleted,
+                    datetime.now(),
+                    user_id,
+                    user_id,
+                    session_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Session not found")
 
-    return {"status": "ok", "detail": "Mock update successful (no DB logic)."}
+            conn.commit()
+
+        return JSONResponse({"status": "ok", "detail": "Session updated successfully."})
+
+    except HTTPException:
+        raise
+    except Exception:
+        conn.rollback()
+        logger.exception("Failed to update session.")
+        raise HTTPException(status_code=500, detail="Internal server error.")
+    finally:
+        put_connection(conn)
 
 
 @app.delete("/sessions/{session_id}/rounds/{round_id}")
-async def delete_round(session_id: str, round_id: str, payload: DeleteRoundPayload):
-    # Here we just log or print, but in real code you would update the DB
-    return JSONResponse(
-        {"status": "ok", "msg": "Round deleted (mock DB logic pending)"}
+async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPayload):
+    """
+    Logically deletes all messages in the given round for the specified session.
+
+    Args:
+        session_id (str): The UUID of the session.
+        round_id (int): The round number (e.g., 0, 1, 2).
+        payload (DeleteRoundPayload): Includes who performed the deletion.
+
+    Returns:
+        JSONResponse: Confirmation message.
+    """
+    logger.info(
+        f"Deleting round {round_id} from session {session_id} by {payload.deleted_by}"
     )
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE messages
+                SET is_deleted = TRUE,
+                    deleted_by = %s,
+                    updated_at = %s,
+                    updated_by = %s
+                WHERE session_id = %s
+                  AND round_id = %s
+                  AND is_deleted = FALSE
+                """,
+                (
+                    payload.deleted_by,
+                    datetime.now(),
+                    payload.deleted_by,
+                    session_id,
+                    round_id,
+                ),
+            )
+            conn.commit()
+
+        return JSONResponse(
+            {
+                "status": "ok",
+                "msg": f"Round {round_id} deleted in session {session_id}.",
+            }
+        )
+
+    except Exception:
+        conn.rollback()
+        logger.exception("Failed to delete round.")
+        raise HTTPException(status_code=500, detail="Failed to delete round.")
+    finally:
+        put_connection(conn)
 
 
 @app.patch("/llm_outputs/{llm_output_id}")
 async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
-    # Here we just log or print, but in real code you would update the DB
-    return JSONResponse(
-        {"status": "ok", "msg": "Feedback patched (mock DB logic pending)"}
+    """
+    Patch feedback for a specific LLM output message in the messages table.
+
+    Args:
+        llm_output_id (str): The UUID of the assistant message.
+        payload (PatchFeedbackPayload): Contains feedback type and reason.
+
+    Returns:
+        JSONResponse: Confirmation message.
+    """
+    logger.info(
+        f"Patching feedback for id={llm_output_id}: feedback={payload.feedback}, reason={payload.reason}"
     )
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE messages
+                SET feedback = %s,
+                    feedback_reason = %s,
+                    feedback_at = %s,
+                    updated_at = %s
+                WHERE id = %s
+                  AND message_type = 'assistant'
+                """,
+                (
+                    payload.feedback,
+                    payload.reason,
+                    datetime.now(),
+                    datetime.now(),
+                    llm_output_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="LLM output not found")
+
+            conn.commit()
+
+        return JSONResponse({"status": "ok", "msg": "Feedback patched successfully."})
+
+    except HTTPException:
+        raise
+    except Exception:
+        conn.rollback()
+        logger.exception("Failed to patch feedback.")
+        raise HTTPException(status_code=500, detail="Failed to patch feedback.")
+    finally:
+        put_connection(conn)
 
 
 @app.post("/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries")
@@ -653,23 +808,28 @@ async def handle_query(
 
     if rag_mode == "No RAG":
         retrieved_contexts_str = ""
-        return StreamingResponse(
-            stream_chat_completion(
-                user_id=user_id,
-                session_id=session_id,
-                app_name=app_name,
-                round_id=round_id,
-                user_msg_id=user_msg_id,
-                system_msg_id=system_msg_id,
-                assistant_msg_id=assistant_msg_id,
-                messages=messages_list,
-                retrieved_contexts_str=retrieved_contexts_str,
-                rag_mode=rag_mode,
-                optimized_queries=None,
-                use_reranker=use_reranker,
-            ),
-            media_type="text/event-stream",
-        )
+        try:
+            conn = get_connection()
+            return StreamingResponse(
+                stream_chat_completion(
+                    user_id=user_id,
+                    session_id=session_id,
+                    app_name=app_name,
+                    round_id=round_id,
+                    user_msg_id=user_msg_id,
+                    system_msg_id=system_msg_id,
+                    assistant_msg_id=assistant_msg_id,
+                    messages=messages_list,
+                    retrieved_contexts_str=retrieved_contexts_str,
+                    rag_mode=rag_mode,
+                    optimized_queries=None,
+                    use_reranker=use_reranker,
+                    conn=conn,
+                ),
+                media_type="text/event-stream",
+            )
+        finally:
+            put_connection(conn)
 
     if rag_mode == "RAG (Optimized Query)":
         # Example usage of generate_queries_from_history, if needed:
@@ -743,20 +903,25 @@ async def handle_query(
 
     retrieved_contexts_str = build_context_string(enhanced_results)
 
-    return StreamingResponse(
-        stream_chat_completion(
-            user_id=user_id,
-            session_id=session_id,
-            app_name=app_name,
-            round_id=round_id,
-            user_msg_id=user_msg_id,
-            system_msg_id=system_msg_id,
-            assistant_msg_id=assistant_msg_id,
-            messages=messages_list,
-            retrieved_contexts_str=retrieved_contexts_str,
-            rag_mode=rag_mode,
-            optimized_queries=optimized_queries,
-            use_reranker=use_reranker,
-        ),
-        media_type="text/event-stream",
-    )
+    conn = get_connection()
+    try:
+        return StreamingResponse(
+            stream_chat_completion(
+                user_id=user_id,
+                session_id=session_id,
+                app_name=app_name,
+                round_id=round_id,
+                user_msg_id=user_msg_id,
+                system_msg_id=system_msg_id,
+                assistant_msg_id=assistant_msg_id,
+                messages=messages_list,
+                retrieved_contexts_str=retrieved_contexts_str,
+                rag_mode=rag_mode,
+                optimized_queries=optimized_queries,
+                use_reranker=use_reranker,
+                conn=conn,
+            ),
+            media_type="text/event-stream",
+        )
+    finally:
+        put_connection(conn)
