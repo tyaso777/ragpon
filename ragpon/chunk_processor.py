@@ -112,7 +112,7 @@ class SingleChunkProcessor(AbstractChunkProcessor):
 
 
 class JAGinzaChunkProcessor(AbstractChunkProcessor):
-    def __init__(self, chunk_size: int = 100):
+    def __init__(self, chunk_size: int = 100, MAX_NLP_INPUT_LENGTH: int = 8000):
         """
         Initializes the JAGinzaChunkProcessor with a specified chunk size.
 
@@ -122,12 +122,34 @@ class JAGinzaChunkProcessor(AbstractChunkProcessor):
         try:
             self.nlp = spacy.load("ja_ginza")
             self.chunk_size = chunk_size
+            self.MAX_NLP_INPUT_LENGTH = MAX_NLP_INPUT_LENGTH
             logger.info("Initialized JAGinzaChunkProcessor.")
         except Exception as e:
             logger.error(f"Error initializing JAGinzaChunkProcessor: {e}")
             raise ChunkProcessingError(
                 "Failed to initialize JAGinzaChunkProcessor."
             ) from e
+
+    def _safe_nlp_sents(self, text: str) -> list[str]:
+        """
+        Applies the NLP model on text in chunks to avoid hitting model limits.
+
+        Args:
+            text (str): The full text to process.
+
+        Returns:
+            list[str]: List of sentence strings.
+        """
+        sentences: list[str] = []
+        for i in range(0, len(text), self.MAX_NLP_INPUT_LENGTH):
+            partial = text[i : i + self.MAX_NLP_INPUT_LENGTH]
+            try:
+                sentences.extend([str(span) for span in self.nlp(partial).sents])
+            except Exception as e:
+                logger.warning(
+                    f"Failed to process text block [{i}:{i+self.MAX_NLP_INPUT_LENGTH}]: {e}"
+                )
+        return sentences
 
     def process(self, text: str) -> list[str]:
         """
@@ -147,14 +169,13 @@ class JAGinzaChunkProcessor(AbstractChunkProcessor):
             chunks: list[str] = []
             current_chunk: list[str] = []
             current_size: int = 0
-            for span in self.nlp(text).sents:
-                strspan = str(span)
-                if current_chunk and current_size + len(strspan) > self.chunk_size:
+            for sentence in self._safe_nlp_sents(text):
+                if current_chunk and current_size + len(sentence) > self.chunk_size:
                     chunks.append("".join(current_chunk))
                     current_chunk = []
                     current_size = 0
-                current_chunk.append(strspan)
-                current_size += len(strspan)
+                current_chunk.append(sentence)
+                current_size += len(sentence)
             if current_chunk:
                 chunks.append("".join(current_chunk))
             logger.info(f"Processed text into {len(chunks)} chunks using JAGinza.")
