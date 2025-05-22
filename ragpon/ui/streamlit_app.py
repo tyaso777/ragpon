@@ -401,18 +401,27 @@ def render_session_list(
             default_session_name = "Default Session"
             is_private = True
 
-            st.session_state["session_ids"].append(
-                SessionData(
+            try:
+                # Register the session on the FastAPI side
+                put_session_info(
+                    server_url=server_url,
+                    user_id=user_id,
+                    app_name=app_name,
                     session_id=new_session_id,
                     session_name=default_session_name,
                     is_private_session=is_private,
                 )
-            )
-            st.session_state["current_session"] = SessionData(
+            except requests.exceptions.RequestException as exc:
+                st.error(f"Failed to register default session to server: {exc}")
+
+            new_session = SessionData(
                 session_id=new_session_id,
                 session_name=default_session_name,
                 is_private_session=is_private,
             )
+
+            st.session_state["session_ids"].append(SessionData(new_session))
+            st.session_state["current_session"] = SessionData(new_session)
             st.rerun()
         else:
             # Default to the most recent session
