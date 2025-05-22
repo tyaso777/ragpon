@@ -420,8 +420,8 @@ def render_session_list(
                 is_private_session=is_private,
             )
 
-            st.session_state["session_ids"].append(SessionData(new_session))
-            st.session_state["current_session"] = SessionData(new_session)
+            st.session_state["session_ids"].append(new_session)
+            st.session_state["current_session"] = new_session
             st.rerun()
         else:
             # Default to the most recent session
