@@ -42,7 +42,6 @@ doc_service.process_file(str(pdf_path))
 doc_service.process_file(str(word_path))
 
 # %%
-%%time
 # 検索する
 doc_service.search(query="投資信託のリスク")
 
@@ -158,8 +157,14 @@ reranked_results2
 
 # %%
 config = Config(config_path)
-config.set("DATABASES.BM25_PATH", "D:\\Users\\AtsushiSuzuki\\OneDrive\\デスクトップ\\test\\ragpon\\ragpon\\examples\\db\\bm25")
-config.set("DATABASES.CHROMADB_FOLDER_PATH", "D:\\Users\\AtsushiSuzuki\\OneDrive\\デスクトップ\\test\\ragpon\\ragpon\\examples\\db")
+config.set(
+    "DATABASES.BM25_PATH",
+    "D:\\Users\\AtsushiSuzuki\\OneDrive\\デスクトップ\\test\\ragpon\\ragpon\\examples\\db\\bm25",
+)
+config.set(
+    "DATABASES.CHROMADB_FOLDER_PATH",
+    "D:\\Users\\AtsushiSuzuki\\OneDrive\\デスクトップ\\test\\ragpon\\ragpon\\examples\\db",
+)
 config.config
 
 # %%
