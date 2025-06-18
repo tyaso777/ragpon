@@ -337,7 +337,10 @@ def stream_chat_completion(
         # 1) Build the OpenAI messages array
         if rag_mode == "No RAG":
             openai_messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant. Please answer in Japanese.",
+                },
             ]
             openai_messages.extend(messages)
         else:
@@ -348,7 +351,7 @@ def stream_chat_completion(
                     "content": (
                         "You are a helpful assistant. In your responses, please "
                         "include the file names and page numbers that serve as "
-                        "the basis for your statements..."
+                        "the basis for your statements.  Please answer in Japanese."
                     ),
                 },
                 {
@@ -867,8 +870,8 @@ async def handle_query(
     }
 
     for query in optimized_queries:
-        top_k_for_chroma = 20 // (len(optimized_queries))
-        top_k_for_bm25 = 8 // (len(optimized_queries))
+        top_k_for_chroma = 12 // (len(optimized_queries))
+        top_k_for_bm25 = 4 // (len(optimized_queries))
         enhance_num_brefore = 2
         enhance_num_after = 3
 
