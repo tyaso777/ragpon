@@ -316,6 +316,15 @@ def render_create_session_form(server_url: str, user_id: str, app_name: str) -> 
         user_id (str): The user ID for whom the session is being created.
         app_name (str): The application name under which the session is managed.
     """
+    MAX_SESSION_COUNT = 10
+    current_session_count = len(st.session_state.get("session_ids", []))
+
+    if current_session_count >= MAX_SESSION_COUNT:
+        st.sidebar.write(
+            f"🚫 Session limit reached ({MAX_SESSION_COUNT}). Delete existing sessions to create new ones."
+        )
+        return
+
     st.sidebar.write("## Create New Session")
     # Decide the toggle label
     if st.session_state["show_create_form"]:
