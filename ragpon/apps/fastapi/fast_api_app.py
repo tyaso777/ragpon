@@ -3,6 +3,7 @@
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Generator
 
 import psycopg2
@@ -36,7 +37,7 @@ app = FastAPI()
 db_pool = SimpleConnectionPool(
     minconn=1,
     maxconn=10,
-    host="localhost",
+    host="postgres",
     dbname="postgres",
     user="postgres",
     password="postgres123",
@@ -53,17 +54,8 @@ def put_connection(conn):
     db_pool.putconn(conn)
 
 
-config = Config(
-    config_file=r"D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\examples\sample_config.yml"
-)
-config.set(
-    "DATABASES.BM25_PATH",
-    "D:\\Users\\AtsushiSuzuki\\OneDrive\\デスクトップ\\test\\ragpon\\ragpon\\examples\\db\\bm25",
-)
-config.set(
-    "DATABASES.CHROMADB_FOLDER_PATH",
-    "D:\\Users\\AtsushiSuzuki\\OneDrive\\デスクトップ\\test\\ragpon\\ragpon\\examples\\db",
-)
+base_path = Path(__file__).parent
+config = Config(config_file=base_path / "config" / "sample_config.yml")
 
 embedder = ChromaDBEmbeddingAdapter(RuriLargeEmbedderCTranslate2(config=config))
 
@@ -84,7 +76,7 @@ chroma_repo = ChromaDBRepository(
     similarity="cosine",
     connection_mode="http",
     folder_path=None,
-    http_url="localhost",
+    http_url="chromadb",
     port=8007,
 )
 

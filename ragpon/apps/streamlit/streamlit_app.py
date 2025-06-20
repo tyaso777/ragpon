@@ -827,7 +827,7 @@ def main() -> None:
 
     user_id: str = st.session_state["user_id"]
     app_name: str = "search_regulations"
-    server_url: str = "http://localhost:8006"  # fixed server URL
+    server_url: str = "http://ragpon-fastapi:8006"  # fixed server URL
     num_of_prev_msg_with_llm: int = (
         6  # Number of messages to keep in the chat with the assistant
     )

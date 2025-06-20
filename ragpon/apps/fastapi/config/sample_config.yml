@@ -1,0 +1,10 @@
+MODELS:
+  CL_NAGOYA_RURI_LARGE_MODEL_PATH: "/app/ragpon/apps/fastapi/models/models--cl-nagoya--ruri-large/snapshots/b002b3abdd50a07f60b0b6776d09f549f9971a53"
+  RURI_RERANKER_LARGE_PATH: "/root/.cache/huggingface/models--cl-nagoya--ruri-reranker-large/snapshots/010b79ca3eb4d55b32abb63a1822278f29e9c809"
+
+DATABASES:
+  USE_BM25: "False"  # Set to "True" to enable BM25
+  BM25_PATH: "/app/ragpon/apps/fastapi/db/bm25"  # Set to "None" for in-memory mode or provide a file path
+  USE_CHROMADB: "True"  # Set to "True" to enable ChromaDB
+  CHROMADB_COLLECTION_NAME: "pdf_collection"  # Name of the ChromaDB collection
+  CHROMADB_FOLDER_PATH: "/app/ragpon/apps/fastapi/db"  # Folder path for ChromaDB storage, or "None" for in-memory
