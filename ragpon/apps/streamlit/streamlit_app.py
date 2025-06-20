@@ -1,3 +1,4 @@
+import json
 import uuid
 from itertools import islice
 
@@ -780,14 +781,33 @@ def render_user_chat_input(
             return
 
         # 4) Stream partial assistant responses
-        partial_message_text: str = ""
+        # Initialize buffer for streaming
+        buf = ""
+        partial_message_text = ""
+        SSE_DATA_PREFIX = "data: "
         with st.chat_message("assistant"):
-            assistant_msg_placeholder = st.empty()
-            for line in response.iter_lines(decode_unicode=True):
-                if line and line.startswith("data: "):
-                    chunk: str = line[len("data: ") :]
-                    partial_message_text += chunk
-                    assistant_msg_placeholder.write(partial_message_text)
+            placeholder = st.empty()
+            for chunk in response.iter_content(decode_unicode=True):
+                buf += chunk
+                while "\n\n" in buf:
+                    event, buf = buf.split("\n\n", 1)
+                    if not event.startswith(SSE_DATA_PREFIX):
+                        continue
+
+                    try:
+                        payload = json.loads(event[len(SSE_DATA_PREFIX) :])
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Invalid JSON: %r", event[len(SSE_DATA_PREFIX) :]
+                        )
+                        continue
+
+                    data = payload.get("data")
+                    if data == "[DONE]":
+                        break
+
+                    partial_message_text += data
+                    placeholder.markdown(partial_message_text, unsafe_allow_html=False)
 
         # 5) Save final assistant message
         assistant_msg = Message(

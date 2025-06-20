@@ -392,10 +392,12 @@ def stream_chat_completion(
                 if chunk.choices and chunk.choices[0].delta.content is not None:
                     content = chunk.choices[0].delta.content
                     accumulated_content += content
-                    yield f"data: {content}\n\n"
+                    yield f"data: {json.dumps({'data': content}, ensure_ascii=False)}\n\n"
             except (IndexError, AttributeError) as e:
                 logger.warning(f"Error processing chunk: {e}")
                 logger.debug(f"Problematic chunk: {chunk}")
+
+        yield f"data: {json.dumps({'data': '[DONE]'}, ensure_ascii=False)}\n\n"
 
         user_query = ""
         for msg in reversed(messages):
