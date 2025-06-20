@@ -19,7 +19,7 @@ from ragpon import (
     ChromaDBRepository,
     Config,
     Document,
-    RuriLargeEmbedderCTranslate2,
+    RuriLargeEmbedder,
 )
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.api.client_init import create_openai_client
@@ -57,7 +57,19 @@ def put_connection(conn):
 base_path = Path(__file__).parent
 config = Config(config_file=base_path / "config" / "sample_config.yml")
 
-embedder = ChromaDBEmbeddingAdapter(RuriLargeEmbedderCTranslate2(config=config))
+# Load feature flags from config
+raw_use_bm25 = config.get("DATABASES.USE_BM25", False)
+if isinstance(raw_use_bm25, str):
+    use_bm25: bool = raw_use_bm25.lower() in ("true", "1", "yes")
+else:
+    use_bm25 = bool(raw_use_bm25)
+raw_use_chromadb = config.get("DATABASES.USE_CHROMADB", False)
+if isinstance(raw_use_chromadb, str):
+    use_chromadb: bool = raw_use_chromadb.lower() in ("true", "1", "yes")
+else:
+    use_chromadb = bool(raw_use_chromadb)
+
+embedder = ChromaDBEmbeddingAdapter(RuriLargeEmbedder(config=config))
 
 # Initialize logger
 logger = get_library_logger(__name__)
@@ -67,24 +79,32 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
-
-chroma_repo = ChromaDBRepository(
-    collection_name="pdf_collection",
-    embed_func=embedder,
-    metadata_class=BaseDocument,
-    result_class=Document,
-    similarity="cosine",
-    connection_mode="http",
-    folder_path=None,
-    http_url="chromadb",
-    port=8007,
+# Instantiate repositories only if enabled in config
+chroma_repo = (
+    ChromaDBRepository(
+        collection_name="pdf_collection",
+        embed_func=embedder,
+        metadata_class=BaseDocument,
+        result_class=Document,
+        similarity="cosine",
+        connection_mode="http",
+        folder_path=None,
+        http_url="chromadb",
+        port=8007,
+    )
+    if use_chromadb
+    else None
 )
 
-bm25_repo = BM25Repository(
-    db_path=config.get("DATABASES.BM25_PATH"),
-    schema=BaseDocument,
-    result_class=Document,
-    tokenizer=SudachiTokenizer(),
+bm25_repo = (
+    BM25Repository(
+        db_path=config.get("DATABASES.BM25_PATH"),
+        schema=BaseDocument,
+        result_class=Document,
+        tokenizer=SudachiTokenizer(),
+    )
+    if use_bm25
+    else None
 )
 
 client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
@@ -412,16 +432,33 @@ def stream_chat_completion(
         yield f"data: Error during streaming: {str(e)}\n\n"
 
 
-def build_context_string(rag_results: dict) -> str:
+def build_context_string(
+    rag_results: dict[str, list[Document]],
+    use_chromadb: bool,
+    use_bm25: bool,
+) -> str:
     """
     Convert the dictionary of RAG results into a text block
     that includes relevant metadata and passages.
+    Args:
+        rag_results (dict[str, list[Document]]):
+            Mapping from backend name ("chroma" or "bm25") to list of docs.
+        use_chromadb (bool): Whether chromadb results should be included.
+        use_bm25 (bool): Whether bm25 results should be included.
+    Returns:
+        str: Multiline string with file, page, and text from each doc.
     """
-    lines = []
-    for db_type in ["chroma", "bm25"]:
-        for doc in rag_results[db_type]:
-            # Access doc.base_document.text, doc.base_document.doc_id, doc.metadata, etc.
-            # lines.append(f"DocID: {doc.base_document.doc_id}")
+    # Determine which backends to include based on feature flags
+    db_types: list[str] = []
+    if use_chromadb:
+        db_types.append("chroma")
+    if use_bm25:
+        db_types.append("bm25")
+
+    lines: list[str] = []
+    for db_type in db_types:
+        for doc in rag_results.get(db_type, []):
+            # Append metadata and enhanced text
             lines.append(f"File: {doc.base_document.metadata['file_path']}")
             lines.append(f"Page: {doc.base_document.metadata['page_number']}")
             lines.append(f"Text: {doc.enhanced_text}")
@@ -867,7 +904,7 @@ async def handle_query(
         enhance_num_brefore = 2
         enhance_num_after = 3
 
-        if chroma_repo:
+        if use_chromadb and chroma_repo:
             embedded_query = embedder(query)
             logger.info(f"Searching in ChromaDB for query: {query}")
             partial_chroma = chroma_repo.search(
@@ -875,29 +912,32 @@ async def handle_query(
             )
             search_results["chroma"].extend(partial_chroma)
 
-        if bm25_repo:
+        if use_bm25 and bm25_repo:
             logger.info(f"Searching in BM25 for query: {query}")
             partial_bm25 = bm25_repo.search(query, top_k=top_k_for_bm25)
             search_results["bm25"].extend(partial_bm25)
 
     enhanced_results = {}
-    enhanced_results["chroma"] = chroma_repo.enhance(
-        search_results["chroma"],
-        num_before=enhance_num_brefore,
-        num_after=enhance_num_after,
-    )
-    enhanced_results["bm25"] = chroma_repo.enhance(
-        search_results["bm25"],
-        num_before=enhance_num_brefore,
-        num_after=enhance_num_after,
-    )
+    if use_chromadb and chroma_repo:
+        enhanced_results["chroma"] = chroma_repo.enhance(
+            search_results["chroma"],
+            num_before=enhance_num_brefore,
+            num_after=enhance_num_after,
+        )
+    if use_bm25 and chroma_repo:
+        enhanced_results["bm25"] = chroma_repo.enhance(
+            search_results["bm25"],
+            num_before=enhance_num_brefore,
+            num_after=enhance_num_after,
+        )
 
     # please write rerank process
     if use_reranker:
         pass
 
-    retrieved_contexts_str = build_context_string(enhanced_results)
-
+    retrieved_contexts_str = build_context_string(
+        enhanced_results, use_chromadb=use_chromadb, use_bm25=use_bm25
+    )
     conn = get_connection()
     try:
         return StreamingResponse(
