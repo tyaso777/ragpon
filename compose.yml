@@ -1,0 +1,77 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: docker.io/postgres:17.4
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./ragpon/apps/postgres/initdb:/docker-entrypoint-initdb.d:Z
+    networks:
+      - ragnet
+
+  chromadb:
+    image: docker.io/python:3.11-slim
+    container_name: chromadb
+    command: >
+      bash -c "
+      pip install chromadb==0.5.23 &&
+      export ANONYMIZED_TELEMETRY=False &&
+      chroma run --path /app/ragpon/examples/db --host 0.0.0.0 --port 8007"
+    volumes:
+      - ./ragpon:/app:Z
+    working_dir: /app
+    ports:
+      - "8007:8007"
+    networks:
+      - ragnet
+
+  fastapi:
+    image: ragpon-fastapi
+    container_name: ragpon-fastapi
+    depends_on:
+      - postgres
+      - chromadb
+    environment:
+      PYTHONPATH: /app
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - ./ragpon:/app:Z
+    working_dir: /app
+    ports:
+      - "8006:8006"
+    networks:
+      - ragnet
+
+  streamlit:
+    image: ragpon-streamlit
+    container_name: ragpon-streamlit
+    depends_on:
+      - fastapi
+    environment:
+      PYTHONPATH: /app
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - ./ragpon:/app:Z
+    working_dir: /app
+    ports:
+      - "8005:8005"
+    command: >
+      bash -c "streamlit run ragpon/apps/streamlit/streamlit_app.py
+      --server.port 8005 --server.address 0.0.0.0"
+    networks:
+      - ragnet
+
+volumes:
+  postgres_data:
+
+networks:
+  ragnet:
+    driver: bridge
