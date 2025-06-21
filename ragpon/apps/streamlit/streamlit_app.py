@@ -445,34 +445,22 @@ def render_session_list(
             st.session_state["current_session"] = st.session_state["session_ids"][-1]
 
     # Radio button to choose an existing session
-    session_id_to_obj = {
-        s.session_id: s
-        for s in sorted(
+    selected_session_data: SessionData = st.sidebar.radio(
+        "Choose a session:",
+        sorted(
             st.session_state["session_ids"],
             key=lambda x: x.last_touched_at,
-            reverse=True,
-        )
-    }
-    session_ids_sorted = list(session_id_to_obj.keys())
-
-    selected_session_id: str = st.sidebar.radio(
-        "Choose a session:",
-        session_ids_sorted,
-        format_func=lambda sid: (
-            f"{session_id_to_obj[sid].session_name} (Private)"
-            if session_id_to_obj[sid].is_private_session
-            else session_id_to_obj[sid].session_name
+            reverse=True,  # Newest first
+        ),
+        format_func=lambda x: (
+            f"{x.session_name} (Private)" if x.is_private_session else x.session_name
         ),
         key="unique_session_radio",
-        index=(
-            session_ids_sorted.index(st.session_state["current_session"].session_id)
-            if st.session_state.get("current_session")
-            else 0
-        ),
     )
 
-    selected_session_data = session_id_to_obj[selected_session_id]
+    # Update the current session in session_state
     st.session_state["current_session"] = selected_session_data
+    selected_session_id: str = selected_session_data.session_id
 
     # If we haven't loaded this session before, fetch from the server
     if selected_session_id not in st.session_state["session_histories"]:
@@ -484,7 +472,6 @@ def render_session_list(
                 session_id=selected_session_id,
             )
         )
-
     return selected_session_data
 
 
