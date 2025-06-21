@@ -2,7 +2,7 @@
 # FastAPI side
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 
@@ -149,7 +149,7 @@ def insert_three_records(
         use_reranker: Whether reranking was used.
         connection: Active psycopg2 PostgreSQL connection.
     """
-    created_at = datetime.now()
+    created_at = datetime.now(timezone.utc)
 
     system_content = retrieved_contexts_str
     if optimized_queries:
@@ -491,12 +491,25 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT session_id, session_name, is_private_session
-                FROM sessions
-                WHERE user_id = %s
-                  AND app_name = %s
-                  AND is_deleted = FALSE
-                ORDER BY created_at DESC
+                SELECT
+                    s.session_id,
+                    s.session_name,
+                    s.is_private_session,
+                    COALESCE(m.last_user_query_at, s.created_at) AS last_touched_at
+                FROM sessions AS s
+                LEFT JOIN (
+                    SELECT
+                        session_id,
+                        MAX(created_at) AS last_user_query_at
+                    FROM messages
+                    WHERE message_type = 'user'
+                    AND is_deleted = FALSE
+                    GROUP BY session_id
+                ) AS m ON s.session_id = m.session_id
+                WHERE s.user_id = %s
+                AND s.app_name = %s
+                AND s.is_deleted = FALSE
+                ORDER BY last_touched_at ASC
                 """,
                 (user_id, app_name),
             )
@@ -507,6 +520,7 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
                 "session_id": str(row[0]),
                 "session_name": row[1],
                 "is_private_session": row[2],
+                "last_touched_at": row[3].isoformat(),
             }
             for row in rows
         ]
@@ -619,9 +633,9 @@ async def create_session(
                     app_name,
                     session_data.session_name,
                     session_data.is_private_session,
-                    datetime.now(),
+                    datetime.now(timezone.utc),
                     user_id,
-                    datetime.now(),
+                    datetime.now(timezone.utc),
                     user_id,
                     session_data.is_deleted,
                     user_id,
@@ -683,7 +697,7 @@ async def patch_session_info(
                     update_data.session_name,
                     update_data.is_private_session,
                     update_data.is_deleted,
-                    datetime.now(),
+                    datetime.now(timezone.utc),
                     user_id,
                     user_id,
                     session_id,
@@ -738,7 +752,7 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
                 """,
                 (
                     payload.deleted_by,
-                    datetime.now(),
+                    datetime.now(timezone.utc),
                     payload.deleted_by,
                     session_id,
                     round_id,
@@ -793,8 +807,8 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
                 (
                     payload.feedback,
                     payload.reason,
-                    datetime.now(),
-                    datetime.now(),
+                    datetime.now(timezone.utc),
+                    datetime.now(timezone.utc),
                     llm_output_id,
                 ),
             )

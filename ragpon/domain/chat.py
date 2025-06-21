@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
@@ -20,6 +21,10 @@ class SessionData(BaseModel):
     session_name: str = Field(..., description="The name of the session.")
     is_private_session: bool = Field(
         ..., description="Indicates if the session is private."
+    )
+    last_touched_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Last user query time or session creation time.",
     )
 
 

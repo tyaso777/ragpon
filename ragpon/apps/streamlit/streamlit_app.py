@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import datetime, timezone
 from itertools import islice
 
 import requests
@@ -86,6 +87,9 @@ def fetch_session_ids(
                 session_id=item["session_id"],
                 session_name=item["session_name"],
                 is_private_session=item["is_private_session"],
+                last_touched_at=datetime.fromisoformat(
+                    item["last_touched_at"]
+                ).astimezone(timezone.utc),
             )
         )
 
@@ -370,6 +374,7 @@ def render_create_session_form(server_url: str, user_id: str, app_name: str) -> 
                         session_id=new_session_id,
                         session_name=new_session_name,
                         is_private_session=new_session_is_private,
+                        last_touched_at=datetime.now(timezone.utc),
                     )
                 )
 
@@ -378,6 +383,7 @@ def render_create_session_form(server_url: str, user_id: str, app_name: str) -> 
                     session_id=new_session_id,
                     session_name=new_session_name,
                     is_private_session=new_session_is_private,
+                    last_touched_at=datetime.now(timezone.utc),
                 )
 
                 # Hide the create form
@@ -428,6 +434,7 @@ def render_session_list(
                 session_id=new_session_id,
                 session_name=default_session_name,
                 is_private_session=is_private,
+                last_touched_at=datetime.now(timezone.utc),
             )
 
             st.session_state["session_ids"].append(new_session)
@@ -440,7 +447,11 @@ def render_session_list(
     # Radio button to choose an existing session
     selected_session_data: SessionData = st.sidebar.radio(
         "Choose a session:",
-        sorted(st.session_state["session_ids"], key=lambda x: x.session_name),
+        sorted(
+            st.session_state["session_ids"],
+            key=lambda x: x.last_touched_at,
+            reverse=True,  # Newest first
+        ),
         format_func=lambda x: (
             f"{x.session_name} (Private)" if x.is_private_session else x.session_name
         ),
@@ -818,6 +829,14 @@ def render_user_chat_input(
             is_deleted=False,
         )
         messages.append(assistant_msg)
+        # ---- refresh sidebar ordering locally ----
+        now = datetime.now(timezone.utc)
+        for s in st.session_state["session_ids"]:
+            if s.session_id == session_id_for_display:
+                s.last_touched_at = now
+                break
+        st.session_state["session_ids"].sort(key=lambda x: x.last_touched_at)
+        # ------------------------------------------
         st.rerun()
 
 
