@@ -445,13 +445,24 @@ def render_session_list(
             st.session_state["current_session"] = st.session_state["session_ids"][-1]
 
     # Radio button to choose an existing session
+    # 1) Sort sessions newest-first
+    sorted_sessions: list[SessionData] = sorted(
+        st.session_state["session_ids"],
+        key=lambda x: x.last_touched_at,
+        reverse=True,
+    )
+    # 2) Determine default index to match current_session
+    current_idx: int = 0
+    current_session = st.session_state["current_session"]
+    for idx, session in enumerate(sorted_sessions):
+        if session.session_id == current_session.session_id:
+            current_idx = idx
+            break
+    # 3) Render radio with explicit index
     selected_session_data: SessionData = st.sidebar.radio(
         "Choose a session:",
-        sorted(
-            st.session_state["session_ids"],
-            key=lambda x: x.last_touched_at,
-            reverse=True,  # Newest first
-        ),
+        options=sorted_sessions,
+        index=current_idx,
         format_func=lambda x: (
             f"{x.session_name} (Private)" if x.is_private_session else x.session_name
         ),
