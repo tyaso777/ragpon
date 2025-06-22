@@ -348,7 +348,10 @@ def render_create_session_form(server_url: str, user_id: str, app_name: str) -> 
     if st.session_state["show_create_form"]:
         # Input fields for new session
         new_session_name: str = st.sidebar.text_input(
-            "📛Session Name", value="No title", key="create_session_name"
+            "📛Session Name",
+            value="Untitled Session",
+            max_chars=30,
+            key="create_session_name",
         )
         new_session_is_private: bool = st.sidebar.radio(
             "🙈Is Private?", options=[True, False], key="create_is_private"
@@ -414,7 +417,7 @@ def render_session_list(
         if len(st.session_state["session_ids"]) == 0:
             # Automatically create a new session if none exist
             new_session_id = str(uuid.uuid4())
-            default_session_name = "Default Session"
+            default_session_name = "Untitled Session"
             is_private = True
 
             try:
@@ -551,6 +554,7 @@ def render_edit_session_form(user_id: str, server_url: str) -> None:
         edited_session_name: str = st.sidebar.text_input(
             "📛Session Name",
             value=current_name,
+            max_chars=30,
             key="edit_session_name",
         )
         edited_is_private: bool = st.sidebar.radio(
@@ -861,14 +865,27 @@ def render_user_chat_input(
             is_deleted=False,
         )
         messages.append(assistant_msg)
-        # ---- refresh sidebar ordering locally ----
+
+        # 6) If it was the very first query, reload all sessions
+        if new_round_id == 0:
+            # Force re-fetch so the updated title from the backend is shown
+            st.session_state["session_ids"] = fetch_session_ids(
+                server_url, user_id, app_name
+            )
+            # Update current_session to include the new title
+            for sess in st.session_state["session_ids"]:
+                if sess.session_id == session_id_for_display:
+                    st.session_state["current_session"] = sess
+                    break
+
+        # 7) Refresh sidebar ordering locally
         now = datetime.now(timezone.utc)
         for s in st.session_state["session_ids"]:
             if s.session_id == session_id_for_display:
                 s.last_touched_at = now
                 break
         st.session_state["session_ids"].sort(key=lambda x: x.last_touched_at)
-        # ------------------------------------------
+
         st.rerun()
 
 

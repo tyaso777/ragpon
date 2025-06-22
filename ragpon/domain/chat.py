@@ -74,7 +74,11 @@ class SessionCreate(BaseModel):
         is_deleted (bool): Whether the session is marked as deleted.
     """
 
-    session_name: str = Field(..., description="The new session's name/title.")
+    session_name: str = Field(
+        ...,
+        max_length=30,
+        description="The new session's name/title (up to 30 characters).",
+    )
     is_private_session: bool = Field(
         False, description="Whether this session is private."
     )
@@ -93,7 +97,9 @@ class SessionUpdate(BaseModel):
         is_deleted (bool): Whether the session is being marked as deleted.
     """
 
-    session_name: str = Field(None, description="The new session name.")
+    session_name: str = Field(
+        None, max_length=30, description="The new session name (up to 30 characters)."
+    )
     is_private_session: bool = Field(
         None, description="Whether the session is private."
     )

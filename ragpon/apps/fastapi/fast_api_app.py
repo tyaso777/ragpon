@@ -291,6 +291,42 @@ def generate_queries_from_history(
     return queries
 
 
+def generate_session_title(query: str) -> str:
+    """Generate a concise session title from the user's query.
+
+    Args:
+        query (str): The user's first query string.
+
+    Returns:
+        str: A generated session title (up to 15 characters, in Japanese).
+    """
+    # System prompt asks for ≤15‐char Japanese title
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an assistant that generates concise session titles. "
+                "Based on the user's first query, provide a title of at most "
+                "15 characters in Japanese."
+            ),
+        },
+        {"role": "user", "content": query},
+    ]
+
+    # Build API args
+    kwargs: dict = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "temperature": 0.0,  # deterministic
+    }
+    if OPENAI_TYPE == "azure" and DEPLOYMENT_ID is not None:
+        kwargs["model"] = DEPLOYMENT_ID
+
+    response = client.chat.completions.create(**kwargs)
+    title = response.choices[0].message.content.strip()
+    return title
+
+
 def stream_chat_completion(
     user_id: str,
     session_id: str,
@@ -429,6 +465,39 @@ def stream_chat_completion(
             )
         finally:
             put_connection(conn)
+
+        # (C) If this was the first user query and the session still has the default name,
+        # generate a new title and update the sessions table
+        if round_id == 0:
+            conn2 = get_connection()
+            try:
+                with conn2.cursor() as c2:
+                    c2.execute(
+                        "SELECT session_name FROM sessions WHERE session_id = %s",
+                        (session_id,),
+                    )
+                    current_name = c2.fetchone()[0]
+                    if current_name == "Untitled Session":
+                        # Ask the LLM for a concise title
+                        new_title = generate_session_title(user_query)
+                        c2.execute(
+                            """
+                            UPDATE sessions
+                            SET session_name = %s,
+                                updated_at = %s,
+                                updated_by = %s
+                            WHERE session_id = %s
+                            """,
+                            (
+                                new_title,
+                                datetime.now(timezone.utc),
+                                user_id,
+                                session_id,
+                            ),
+                        )
+                        conn2.commit()
+            finally:
+                put_connection(conn2)
 
     except Exception as e:
         yield f"data: Error during streaming: {str(e)}\n\n"
