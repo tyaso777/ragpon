@@ -459,6 +459,26 @@ def render_session_list(
             current_idx = idx
             break
     # 3) Render radio with explicit index
+    # 3-1) Sort sessions newest-first
+    sorted_sessions: list[SessionData] = sorted(
+        st.session_state["session_ids"],
+        key=lambda x: x.last_touched_at,
+        reverse=True,
+    )
+    # 3-2) Determine default index to match current_session
+    current_idx: int = 0
+    current_session = st.session_state["current_session"]
+    for idx, session in enumerate(sorted_sessions):
+        if session.session_id == current_session.session_id:
+            current_idx = idx
+            break
+
+    # 3-3) Define callback to update current_session when selection changes
+    def _on_session_change() -> None:
+        """Update the current_session when the user selects a different session."""
+        st.session_state["current_session"] = st.session_state["unique_session_radio"]
+
+    # 3-4) Render radio with explicit index and callback
     selected_session_data: SessionData = st.sidebar.radio(
         "Choose a session:",
         options=sorted_sessions,
@@ -467,6 +487,7 @@ def render_session_list(
             f"{x.session_name} (Private)" if x.is_private_session else x.session_name
         ),
         key="unique_session_radio",
+        on_change=_on_session_change,
     )
 
     # Update the current session in session_state
