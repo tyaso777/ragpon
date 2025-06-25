@@ -334,79 +334,78 @@ def render_create_session_form(
         )
         return
 
-    st.sidebar.write("## Create New Session")
-    # Decide the toggle label
-    if st.session_state["show_create_form"]:
-        create_label = "🆕Cancel Create Session"
-    else:
-        create_label = "🆕Create New Session"
-    # Toggle button for showing/hiding the create session form
-    toggle_create_button: bool = st.sidebar.button(
-        create_label, key="toggle_create_button", disabled=disabled_ui
-    )
-    if toggle_create_button:
-        st.session_state["show_create_form"] = not st.session_state["show_create_form"]
-        st.rerun()
+    with st.sidebar.expander(
+        "🆕 Create New Session", expanded=st.session_state["show_create_form"]
+    ):
+        # Decide the toggle label
+        if st.session_state["show_create_form"]:
+            create_label = "🆕Cancel Create Session"
+        else:
+            create_label = "🆕Create New Session"
+        # Toggle button for showing/hiding the create session form
+        if st.button(create_label, key="toggle_create_button", disabled=disabled_ui):
+            st.session_state["show_create_form"] = not st.session_state[
+                "show_create_form"
+            ]
+            st.rerun()
 
-    # If the user has toggled the create form on, display it
-    if st.session_state["show_create_form"]:
-        # Input fields for new session
-        new_session_name: str = st.sidebar.text_input(
-            "📛Session Name",
-            value="Untitled Session",
-            max_chars=30,
-            key="create_session_name",
-            disabled=disabled_ui,
-        )
-        new_session_is_private: bool = st.sidebar.radio(
-            "🙈Is Private?",
-            options=[True, False],
-            key="create_is_private",
-            disabled=disabled_ui,
-        )
+        # If the user has toggled the create form on, display it
+        if st.session_state["show_create_form"]:
+            # Input fields for new session
+            new_session_name: str = st.text_input(
+                "📛Session Name",
+                value="Untitled Session",
+                max_chars=30,
+                key="create_session_name",
+                disabled=disabled_ui,
+            )
+            new_session_is_private: bool = st.radio(
+                "🙈Is Private?",
+                options=[True, False],
+                key="create_is_private",
+                disabled=disabled_ui,
+            )
 
-        # Button to finalize session creation
-        if st.sidebar.button(
-            "Create", key="finalize_create_button", disabled=disabled_ui
-        ):
-            # Generate a new session ID
-            new_session_id: str = str(uuid.uuid4())
-            try:
-                put_session_info(
-                    server_url=server_url,
-                    user_id=user_id,
-                    app_name=app_name,
-                    session_id=new_session_id,
-                    session_name=new_session_name,
-                    is_private_session=new_session_is_private,
-                )
+            # Button to finalize session creation
+            if st.button("Create", key="finalize_create_button", disabled=disabled_ui):
+                # Generate a new session ID
+                new_session_id: str = str(uuid.uuid4())
+                try:
+                    put_session_info(
+                        server_url=server_url,
+                        user_id=user_id,
+                        app_name=app_name,
+                        session_id=new_session_id,
+                        session_name=new_session_name,
+                        is_private_session=new_session_is_private,
+                    )
 
-                # Update local session state
-                st.session_state["session_ids"].append(
-                    SessionData(
+                    # Update local session state
+                    st.session_state["session_ids"].append(
+                        SessionData(
+                            session_id=new_session_id,
+                            session_name=new_session_name,
+                            is_private_session=new_session_is_private,
+                            last_touched_at=datetime.now(timezone.utc),
+                        )
+                    )
+
+                    # Switch to the newly created session
+                    st.session_state["current_session"] = SessionData(
                         session_id=new_session_id,
                         session_name=new_session_name,
                         is_private_session=new_session_is_private,
                         last_touched_at=datetime.now(timezone.utc),
                     )
-                )
 
-                # Switch to the newly created session
-                st.session_state["current_session"] = SessionData(
-                    session_id=new_session_id,
-                    session_name=new_session_name,
-                    is_private_session=new_session_is_private,
-                    last_touched_at=datetime.now(timezone.utc),
-                )
+                    # Hide the create form
+                    st.session_state["show_create_form"] = False
 
-                # Hide the create form
-                st.session_state["show_create_form"] = False
+                    # Rerun to refresh the UI
+                    st.rerun()
 
-                # Rerun to refresh the UI
-                st.rerun()
-
-            except requests.exceptions.RequestException as exc:
-                st.error(f"Failed to create a new session: {exc}")
+                except requests.exceptions.RequestException as exc:
+                    st.error(f"Failed to create a new session: {exc}")
 
 
 def render_session_list(
@@ -548,92 +547,96 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
     st.write(f"**Current Session**: {st.session_state['current_session']}")
 
     # Edit Session button (single button for both edit and delete)
-    st.sidebar.write("## Manage Selected Session")
-    if st.session_state.get("show_edit_form", False):
-        edit_label = "✏️Cancel Edit"
-    else:
-        edit_label = "✏️Edit Session"
-
-    toggle_edit_button: bool = st.sidebar.button(
-        edit_label, key="toggle_edit_button", disabled=disabled_ui
-    )
-
-    if toggle_edit_button:
-        st.session_state["show_edit_form"] = not st.session_state.get(
-            "show_edit_form", False
-        )
-        st.rerun()  # so the UI updates immediately
-
-    # Show or hide the edit form
-    if st.session_state.get("show_edit_form", False):
-        st.sidebar.write("### Edit or Delete Session")
-        current_session = st.session_state["current_session"]
-        if current_session is None:
-            st.warning("No session is currently selected.")
-            return
-
-        current_name: str = current_session.session_name
-        current_is_private: bool = current_session.is_private_session
-
-        edited_session_name: str = st.sidebar.text_input(
-            "📛Session Name",
-            value=current_name,
-            max_chars=30,
-            key="edit_session_name",
-            disabled=disabled_ui,
-        )
-        edited_is_private: bool = st.sidebar.radio(
-            "🙈Is Private?",
-            options=[True, False],
-            index=0 if current_is_private else 1,
-            key="edit_is_private",
-            disabled=disabled_ui,
+    with st.sidebar.expander(
+        "✏️Manage Selected Session",
+        expanded=st.session_state.get("show_edit_form", False),
+    ):
+        edit_label = (
+            "✏️Cancel Edit"
+            if st.session_state.get("show_edit_form", False)
+            else "✏️Edit Session"
         )
 
-        # "Delete this session?" as a checkbox
-        delete_this_session: bool = st.sidebar.checkbox("🗑️", key="delete_session")
+        toggle_edit_button: bool = st.button(
+            edit_label, key="toggle_edit_button", disabled=disabled_ui
+        )
 
-        if st.sidebar.button("Update", key="update_session", disabled=disabled_ui):
-            if delete_this_session:
-                # Perform delete
-                patch_session_info(
-                    server_url=server_url,
-                    user_id=user_id,
-                    session_id=current_session.session_id,
-                    session_name=edited_session_name,
-                    is_private_session=edited_is_private,
-                    is_deleted=True,
-                )
-                # Remove from local list
-                st.session_state["session_ids"] = [
-                    s
-                    for s in st.session_state["session_ids"]
-                    if s.session_id != current_session.session_id
-                ]
-                if (
-                    st.session_state["current_session"].session_id
-                    == current_session.session_id
-                ):
-                    st.session_state["current_session"] = None
-            else:
-                # Perform update (no delete)
-                patch_session_info(
-                    server_url=server_url,
-                    user_id=user_id,
-                    session_id=current_session.session_id,
-                    session_name=edited_session_name,
-                    is_private_session=edited_is_private,
-                    is_deleted=False,
-                )
-                # Update local data
-                for s in st.session_state["session_ids"]:
-                    if s.session_id == current_session.session_id:
-                        s.session_name = edited_session_name
-                        s.is_private_session = edited_is_private
-                        break
+        if toggle_edit_button:
+            st.session_state["show_edit_form"] = not st.session_state.get(
+                "show_edit_form", False
+            )
+            st.rerun()  # so the UI updates immediately
 
-            st.session_state["show_edit_form"] = False
-            st.rerun()
+        # Show or hide the edit form
+        if st.session_state.get("show_edit_form", False):
+
+            current_session = st.session_state["current_session"]
+            if current_session is None:
+                st.warning("No session is currently selected.")
+                return
+
+            current_name: str = current_session.session_name
+            current_is_private: bool = current_session.is_private_session
+
+            edited_session_name: str = st.text_input(
+                "📛Session Name",
+                value=current_name,
+                max_chars=30,
+                key="edit_session_name",
+                disabled=disabled_ui,
+            )
+            edited_is_private: bool = st.radio(
+                "🙈Is Private?",
+                options=[True, False],
+                index=0 if current_is_private else 1,
+                key="edit_is_private",
+                disabled=disabled_ui,
+            )
+
+            # "Delete this session?" as a checkbox
+            delete_this_session: bool = st.checkbox("🗑️", key="delete_session")
+
+            if st.button("Update", key="update_session", disabled=disabled_ui):
+                if delete_this_session:
+                    # Perform delete
+                    patch_session_info(
+                        server_url=server_url,
+                        user_id=user_id,
+                        session_id=current_session.session_id,
+                        session_name=edited_session_name,
+                        is_private_session=edited_is_private,
+                        is_deleted=True,
+                    )
+                    # Remove from local list
+                    st.session_state["session_ids"] = [
+                        s
+                        for s in st.session_state["session_ids"]
+                        if s.session_id != current_session.session_id
+                    ]
+                    if (
+                        st.session_state["current_session"].session_id
+                        == current_session.session_id
+                    ):
+                        st.session_state["current_session"] = None
+                else:
+                    # Perform update (no delete)
+                    patch_session_info(
+                        server_url=server_url,
+                        user_id=user_id,
+                        session_id=current_session.session_id,
+                        session_name=edited_session_name,
+                        is_private_session=edited_is_private,
+                        is_deleted=False,
+                    )
+                    # Update local data
+                    for s in st.session_state["session_ids"]:
+                        if s.session_id == current_session.session_id:
+                            s.session_name = edited_session_name
+                            s.is_private_session = edited_is_private
+                            break
+
+                st.session_state["show_edit_form"] = False
+                st.rerun()
 
 
 def render_chat_messages(
@@ -702,7 +705,41 @@ def render_chat_messages(
                 st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "bad"
                 st.rerun()
-    # Post-deletion execution
+
+            # Inline feedback form if active
+            if st.session_state.get("feedback_form_id") == msg.id:
+                with st.expander("📝 Provide Feedback", expanded=True):
+                    feedback_reason = st.text_area(
+                        "Reason (optional)", key="feedback_reason", disabled=disabled_ui
+                    )
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button(
+                            "✅Submit Feedback",
+                            key="submit_feedback",
+                            disabled=disabled_ui,
+                        ):
+                            st.session_state["is_ui_locked"] = True
+                            st.session_state["ui_lock_reason"] = (
+                                "Submitting feedback..."
+                            )
+                            st.session_state["pending_feedback"] = {
+                                "llm_output_id": msg.id,
+                                "feedback_type": st.session_state["feedback_form_type"],
+                                "reason": feedback_reason,
+                            }
+                            st.rerun()
+                    with col2:
+                        if st.button(
+                            "❌Cancel Feedback",
+                            key="cancel_feedback",
+                            disabled=disabled_ui,
+                        ):
+                            st.session_state["feedback_form_id"] = None
+                            st.session_state["feedback_form_type"] = None
+                            st.rerun()
+
+    # Handle deletion
     if (
         st.session_state.get("pending_delete_round_id") is not None
         and st.session_state.get("pending_delete_user_id") is not None
@@ -725,46 +762,7 @@ def render_chat_messages(
             st.session_state["ui_lock_reason"] = ""
             st.rerun()
 
-
-def render_feedback_form(server_url: str, disabled_ui: bool) -> None:
-    """
-    Checks if we have a pending feedback form and, if so, displays it.
-    Handles submission (calling patch_feedback) and cancellation.
-    Disables feedback submission during ongoing operations.
-
-    Args:
-        server_url (str): The base URL of the FastAPI server.
-        disabled_ui (bool): If True, disables feedback form interactions.
-
-    Side Effects:
-        - If there's a pending form, shows text area + buttons.
-        - On submit, stores feedback input in session state and reruns.
-        - On cancel, resets feedback form state and reruns.
-    """
-    if (
-        "feedback_form_id" in st.session_state
-        and st.session_state["feedback_form_id"] is not None
-    ):
-        st.write("### Provide feedback")
-        feedback_reason = st.text_area(
-            "Reason (optional)", key="feedback_reason", disabled=disabled_ui
-        )
-
-        if st.button("Submit Feedback", key="submit_feedback", disabled=disabled_ui):
-            st.session_state["is_ui_locked"] = True
-            st.session_state["ui_lock_reason"] = "Submitting feedback..."
-            st.session_state["pending_feedback"] = {
-                "llm_output_id": st.session_state["feedback_form_id"],
-                "feedback_type": st.session_state["feedback_form_type"],
-                "reason": feedback_reason,
-            }
-            st.rerun()
-
-        if st.button("Cancel Feedback", key="cancel_feedback", disabled=disabled_ui):
-            st.session_state["feedback_form_id"] = None
-            st.session_state["feedback_form_type"] = None
-            st.rerun()
-
+    # Handle feedback submission
     if "pending_feedback" in st.session_state:
         try:
             pending = st.session_state.pop("pending_feedback")
@@ -774,7 +772,6 @@ def render_feedback_form(server_url: str, disabled_ui: bool) -> None:
                 feedback=pending["feedback_type"],
                 reason=pending["reason"],
             )
-            # Reset the form
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
         finally:
@@ -1044,10 +1041,7 @@ def main() -> None:
         disabled_ui=disabled_ui,
     )
 
-    # Step 7: Handle feedback form
-    render_feedback_form(server_url=server_url, disabled_ui=disabled_ui)
-
-    # Step 8: Handle new user input
+    # Step 7: Handle new user input
     render_user_chat_input(
         messages=messages,
         server_url=server_url,
