@@ -1,3 +1,12 @@
+# For Linux:
+    # copy db and models to apps/fastapi folder manually.
+    # copy Sudachi packages to user/ragpon/packages manually.
+    # change compose.yml to use azure openai.
+
+    # podman machine ssh
+    # cd /home/user/ragpon
+    # podman build -f ragpon/apps/fastapi/Dockerfile -t ragpon-fastapi:latest .
+
 # create requirements.txt file with:
 # poetry export --with dev --without-hashes -f requirements.txt -o requirements.txt
 
@@ -9,6 +18,9 @@ WORKDIR /app
 
 # Copy the entire ragpon project into the image
 COPY ../../../../requirements.txt /app/requirements.txt
+
+# For Linux:
+# COPY ../../../../packages       ./packages
 
 # For development, you can copy the entire ragpon project
 # COPY ../../.. /app

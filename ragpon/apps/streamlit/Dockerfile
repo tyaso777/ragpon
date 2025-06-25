@@ -1,3 +1,8 @@
+# For Linux:
+    # podman machine ssh
+    # cd /home/user/ragpon/ragpon/apps/streamlit
+    # podman build -t ragpon-streamlit:latest .
+
 FROM python:3.11-slim
 WORKDIR /app
 COPY ../../.. /app
@@ -10,12 +15,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 CMD ["streamlit", "run", "ragpon/ui/streamlit_app.py", "--server.port=8005", "--server.address=0.0.0.0"]
 
-podman run -it --rm `
-  --name ragpon-streamlit `
-  --network ragnet `
-  -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon:/app:Z" `
-  --workdir /app `
-  -e PYTHONPATH=/app `
-  -e OPENAI_API_KEY=$Env:OPENAI_API_KEY `
-  -p 8005:8005 `
-  ragpon-streamlit bash -c "streamlit run streamlit_app.py --server.port 8005 --server.address 0.0.0.0"
+# podman run -it --rm `
+#   --name ragpon-streamlit `
+#   --network ragnet `
+#   -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon:/app:Z" `
+#   # -v "/home/user/ragpon:/app:Z" `
+#   --workdir /app `
+#   -e PYTHONPATH=/app `
+#   -e OPENAI_API_KEY=$Env:OPENAI_API_KEY `
+#   -p 8005:8005 `
+#   ragpon-streamlit bash -c "streamlit run streamlit_app.py --server.port 8005 --server.address 0.0.0.0"

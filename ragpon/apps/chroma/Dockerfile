@@ -1,3 +1,8 @@
+# For Linux:
+    # podman machine ssh
+    # cd /home/user/ragpon/ragpon/apps/chroma
+    # podman build -t chroma-app:latest .
+
 # Use Python 3.11 base image
 FROM python:3.11-slim
 
