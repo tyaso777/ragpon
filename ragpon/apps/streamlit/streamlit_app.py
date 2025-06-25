@@ -311,15 +311,19 @@ def load_session_ids(server_url: str, user_id: str, app_name: str) -> list[Sessi
     return st.session_state["session_ids"]
 
 
-def render_create_session_form(server_url: str, user_id: str, app_name: str) -> None:
+def render_create_session_form(
+    server_url: str, user_id: str, app_name: str, disabled_ui: bool
+) -> None:
     """
     Renders the UI for creating a new session in the sidebar, and handles the
-    logic of creating the session via put_session_info().
+    logic of creating the session via put_session_info(). Disables interactive UI elements
+    during ongoing operations when disabled_ui is True.
 
     Args:
         server_url (str): The base URL for the server.
         user_id (str): The user ID for whom the session is being created.
         app_name (str): The application name under which the session is managed.
+        disabled_ui (bool): If True, disables user interactions for all input widgets during ongoing operations.
     """
     MAX_SESSION_COUNT = 10
     current_session_count = len(st.session_state.get("session_ids", []))
@@ -338,7 +342,7 @@ def render_create_session_form(server_url: str, user_id: str, app_name: str) -> 
         create_label = "🆕Create New Session"
     # Toggle button for showing/hiding the create session form
     toggle_create_button: bool = st.sidebar.button(
-        create_label, key="toggle_create_button"
+        create_label, key="toggle_create_button", disabled=disabled_ui
     )
     if toggle_create_button:
         st.session_state["show_create_form"] = not st.session_state["show_create_form"]
@@ -352,13 +356,19 @@ def render_create_session_form(server_url: str, user_id: str, app_name: str) -> 
             value="Untitled Session",
             max_chars=30,
             key="create_session_name",
+            disabled=disabled_ui,
         )
         new_session_is_private: bool = st.sidebar.radio(
-            "🙈Is Private?", options=[True, False], key="create_is_private"
+            "🙈Is Private?",
+            options=[True, False],
+            key="create_is_private",
+            disabled=disabled_ui,
         )
 
         # Button to finalize session creation
-        if st.sidebar.button("Create", key="finalize_create_button"):
+        if st.sidebar.button(
+            "Create", key="finalize_create_button", disabled=disabled_ui
+        ):
             # Generate a new session ID
             new_session_id: str = str(uuid.uuid4())
             try:
@@ -400,11 +410,20 @@ def render_create_session_form(server_url: str, user_id: str, app_name: str) -> 
 
 
 def render_session_list(
-    user_id: str,
-    app_name: str,
-    server_url: str,
+    user_id: str, app_name: str, server_url: str, disabled_ui: bool
 ) -> SessionData:
-    """Display the list of sessions in the sidebar and return the selected session.
+    """
+    Display the list of sessions in the sidebar and return the selected session.
+
+    This function renders a radio button listing all available sessions and
+    updates the current session when the selection changes. It disables
+    session switching if UI operations are locked.
+
+    Args:
+        user_id (str): The ID of the current user.
+        app_name (str): The name of the application context.
+        server_url (str): The base URL of the FastAPI server.
+        disabled_ui (bool): If True, disables the session selection UI during ongoing operations.
 
     Returns:
         SessionData: The session selected by the user in the sidebar.
@@ -491,6 +510,7 @@ def render_session_list(
         ),
         key="unique_session_radio",
         on_change=_on_session_change,
+        disabled=disabled_ui,
     )
 
     # Update the current session in session_state
@@ -510,12 +530,14 @@ def render_session_list(
     return selected_session_data
 
 
-def render_edit_session_form(user_id: str, server_url: str) -> None:
+def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -> None:
     """Display the edit/delete form for the currently selected session.
 
     Args:
-        server_url (str): The base URL of the FastAPI server.
         user_id (str): The ID of the current user.
+        server_url (str): The base URL of the FastAPI server.
+        disabled_ui (bool): If True, disables user interactions for all input widgets during ongoing operations.
+
 
     Side Effects:
         - Potentially calls `patch_session_info` to delete or update session data.
@@ -532,7 +554,9 @@ def render_edit_session_form(user_id: str, server_url: str) -> None:
     else:
         edit_label = "✏️Edit Session"
 
-    toggle_edit_button: bool = st.sidebar.button(edit_label, key="toggle_edit_button")
+    toggle_edit_button: bool = st.sidebar.button(
+        edit_label, key="toggle_edit_button", disabled=disabled_ui
+    )
 
     if toggle_edit_button:
         st.session_state["show_edit_form"] = not st.session_state.get(
@@ -556,18 +580,20 @@ def render_edit_session_form(user_id: str, server_url: str) -> None:
             value=current_name,
             max_chars=30,
             key="edit_session_name",
+            disabled=disabled_ui,
         )
         edited_is_private: bool = st.sidebar.radio(
             "🙈Is Private?",
             options=[True, False],
             index=0 if current_is_private else 1,
             key="edit_is_private",
+            disabled=disabled_ui,
         )
 
         # "Delete this session?" as a checkbox
         delete_this_session: bool = st.sidebar.checkbox("🗑️", key="delete_session")
 
-        if st.sidebar.button("Update", key="update_session"):
+        if st.sidebar.button("Update", key="update_session", disabled=disabled_ui):
             if delete_this_session:
                 # Perform delete
                 patch_session_info(
@@ -615,6 +641,7 @@ def render_chat_messages(
     server_url: str,
     session_id_for_display: str,
     user_id: str,
+    disabled_ui: bool,
 ) -> None:
     """
     Renders the existing conversation messages, including
@@ -625,6 +652,7 @@ def render_chat_messages(
         server_url (str): The base URL of the FastAPI server.
         session_id_for_display (str): The current session's ID.
         user_id (str): The user ID for the current user.
+        disabled_ui (bool): If True, disables feedback and deletion buttons during ongoing operations.
 
     Side Effects:
         - Displays each message via st.chat_message
@@ -652,75 +680,106 @@ def render_chat_messages(
 
             # Trash icon button
             if col_trash.button(
-                "🗑️", key=f"delete_{msg.round_id}", help="Delete this round"
+                "🗑️",
+                key=f"delete_{msg.round_id}",
+                help="Delete this round",
+                disabled=disabled_ui,
             ):
-                delete_round(
-                    server_url=server_url,
-                    session_id=session_id_for_display,
-                    round_id=msg.round_id,
-                    deleted_by=user_id,
-                )
-                # Mark messages from that round as deleted
-                for m in messages:
-                    if m.round_id == msg.round_id:
-                        m.is_deleted = True
-                st.session_state["session_histories"][session_id_for_display] = messages
+                st.session_state["is_ui_locked"] = True
+                st.session_state["ui_lock_reason"] = "Deleting assistant response..."
+                st.session_state["pending_delete_round_id"] = msg.round_id
+                st.session_state["pending_delete_user_id"] = user_id
                 st.rerun()
 
             # Good button
-            if col_good.button("😊", key=f"good_{msg.id}"):
+            if col_good.button("😊", key=f"good_{msg.id}", disabled=disabled_ui):
                 st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "good"
                 st.rerun()
 
             # Bad button
-            if col_bad.button("😞", key=f"bad_{msg.id}"):
+            if col_bad.button("😞", key=f"bad_{msg.id}", disabled=disabled_ui):
                 st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "bad"
                 st.rerun()
+    # Post-deletion execution
+    if (
+        st.session_state.get("pending_delete_round_id") is not None
+        and st.session_state.get("pending_delete_user_id") is not None
+    ):
+        round_id = st.session_state.pop("pending_delete_round_id")
+        user_id = st.session_state.pop("pending_delete_user_id")
+        try:
+            delete_round(
+                server_url=server_url,
+                session_id=session_id_for_display,
+                round_id=round_id,
+                deleted_by=user_id,
+            )
+            for m in messages:
+                if m.round_id == round_id:
+                    m.is_deleted = True
+            st.session_state["session_histories"][session_id_for_display] = messages
+        finally:
+            st.session_state["is_ui_locked"] = False
+            st.session_state["ui_lock_reason"] = ""
+            st.rerun()
 
 
-def render_feedback_form(server_url: str) -> None:
+def render_feedback_form(server_url: str, disabled_ui: bool) -> None:
     """
     Checks if we have a pending feedback form and, if so, displays it.
     Handles submission (calling patch_feedback) and cancellation.
+    Disables feedback submission during ongoing operations.
 
     Args:
         server_url (str): The base URL of the FastAPI server.
+        disabled_ui (bool): If True, disables feedback form interactions.
 
     Side Effects:
         - If there's a pending form, shows text area + buttons.
-        - On submit, calls patch_feedback(...) and resets state.
-        - On cancel, resets feedback form state.
-        - Potentially reruns the app after submit/cancel.
+        - On submit, stores feedback input in session state and reruns.
+        - On cancel, resets feedback form state and reruns.
     """
     if (
         "feedback_form_id" in st.session_state
         and st.session_state["feedback_form_id"] is not None
     ):
         st.write("### Provide feedback")
-        feedback_reason = st.text_area("Reason (optional)", key="feedback_reason")
+        feedback_reason = st.text_area(
+            "Reason (optional)", key="feedback_reason", disabled=disabled_ui
+        )
 
-        if st.button("Submit Feedback", key="submit_feedback"):
-            llm_output_id = st.session_state["feedback_form_id"]
-            feedback_type = st.session_state["feedback_form_type"]  # "good" or "bad"
-            reason_text = feedback_reason
+        if st.button("Submit Feedback", key="submit_feedback", disabled=disabled_ui):
+            st.session_state["is_ui_locked"] = True
+            st.session_state["ui_lock_reason"] = "Submitting feedback..."
+            st.session_state["pending_feedback"] = {
+                "llm_output_id": st.session_state["feedback_form_id"],
+                "feedback_type": st.session_state["feedback_form_type"],
+                "reason": feedback_reason,
+            }
+            st.rerun()
 
-            patch_feedback(
-                server_url=server_url,
-                llm_output_id=llm_output_id,
-                feedback=feedback_type,
-                reason=reason_text,
-            )
-
-            # Reset the form
+        if st.button("Cancel Feedback", key="cancel_feedback", disabled=disabled_ui):
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
             st.rerun()
 
-        if st.button("Cancel Feedback", key="cancel_feedback"):
+    if "pending_feedback" in st.session_state:
+        try:
+            pending = st.session_state.pop("pending_feedback")
+            patch_feedback(
+                server_url=server_url,
+                llm_output_id=pending["llm_output_id"],
+                feedback=pending["feedback_type"],
+                reason=pending["reason"],
+            )
+            # Reset the form
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
+        finally:
+            st.session_state["is_ui_locked"] = False
+            st.session_state["ui_lock_reason"] = ""
             st.rerun()
 
 
@@ -731,11 +790,12 @@ def render_user_chat_input(
     app_name: str,
     session_id_for_display: str,
     num_of_prev_msg_with_llm: int,
+    disabled_ui: bool,
 ) -> None:
     """
     Displays a radio button to select a RAG usage mode, a chat input box,
     and if the user enters text, sends it to the backend with the chosen RAG mode
-    and streams the assistant's response.
+    and streams the assistant's response. All UI inputs are disabled if disabled_ui is True.
 
     Args:
         messages (list[Message]): The current conversation messages.
@@ -744,6 +804,7 @@ def render_user_chat_input(
         app_name (str): The name of the application.
         session_id_for_display (str): The session ID for which messages are posted.
         num_of_prev_msg_with_llm (int): Number of previous messages to send to the LLM.
+        disabled_ui (bool): If True, disables input widgets during ongoing operations.
 
     Side Effects:
         - Displays a radio button to pick how to use RAG (or not).
@@ -761,132 +822,148 @@ def render_user_chat_input(
         options=["RAG (Optimized Query)", "RAG (Standard)", "No RAG"],
         index=0,  # default to the first option
         key="rag_mode_radio",
+        disabled=disabled_ui,
     )
 
     st.sidebar.write("## 🔀Use Reranker")
     use_reranker: bool = st.sidebar.radio(
         label="Choose whether to use the Reranker:",
         options=[False],  # Only one option for now
-        format_func=lambda x: "Yes" if x else "No",  # 表示を"Yes"/"No"に変換
+        format_func=lambda x: "Yes" if x else "No",
         index=0,  # Default to "No"
         key="use_reranker_radio",
+        disabled=disabled_ui,
     )
 
     # 2) Provide a chat input box for the user to type their query.
-    user_input: str = st.chat_input("Type your query here...")
+    user_input: str = st.chat_input("Type your query here...", disabled=disabled_ui)
 
     if user_input:
-        # 2a) Build the short array of recent non-deleted messages
-        last_msgs = last_n_non_deleted(messages, num_of_prev_msg_with_llm)
-        messages_to_send = [{"role": m.role, "content": m.content} for m in last_msgs]
+        st.session_state["is_ui_locked"] = True
+        st.session_state["ui_lock_reason"] = "Sending message to assistant..."
+        st.session_state["pending_user_input"] = user_input
+        st.rerun()
 
-        # 2b) Compute the next round_id
-        if len(messages) > 0:
-            last_round_id = max(m.round_id for m in messages)
-            new_round_id: int = last_round_id + 1
-        else:
-            new_round_id: int = 0
-
-        # 2c) Generate UUIDs for user/system/assistant messages
-        user_msg_id = str(uuid.uuid4())
-        system_msg_id = str(uuid.uuid4())
-        assistant_msg_id = str(uuid.uuid4())
-
-        # 2d) Add the user's message locally
-        user_msg = Message(
-            role="user",
-            content=user_input,
-            id=user_msg_id,
-            round_id=new_round_id,
-            is_deleted=False,
-        )
-        messages.append(user_msg)
-        messages_to_send.append({"role": "user", "content": user_input})
-
-        # Display the user message immediately
-        with st.chat_message("user"):
-            st.write(user_input)
-
-        # 3) Post to FastAPI (streaming)
+    if st.session_state.get("pending_user_input"):
         try:
-            response = post_query_to_fastapi(
-                server_url=server_url,
-                user_id=user_id,
-                app_name=app_name,
-                session_id=session_id_for_display,
-                messages_list=messages_to_send,
-                user_msg_id=user_msg_id,
-                system_msg_id=system_msg_id,
-                assistant_msg_id=assistant_msg_id,
+            user_input = st.session_state.pop("pending_user_input")
+            # 2a) Build the short array of recent non-deleted messages
+            last_msgs = last_n_non_deleted(messages, num_of_prev_msg_with_llm)
+            messages_to_send = [
+                {"role": m.role, "content": m.content} for m in last_msgs
+            ]
+
+            # 2b) Compute the next round_id
+            if len(messages) > 0:
+                last_round_id = max(m.round_id for m in messages)
+                new_round_id: int = last_round_id + 1
+            else:
+                new_round_id: int = 0
+
+            # 2c) Generate UUIDs for user/system/assistant messages
+            user_msg_id = str(uuid.uuid4())
+            system_msg_id = str(uuid.uuid4())
+            assistant_msg_id = str(uuid.uuid4())
+
+            # 2d) Add the user's message locally
+            user_msg = Message(
+                role="user",
+                content=user_input,
+                id=user_msg_id,
                 round_id=new_round_id,
-                rag_mode=rag_mode,
-                use_reranker=use_reranker,
+                is_deleted=False,
             )
-        except requests.exceptions.RequestException as e:
+            messages.append(user_msg)
+            messages_to_send.append({"role": "user", "content": user_input})
+
+            # Display the user message immediately
+            with st.chat_message("user"):
+                st.write(user_input)
+
+            # 3) Post to FastAPI (streaming)
+            try:
+                response = post_query_to_fastapi(
+                    server_url=server_url,
+                    user_id=user_id,
+                    app_name=app_name,
+                    session_id=session_id_for_display,
+                    messages_list=messages_to_send,
+                    user_msg_id=user_msg_id,
+                    system_msg_id=system_msg_id,
+                    assistant_msg_id=assistant_msg_id,
+                    round_id=new_round_id,
+                    rag_mode=rag_mode,
+                    use_reranker=use_reranker,
+                )
+            except requests.exceptions.RequestException as e:
+                with st.chat_message("assistant"):
+                    st.error(f"Request failed: {e}")
+                return
+
+            # 4) Stream partial assistant responses
+            # Initialize buffer for streaming
+            buf = ""
+            partial_message_text = ""
+            SSE_DATA_PREFIX = "data: "
             with st.chat_message("assistant"):
-                st.error(f"Request failed: {e}")
-            return
+                placeholder = st.empty()
+                for chunk in response.iter_content(decode_unicode=True):
+                    buf += chunk
+                    while "\n\n" in buf:
+                        event, buf = buf.split("\n\n", 1)
+                        if not event.startswith(SSE_DATA_PREFIX):
+                            continue
 
-        # 4) Stream partial assistant responses
-        # Initialize buffer for streaming
-        buf = ""
-        partial_message_text = ""
-        SSE_DATA_PREFIX = "data: "
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            for chunk in response.iter_content(decode_unicode=True):
-                buf += chunk
-                while "\n\n" in buf:
-                    event, buf = buf.split("\n\n", 1)
-                    if not event.startswith(SSE_DATA_PREFIX):
-                        continue
+                        try:
+                            payload = json.loads(event[len(SSE_DATA_PREFIX) :])
+                        except json.JSONDecodeError:
+                            logger.warning(
+                                "Invalid JSON: %r", event[len(SSE_DATA_PREFIX) :]
+                            )
+                            continue
 
-                    try:
-                        payload = json.loads(event[len(SSE_DATA_PREFIX) :])
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "Invalid JSON: %r", event[len(SSE_DATA_PREFIX) :]
+                        data = payload.get("data")
+                        if data == "[DONE]":
+                            break
+
+                        partial_message_text += data
+                        placeholder.markdown(
+                            partial_message_text, unsafe_allow_html=False
                         )
-                        continue
 
-                    data = payload.get("data")
-                    if data == "[DONE]":
+            # 5) Save final assistant message
+            assistant_msg = Message(
+                role="assistant",
+                content=partial_message_text,
+                id=assistant_msg_id,
+                round_id=new_round_id,
+                is_deleted=False,
+            )
+            messages.append(assistant_msg)
+
+            # 6) If it was the very first query, reload all sessions
+            if new_round_id == 0:
+                # Force re-fetch so the updated title from the backend is shown
+                st.session_state["session_ids"] = fetch_session_ids(
+                    server_url, user_id, app_name
+                )
+                # Update current_session to include the new title
+                for sess in st.session_state["session_ids"]:
+                    if sess.session_id == session_id_for_display:
+                        st.session_state["current_session"] = sess
                         break
 
-                    partial_message_text += data
-                    placeholder.markdown(partial_message_text, unsafe_allow_html=False)
-
-        # 5) Save final assistant message
-        assistant_msg = Message(
-            role="assistant",
-            content=partial_message_text,
-            id=assistant_msg_id,
-            round_id=new_round_id,
-            is_deleted=False,
-        )
-        messages.append(assistant_msg)
-
-        # 6) If it was the very first query, reload all sessions
-        if new_round_id == 0:
-            # Force re-fetch so the updated title from the backend is shown
-            st.session_state["session_ids"] = fetch_session_ids(
-                server_url, user_id, app_name
-            )
-            # Update current_session to include the new title
-            for sess in st.session_state["session_ids"]:
-                if sess.session_id == session_id_for_display:
-                    st.session_state["current_session"] = sess
+            # 7) Refresh sidebar ordering locally
+            now = datetime.now(timezone.utc)
+            for s in st.session_state["session_ids"]:
+                if s.session_id == session_id_for_display:
+                    s.last_touched_at = now
                     break
-
-        # 7) Refresh sidebar ordering locally
-        now = datetime.now(timezone.utc)
-        for s in st.session_state["session_ids"]:
-            if s.session_id == session_id_for_display:
-                s.last_touched_at = now
-                break
-        st.session_state["session_ids"].sort(key=lambda x: x.last_touched_at)
-
-        st.rerun()
+            st.session_state["session_ids"].sort(key=lambda x: x.last_touched_at)
+        finally:
+            st.session_state["is_ui_locked"] = False
+            st.session_state["ui_lock_reason"] = ""
+            st.rerun()
 
 
 #################################
@@ -900,6 +977,15 @@ def main() -> None:
     with an ability to delete (is_deleted) a round via a trash button.
     """
     st.title("RAG + LLM Streamlit App")
+
+    # Initialize session state variables for UI locking
+    st.session_state.setdefault("is_ui_locked", False)
+    st.session_state.setdefault("ui_lock_reason", "")
+
+    disabled_ui = st.session_state["is_ui_locked"]
+
+    if disabled_ui:
+        st.sidebar.warning(f"⏳ {st.session_state['ui_lock_reason']}")
 
     # Step 1: Initialize session state
     if "current_session" not in st.session_state:
@@ -925,14 +1011,24 @@ def main() -> None:
 
     # Step 3: Sidebar creation form
     render_create_session_form(
-        server_url=server_url, user_id=user_id, app_name=app_name
+        server_url=server_url,
+        user_id=user_id,
+        app_name=app_name,
+        disabled_ui=disabled_ui,
     )
 
     # Step 4: Sidebar session list
-    render_session_list(user_id=user_id, app_name=app_name, server_url=server_url)
+    render_session_list(
+        user_id=user_id,
+        app_name=app_name,
+        server_url=server_url,
+        disabled_ui=disabled_ui,
+    )
 
     # Step 5: Sidebar edit/delete form
-    render_edit_session_form(user_id=user_id, server_url=server_url)
+    render_edit_session_form(
+        user_id=user_id, server_url=server_url, disabled_ui=disabled_ui
+    )
 
     # Step 6: Display conversation messages
     session_id_for_display = st.session_state["current_session"].session_id
@@ -945,10 +1041,11 @@ def main() -> None:
         server_url=server_url,
         session_id_for_display=session_id_for_display,
         user_id=user_id,
+        disabled_ui=disabled_ui,
     )
 
     # Step 7: Handle feedback form
-    render_feedback_form(server_url=server_url)
+    render_feedback_form(server_url=server_url, disabled_ui=disabled_ui)
 
     # Step 8: Handle new user input
     render_user_chat_input(
@@ -958,6 +1055,7 @@ def main() -> None:
         app_name=app_name,
         session_id_for_display=session_id_for_display,
         num_of_prev_msg_with_llm=num_of_prev_msg_with_llm,
+        disabled_ui=disabled_ui,
     )
 
 
