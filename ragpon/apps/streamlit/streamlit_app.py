@@ -684,15 +684,33 @@ def render_chat_messages(
             # Trash icon button
             if col_trash.button(
                 "🗑️",
-                key=f"delete_{msg.round_id}",
+                key=f"confirm_delete_button_{msg.round_id}",
                 help="Delete this round",
                 disabled=disabled_ui,
             ):
-                st.session_state["is_ui_locked"] = True
-                st.session_state["ui_lock_reason"] = "Deleting assistant response..."
-                st.session_state["pending_delete_round_id"] = msg.round_id
-                st.session_state["pending_delete_user_id"] = user_id
-                st.rerun()
+                st.session_state["confirm_delete_round_id"] = msg.round_id
+
+            # If delete was requested, show confirmation prompt
+            if st.session_state.get("confirm_delete_round_id") == msg.round_id:
+                with st.expander("⚠️ Confirm Deletion", expanded=True):
+                    st.warning("Are you sure you want to delete this round?")
+                    col_confirm, col_cancel = st.columns(2)
+                    with col_confirm:
+                        if st.button(
+                            "✅ Yes, delete", key=f"confirm_yes_{msg.round_id}"
+                        ):
+                            st.session_state["is_ui_locked"] = True
+                            st.session_state["ui_lock_reason"] = (
+                                "Deleting assistant response..."
+                            )
+                            st.session_state["pending_delete_round_id"] = msg.round_id
+                            st.session_state["pending_delete_user_id"] = user_id
+                            st.session_state["confirm_delete_round_id"] = None
+                            st.rerun()
+                    with col_cancel:
+                        if st.button("❌ Cancel", key=f"confirm_no_{msg.round_id}"):
+                            st.session_state["confirm_delete_round_id"] = None
+                            st.rerun()
 
             # Good button
             if col_good.button("😊", key=f"good_{msg.id}", disabled=disabled_ui):
