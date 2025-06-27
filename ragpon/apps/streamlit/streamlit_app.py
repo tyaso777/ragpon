@@ -1,5 +1,6 @@
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import islice
 
@@ -9,8 +10,20 @@ import streamlit as st
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.domain.chat import Message, SessionData
 
+
+@dataclass
+class DevTestConfig:
+    simulate_delay_seconds: int = 0
+    simulate_llm_config_error: bool = False
+    simulate_llm_timeout: bool = False
+    simulate_backend_failure: bool = False
+    simulate_db_failure: bool = False
+
+
 # Initialize logger
 logger = get_library_logger(__name__)
+
+DEBUG_SESSION_TRIGGER = "__DEBUG_MODE__"
 
 
 def last_n_non_deleted(messages: list[Message], n: int) -> list[Message]:
@@ -298,6 +311,73 @@ def patch_feedback(
 #################################
 
 
+def is_debug_session_active() -> bool:
+    sessions = st.session_state.get("session_ids", [])
+    return any(s.session_name == DEBUG_SESSION_TRIGGER for s in sessions)
+
+
+def render_dev_test_settings() -> None:
+    """
+    Renders the developer testing options in the sidebar if debug mode is active.
+    Allows toggling simulated error states and delays.
+    """
+    if not is_debug_session_active():
+        return
+
+    with st.sidebar.expander("🛠️ Developer Settings", expanded=False):
+        dev_cfg: DevTestConfig = st.session_state.get(
+            "dev_test_config", DevTestConfig()
+        )
+
+        delay_sec = st.slider(
+            "⏳ Simulate Delay (seconds)",
+            min_value=0,
+            max_value=10,
+            key="dev_delay_sec",
+            value=dev_cfg.simulate_delay_seconds,
+        )
+        llm_config_error = st.checkbox(
+            "❌ Simulate LLM Config Error",
+            key="dev_llm_config_error",
+            value=dev_cfg.simulate_llm_config_error,
+        )
+        llm_timeout = st.checkbox(
+            "⏱️ Simulate LLM Timeout",
+            key="dev_llm_timeout",
+            value=dev_cfg.simulate_llm_timeout,
+        )
+        backend_failure = st.checkbox(
+            "📡 Simulate Backend Failure",
+            key="dev_backend_failure",
+            value=dev_cfg.simulate_backend_failure,
+        )
+        db_failure = st.checkbox(
+            "🧩 Simulate DB Failure",
+            key="dev_db_failure",
+            value=dev_cfg.simulate_db_failure,
+        )
+
+        # Always rebuild from primitive widget state
+        st.session_state["dev_test_config"] = DevTestConfig(
+            simulate_delay_seconds=st.session_state["dev_delay_sec"],
+            simulate_llm_config_error=st.session_state["dev_llm_config_error"],
+            simulate_llm_timeout=st.session_state["dev_llm_timeout"],
+            simulate_backend_failure=st.session_state["dev_backend_failure"],
+            simulate_db_failure=st.session_state["dev_db_failure"],
+        )
+
+
+def sync_dev_test_config() -> None:
+    """Re-build DevTestConfig from the primitive widget keys."""
+    st.session_state["dev_test_config"] = DevTestConfig(
+        simulate_delay_seconds=st.session_state.get("dev_delay_sec", 0),
+        simulate_llm_config_error=st.session_state.get("dev_llm_config_error", False),
+        simulate_llm_timeout=st.session_state.get("dev_llm_timeout", False),
+        simulate_backend_failure=st.session_state.get("dev_backend_failure", False),
+        simulate_db_failure=st.session_state.get("dev_db_failure", False),
+    )
+
+
 def load_session_ids(server_url: str, user_id: str, app_name: str) -> list[SessionData]:
     """
     Loads the list of sessions from the server and returns them as a list of SessionData.
@@ -325,6 +405,11 @@ def render_create_session_form(
         app_name (str): The application name under which the session is managed.
         disabled_ui (bool): If True, disables user interactions for all input widgets during ongoing operations.
     """
+    # --- Show any deferred error message ---
+    if "error_message" in st.session_state:
+        st.sidebar.error(st.session_state["error_message"])
+        del st.session_state["error_message"]
+
     MAX_SESSION_COUNT = 10
     current_session_count = len(st.session_state.get("session_ids", []))
 
@@ -376,12 +461,24 @@ def render_create_session_form(
     # --- Handle deferred session creation ---
     if "pending_create_session" in st.session_state:
         data = st.session_state.pop("pending_create_session")
+
         try:
-            # ------------------------------------------------
-            # ⏳ Intentional delay for UI lock testing
-            # import time
-            # time.sleep(3)
-            # ------------------------------------------------
+            # --- Developer test hooks ---
+            dev_cfg: DevTestConfig = st.session_state.get(
+                "dev_test_config", DevTestConfig()
+            )
+
+            # Optional simulated delay
+            if dev_cfg.simulate_delay_seconds > 0:
+                import time
+
+                time.sleep(dev_cfg.simulate_delay_seconds)
+
+            # Optional simulated backend failure
+            if dev_cfg.simulate_backend_failure:
+                raise requests.exceptions.RequestException("Simulated backend failure")
+
+            # Real logic
             new_session_id: str = str(uuid.uuid4())
             put_session_info(
                 server_url=server_url,
@@ -402,7 +499,7 @@ def render_create_session_form(
             st.session_state["current_session"] = new_session
             st.session_state["show_create_form"] = False
         except requests.exceptions.RequestException as exc:
-            st.error(f"Failed to create a new session: {exc}")
+            st.session_state["error_message"] = f"Failed to create a new session: {exc}"
         finally:
             st.session_state["is_ui_locked"] = False
             st.session_state["ui_lock_reason"] = ""
@@ -450,7 +547,8 @@ def render_session_list(
                     is_private_session=is_private,
                 )
             except requests.exceptions.RequestException as exc:
-                st.error(f"Failed to register default session to server: {exc}")
+                st.sidebar.error(f"Failed to register default session to server: {exc}")
+                st.stop()
 
             new_session = SessionData(
                 session_id=new_session_id,
@@ -614,11 +712,21 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
     if "pending_edit_action" in st.session_state:
         action = st.session_state.pop("pending_edit_action")
         try:
-            # ------------------------------------------------
-            # ⏳ Intentional delay for UI lock testing
-            # import time
-            # time.sleep(3)
-            # ------------------------------------------------
+            # --- Developer test hooks ---
+            dev_cfg: DevTestConfig = st.session_state.get(
+                "dev_test_config", DevTestConfig()
+            )
+
+            if dev_cfg.simulate_delay_seconds > 0:
+                import time
+
+                time.sleep(dev_cfg.simulate_delay_seconds)
+
+            if dev_cfg.simulate_backend_failure:
+                raise requests.exceptions.ConnectionError(
+                    "Simulated backend failure during session edit"
+                )
+
             if action["delete"]:
                 patch_session_info(
                     server_url=server_url,
@@ -1043,6 +1151,14 @@ def main() -> None:
 
     # Step 2: Fetch list of sessions
     load_session_ids(server_url=server_url, user_id=user_id, app_name=app_name)
+
+    # Step 2.5.1 ── Sync DevTestConfig from widget state
+    # (Runs only when the special debug session "__DEBUG_MODE__" exists.)
+    sync_dev_test_config()
+
+    # Step 2.5.2 ── Render the Developer Settings panel
+    # (Visible only in "__DEBUG_MODE__".)
+    render_dev_test_settings()
 
     # Step 3: Sidebar creation form
     render_create_session_form(
