@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,6 +20,9 @@ class DevTestConfig:
     simulate_llm_timeout: bool = False
     simulate_backend_failure: bool = False
     simulate_db_failure: bool = False
+    simulate_session_autocreate_failure: bool = False
+    simulate_llm_stream_error: bool = False
+    simulate_llm_invalid_json: bool = False
 
 
 # Initialize logger
@@ -391,6 +395,24 @@ def render_dev_test_settings() -> None:
             value=dev_cfg.simulate_db_failure,
         )
 
+        session_autocreate_failure = st.checkbox(
+            "🚫 Simulate Auto Session Creation Failure",
+            key="dev_session_autocreate_failure",
+            value=dev_cfg.simulate_session_autocreate_failure,
+        )
+
+        llm_stream_error = st.checkbox(
+            "📶 Simulate LLM Stream Error (bad structure)",
+            key="dev_llm_stream_error",
+            value=dev_cfg.simulate_llm_stream_error,
+        )
+
+        llm_invalid_json = st.checkbox(
+            "🧨 Simulate Invalid JSON Chunk",
+            key="dev_llm_invalid_json",
+            value=dev_cfg.simulate_llm_invalid_json,
+        )
+
         # Always rebuild from primitive widget state
         st.session_state["dev_test_config"] = DevTestConfig(
             simulate_delay_seconds=st.session_state["dev_delay_sec"],
@@ -398,6 +420,11 @@ def render_dev_test_settings() -> None:
             simulate_llm_timeout=st.session_state["dev_llm_timeout"],
             simulate_backend_failure=st.session_state["dev_backend_failure"],
             simulate_db_failure=st.session_state["dev_db_failure"],
+            simulate_session_autocreate_failure=st.session_state[
+                "dev_session_autocreate_failure"
+            ],
+            simulate_llm_stream_error=st.session_state["dev_llm_stream_error"],
+            simulate_llm_invalid_json=st.session_state["dev_llm_invalid_json"],
         )
 
 
@@ -409,6 +436,11 @@ def sync_dev_test_config() -> None:
         simulate_llm_timeout=st.session_state.get("dev_llm_timeout", False),
         simulate_backend_failure=st.session_state.get("dev_backend_failure", False),
         simulate_db_failure=st.session_state.get("dev_db_failure", False),
+        simulate_session_autocreate_failure=st.session_state.get(
+            "dev_session_autocreate_failure", False
+        ),
+        simulate_llm_stream_error=st.session_state.get("dev_llm_stream_error", False),
+        simulate_llm_invalid_json=st.session_state.get("dev_llm_invalid_json", False),
     )
 
 
@@ -517,8 +549,6 @@ def render_create_session_form(
 
             # Optional simulated delay
             if dev_cfg.simulate_delay_seconds > 0:
-                import time
-
                 time.sleep(dev_cfg.simulate_delay_seconds)
 
             # Optional simulated backend failure
@@ -591,8 +621,16 @@ def render_session_list(
             new_session_id = str(uuid.uuid4())
             default_session_name = "Untitled Session"
             is_private = True
-
             try:
+                # Developer mode: Simulate failure on automatic session creation
+                dev_cfg: DevTestConfig = st.session_state.get(
+                    "dev_test_config", DevTestConfig()
+                )
+                if dev_cfg.simulate_session_autocreate_failure:
+                    raise RuntimeError(
+                        "[DevTest] Simulated failure during auto session creation"
+                    )
+
                 # Register the session on the FastAPI side
                 put_session_info(
                     server_url=server_url,
@@ -780,8 +818,6 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
             )
 
             if dev_cfg.simulate_delay_seconds > 0:
-                import time
-
                 time.sleep(dev_cfg.simulate_delay_seconds)
 
             if dev_cfg.simulate_backend_failure:
@@ -872,6 +908,8 @@ def render_chat_messages(
     logger.info(
         f"[render_chat_messages] Rendering chat for session_id={session_id_for_display} with {len(messages)} messages"
     )
+
+    dev_cfg: DevTestConfig = st.session_state.get("dev_test_config", DevTestConfig())
 
     for msg in messages:
         if msg.is_deleted:
@@ -989,6 +1027,11 @@ def render_chat_messages(
         round_id = st.session_state.pop("pending_delete_round_id")
         deleted_by_user = st.session_state.pop("pending_delete_user_id")
         try:
+            if dev_cfg.simulate_backend_failure:
+                raise requests.exceptions.RequestException(
+                    "Simulated backend failure (delete_round)"
+                )
+
             delete_round(
                 server_url=server_url,
                 session_id=session_id_for_display,
@@ -1023,6 +1066,12 @@ def render_chat_messages(
                 f"[render_chat_messages] Feedback submitted: message_id={pending['llm_output_id']} by user={user_id}"
                 f"type={pending['feedback_type']} reason='{pending['reason']}'"
             )
+
+            if dev_cfg.simulate_backend_failure:
+                raise requests.exceptions.RequestException(
+                    "Simulated backend failure (patch_feedback)"
+                )
+
             patch_feedback(
                 server_url=server_url,
                 llm_output_id=pending["llm_output_id"],
@@ -1108,6 +1157,9 @@ def render_user_chat_input(
 
     if st.session_state.get("pending_user_input"):
         try:
+            dev_cfg: DevTestConfig = st.session_state.get(
+                "dev_test_config", DevTestConfig()
+            )
             user_input = st.session_state.pop("pending_user_input")
             logger.info(
                 f"[render_user_chat_input] User '{user_id}' submitted query: {user_input}"
@@ -1152,6 +1204,11 @@ def render_user_chat_input(
 
             # 3) Post to FastAPI (streaming)
             try:
+                if dev_cfg.simulate_backend_failure:
+                    raise requests.exceptions.RequestException(
+                        "Simulated backend failure (post_query_to_fastapi)"
+                    )
+
                 response = post_query_to_fastapi(
                     server_url=server_url,
                     user_id=user_id,
@@ -1180,10 +1237,22 @@ def render_user_chat_input(
             buf = ""
             partial_message_text = ""
             SSE_DATA_PREFIX = "data: "
+            stream_chunk_index = 0  # For dev testing, to inject errors
             with st.chat_message("assistant"):
                 placeholder = st.empty()
+
                 for chunk in response.iter_content(decode_unicode=True):
+                    # Inject errors for dev testing
+                    if stream_chunk_index == 0:
+                        if dev_cfg.simulate_llm_invalid_json:
+                            chunk = "data: {invalid json}\n\n"
+                        elif dev_cfg.simulate_llm_stream_error:
+                            chunk = 'data: {"data": 123}\n\n'  # JSON is valid but structurally wrong
+                        stream_chunk_index += 1
+
                     buf += chunk
+                    logger.debug(f"Chunk: {chunk}")
+
                     while "\n\n" in buf:
                         event, buf = buf.split("\n\n", 1)
                         if not event.startswith(SSE_DATA_PREFIX):
@@ -1192,16 +1261,23 @@ def render_user_chat_input(
                         json_str = event[len(SSE_DATA_PREFIX) :]
                         try:
                             payload = json.loads(event[len(SSE_DATA_PREFIX) :])
+                            data = payload.get("data")
+                            if not isinstance(data, str):
+                                logger.warning(
+                                    f"[render_user_chat_input] Invalid assistant response structure: data is not string ({type(data)})"
+                                )
+                                st.error(
+                                    "The assistant response could not be processed due to unexpected format."
+                                )
+                                return
                         except json.JSONDecodeError:
                             logger.warning(
                                 f"[render_user_chat_input] Invalid JSON in chunk: {json_str}"
                             )
-                            logger.debug(
-                                f"[render_user_chat_input] Raw chunk data: {json_str}"
+                            st.error(
+                                "The assistant response was malformed and could not be processed."
                             )
-                            continue
-
-                        data = payload.get("data")
+                            return
                         if data == "[DONE]":
                             break
 
@@ -1239,6 +1315,10 @@ def render_user_chat_input(
                     s.last_touched_at = now
                     break
             st.session_state["session_ids"].sort(key=lambda x: x.last_touched_at)
+        except Exception as e:
+            logger.exception("[render_user_chat_input] Unexpected error in main block")
+            with st.chat_message("assistant"):
+                st.error("An unexpected error occurred. Please try again.")
         finally:
             st.session_state["is_ui_locked"] = False
             st.session_state["ui_lock_reason"] = ""
@@ -1273,7 +1353,7 @@ def main() -> None:
     if "current_session" not in st.session_state:
         st.session_state["current_session"] = None
     if "user_id" not in st.session_state:
-        st.session_state["user_id"] = "test_user"  # Mock user
+        st.session_state["user_id"] = "test_user3"  # Mock user
     if "show_edit_form" not in st.session_state:
         st.session_state["show_edit_form"] = False
     if "session_histories" not in st.session_state:
