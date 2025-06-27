@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Generator
+from typing import Generator, NoReturn
 
 import psycopg2
 from fastapi import Body, FastAPI, HTTPException, Request
@@ -34,6 +34,8 @@ from ragpon.tokenizer import SudachiTokenizer
 
 app = FastAPI()
 
+MAX_CHUNK_LOG_LEN = 300
+
 db_pool = SimpleConnectionPool(
     minconn=1,
     maxconn=32,
@@ -52,6 +54,27 @@ def get_connection():
 def put_connection(conn):
     """Return a connection to the pool."""
     db_pool.putconn(conn)
+
+
+def raise_internal_server_error(
+    conn: psycopg2.extensions.connection,
+    log_message: str,
+    user_message: str = "Internal server error.",
+) -> NoReturn:
+    """
+    Rolls back the current transaction, logs the error, and raises a standardized HTTP 500 error.
+
+    Args:
+        conn (psycopg2.extensions.connection): The active PostgreSQL connection to rollback.
+        log_message: Log message for internal debugging.
+        user_message: Message to show to the client.
+
+    Raises:
+        HTTPException: Always raises HTTP 500 with the given user_message.
+    """
+    conn.rollback()
+    logger.exception(log_message)
+    raise HTTPException(status_code=500, detail=user_message)
 
 
 base_path = Path(__file__).parent
@@ -430,8 +453,15 @@ def stream_chat_completion(
                     accumulated_content += content
                     yield f"data: {json.dumps({'data': content}, ensure_ascii=False)}\n\n"
             except (IndexError, AttributeError) as e:
-                logger.warning(f"Error processing chunk: {e}")
-                logger.debug(f"Problematic chunk: {chunk}")
+                truncated_chunk = str(chunk) if chunk is not None else "None"
+                if len(truncated_chunk) > MAX_CHUNK_LOG_LEN:
+                    truncated_chunk = (
+                        truncated_chunk[:MAX_CHUNK_LOG_LEN] + "...[truncated]"
+                    )
+                logger.warning(
+                    f"[stream_chat_completion] Error processing chunk: {e}; "
+                    f"user_id={user_id}, session_id={session_id}, round_id={round_id}, chunk={truncated_chunk}"
+                )
 
         yield f"data: {json.dumps({'data': '[DONE]'}, ensure_ascii=False)}\n\n"
 
@@ -499,8 +529,11 @@ def stream_chat_completion(
             finally:
                 put_connection(conn2)
 
-    except Exception as e:
-        yield f"data: Error during streaming: {str(e)}\n\n"
+    except Exception:
+        logger.exception(
+            f"Streaming failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
+        yield f"data: {json.dumps({'error': 'Internal server error occurred'}, ensure_ascii=False)}\n\n"
 
 
 def build_context_string(
@@ -595,9 +628,12 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
         ]
         return sessions
 
-    except Exception as e:
-        logger.exception("Failed to fetch sessions.")
-        raise HTTPException(status_code=500, detail="Failed to retrieve sessions.")
+    except Exception:
+        raise_internal_server_error(
+            conn=conn,
+            log_message=f"Failed to fetch sessions: user_id={user_id}, app_name={app_name}",
+            user_message="Failed to retrieve sessions.",
+        )
     finally:
         put_connection(conn)
 
@@ -649,8 +685,11 @@ async def list_session_queries(
         return messages
 
     except Exception as e:
-        logger.exception("Failed to list session queries.")
-        return []
+        raise_internal_server_error(
+            conn=conn,
+            log_message=f"Failed to list session queries: user_id={user_id}, app_name={app_name}, session_id={session_id}",
+            user_message="Failed to retrieve session queries.",
+        )
     finally:
         put_connection(conn)
 
@@ -711,15 +750,23 @@ async def create_session(
                 ),
             )
             conn.commit()
+        logger.info(
+            f"Session created: user_id={user_id}, session_id={session_id}, name={session_data.session_name}"
+        )
         return {"status": "ok", "detail": "Session created successfully."}
 
     except errors.UniqueViolation:
         conn.rollback()
+        logger.warning(
+            f"Session already exists: user_id={user_id}, session_id={session_id}"
+        )
         raise HTTPException(status_code=409, detail="Session already exists.")
     except Exception as e:
-        conn.rollback()
-        logger.exception("Failed to create session.")
-        raise HTTPException(status_code=500, detail="Internal server error.")
+        raise_internal_server_error(
+            conn=conn,
+            log_message="Failed to create session.",
+            user_message="Internal server error.",
+        )
     finally:
         put_connection(conn)
 
@@ -773,18 +820,28 @@ async def patch_session_info(
                 ),
             )
             if cursor.rowcount == 0:
+                logger.warning(
+                    f"Session not found: user_id={user_id}, session_id={session_id}"
+                )
                 raise HTTPException(status_code=404, detail="Session not found")
 
             conn.commit()
 
+        logger.info(
+            f"Session updated: user_id={user_id}, session_id={session_id}, name={update_data.session_name}"
+        )
         return JSONResponse({"status": "ok", "detail": "Session updated successfully."})
 
-    except HTTPException:
+    except HTTPException as e:
+        logger.warning(
+            f"Client error while updating session: {e.status_code} - {e.detail}"
+        )
         raise
     except Exception:
-        conn.rollback()
-        logger.exception("Failed to update session.")
-        raise HTTPException(status_code=500, detail="Internal server error.")
+        raise_internal_server_error(
+            conn=conn,
+            log_message=f"Failed to update session: user_id={user_id}, session_id={session_id}",
+        )
     finally:
         put_connection(conn)
 
@@ -829,6 +886,9 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
             )
             conn.commit()
 
+        logger.info(
+            f"Round deleted: session_id={session_id}, round_id={round_id}, deleted_by={payload.deleted_by}"
+        )
         return JSONResponse(
             {
                 "status": "ok",
@@ -837,9 +897,11 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
         )
 
     except Exception:
-        conn.rollback()
-        logger.exception("Failed to delete round.")
-        raise HTTPException(status_code=500, detail="Failed to delete round.")
+        raise_internal_server_error(
+            conn=conn,
+            log_message=f"Failed to delete round: user_id={payload.deleted_by}, session_id={session_id}, round_id={round_id}",
+        )
+
     finally:
         put_connection(conn)
 
@@ -886,14 +948,18 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
 
             conn.commit()
 
+        logger.info(
+            f"Feedback patched: id={llm_output_id}, feedback={payload.feedback}, reason={payload.reason}"
+        )
         return JSONResponse({"status": "ok", "msg": "Feedback patched successfully."})
 
-    except HTTPException:
+    except HTTPException as e:
+        logger.warning(f"Client error in feedback patch: {e.status_code} - {e.detail}")
         raise
     except Exception:
-        conn.rollback()
-        logger.exception("Failed to patch feedback.")
-        raise HTTPException(status_code=500, detail="Failed to patch feedback.")
+        raise_internal_server_error(
+            conn=conn, log_message=f"Failed to patch feedback: id={llm_output_id}"
+        )
     finally:
         put_connection(conn)
 
@@ -912,10 +978,8 @@ async def handle_query(
         rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
         use_reranker = data.get("use_reranker", False)
     except Exception as e:
-        return StreamingResponse(
-            iter([f"data: Error parsing request: {str(e)}\n\n"]),
-            media_type="text/event-stream",
-        )
+        logger.exception("Failed to parse query request")
+        raise HTTPException(status_code=400, detail="Invalid query payload")
 
     user_query = ""
     for msg in reversed(messages_list):
@@ -1043,5 +1107,11 @@ async def handle_query(
             ),
             media_type="text/event-stream",
         )
+    except Exception:
+        logger.exception(
+            f"Streaming failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
+        raise HTTPException(status_code=500, detail="Internal server error.")
+
     finally:
         put_connection(conn)
