@@ -297,17 +297,31 @@ def generate_queries_from_history(
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
+        logger.warning(
+            "[generate_queries_from_history] Failed to parse JSON from model response",
+            exc_info=True,
+        )
+        logger.debug(f"Raw response from model: {raw_text}")
         raise ValueError(f"Failed to parse JSON from model: {raw_text}") from exc
 
     if not isinstance(parsed, list):
+        logger.warning(
+            f"[generate_queries_from_history] Expected JSON list, got {type(parsed)}: {raw_text}"
+        )
         raise ValueError(f"Expected a JSON list, got: {type(parsed)}")
 
     # 5) Collect queries
     queries = []
     for i, item in enumerate(parsed):
         if not isinstance(item, dict):
+            logger.warning(
+                f"[generate_queries_from_history] Invalid type at index {i}: expected dict, got {type(item)}"
+            )
             raise ValueError(f"Expected dict at index {i}, got: {type(item)}")
         if "query" not in item:
+            logger.warning(
+                f"[generate_queries_from_history] Missing 'query' key at index {i}: {item}"
+            )
             raise ValueError(f"Missing 'query' key at index {i} in: {item}")
         queries.append(item["query"])
 
@@ -944,6 +958,7 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
                 ),
             )
             if cursor.rowcount == 0:
+                logger.warning(f"LLM output not found: id={llm_output_id}")
                 raise HTTPException(status_code=404, detail="LLM output not found")
 
             conn.commit()
