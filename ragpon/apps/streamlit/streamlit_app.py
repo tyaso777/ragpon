@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +23,11 @@ class DevTestConfig:
 
 # Initialize logger
 logger = get_library_logger(__name__)
+
+# logging settings for debugging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 DEBUG_SESSION_TRIGGER = "__DEBUG_MODE__"
 
@@ -84,13 +90,27 @@ def fetch_session_ids(
 
     Returns:
         list[SessionData]: A list of SessionData objects.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
     """
     endpoint = f"{server_url}/users/{user_id}/apps/{app_name}/sessions"
-    response = requests.get(endpoint)
-    response.raise_for_status()
+    logger.info(
+        f"[fetch_session_ids] Fetching sessions for user={user_id}, app={app_name}"
+    )
+    logger.debug(f"[fetch_session_ids] GET {endpoint}")
+    try:
+        response = requests.get(endpoint)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        logger.exception(
+            f"[fetch_session_ids] Failed to fetch sessions from {endpoint}"
+        )
+        raise
 
     # Expecting a JSON array of objects
     data = response.json()
+    logger.debug(f"[fetch_session_ids] Received response: {data}")
 
     # Convert each JSON object into a SessionData instance
     session_list = []
@@ -105,7 +125,7 @@ def fetch_session_ids(
                 ).astimezone(timezone.utc),
             )
         )
-
+    logger.info(f"[fetch_session_ids] Loaded {len(session_list)} sessions")
     return session_list
 
 
@@ -179,6 +199,9 @@ def post_query_to_fastapi(
 
     Returns:
         requests.Response: A streaming Response object from the server.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
     """
     endpoint = (
         f"{server_url}/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries"
@@ -195,9 +218,20 @@ def post_query_to_fastapi(
         "use_reranker": use_reranker,
     }
 
-    response = requests.post(endpoint, json=payload, stream=True)
-    response.raise_for_status()
-    return response
+    logger.info(
+        f"[post_query_to_fastapi] Posting query for user={user_id}, session={session_id}, round={round_id}"
+    )
+    logger.debug(f"[post_query_to_fastapi] POST {endpoint}")
+    logger.debug(f"[post_query_to_fastapi] Payload: {payload}")
+
+    try:
+        response = requests.post(endpoint, json=payload, stream=True)
+        response.raise_for_status()
+        logger.info("[post_query_to_fastapi] POST succeeded")
+        return response
+    except requests.RequestException as e:
+        logger.exception("[post_query_to_fastapi] POST failed")
+        raise
 
 
 def put_session_info(
@@ -378,6 +412,18 @@ def sync_dev_test_config() -> None:
     )
 
 
+def show_sidebar_error_message() -> None:
+    """
+    Displays any error message stored in st.session_state['error_message'] in the sidebar,
+    and logs the message using logger.warning. After displaying, the message is deleted.
+    """
+    if "error_message" in st.session_state:
+        error_msg = st.session_state["error_message"]
+        logger.warning(f"[UI] Showing deferred error message: {error_msg}")
+        st.sidebar.error(error_msg)
+        del st.session_state["error_message"]
+
+
 def load_session_ids(server_url: str, user_id: str, app_name: str) -> list[SessionData]:
     """
     Loads the list of sessions from the server and returns them as a list of SessionData.
@@ -405,10 +451,6 @@ def render_create_session_form(
         app_name (str): The application name under which the session is managed.
         disabled_ui (bool): If True, disables user interactions for all input widgets during ongoing operations.
     """
-    # --- Show any deferred error message ---
-    if "error_message" in st.session_state:
-        st.sidebar.error(st.session_state["error_message"])
-        del st.session_state["error_message"]
 
     MAX_SESSION_COUNT = 10
     current_session_count = len(st.session_state.get("session_ids", []))
@@ -463,6 +505,11 @@ def render_create_session_form(
         data = st.session_state.pop("pending_create_session")
 
         try:
+            logger.info(
+                f"[render_create_session_form] User '{user_id}' requested session creation: "
+                f"name='{data['name']}', private={data['is_private']}"
+            )
+
             # --- Developer test hooks ---
             dev_cfg: DevTestConfig = st.session_state.get(
                 "dev_test_config", DevTestConfig()
@@ -498,7 +545,16 @@ def render_create_session_form(
             st.session_state["session_ids"].append(new_session)
             st.session_state["current_session"] = new_session
             st.session_state["show_create_form"] = False
+
+            logger.info(
+                f"[render_create_session_form] Session created successfully: "
+                f"id={new_session_id}, name='{data['name']}'"
+            )
+
         except requests.exceptions.RequestException as exc:
+            logger.exception(
+                f"[render_create_session_form] Failed to create session '{data['name']}'"
+            )
             st.session_state["error_message"] = f"Failed to create a new session: {exc}"
         finally:
             st.session_state["is_ui_locked"] = False
@@ -712,6 +768,12 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
     if "pending_edit_action" in st.session_state:
         action = st.session_state.pop("pending_edit_action")
         try:
+            logger.info(
+                f"[render_edit_session_form] User '{user_id}' requested to "
+                f"{'DELETE' if action['delete'] else 'UPDATE'} session '{action['session_id']}' "
+                f"with name='{action['new_name']}', private={action['new_privacy']}"
+            )
+
             # --- Developer test hooks ---
             dev_cfg: DevTestConfig = st.session_state.get(
                 "dev_test_config", DevTestConfig()
@@ -736,6 +798,9 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
                     is_private_session=action["new_privacy"],
                     is_deleted=True,
                 )
+                logger.info(
+                    f"[render_edit_session_form] Session '{action['session_id']}' deleted successfully"
+                )
                 st.session_state["session_ids"] = [
                     s
                     for s in st.session_state["session_ids"]
@@ -755,11 +820,22 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
                     is_private_session=action["new_privacy"],
                     is_deleted=False,
                 )
+                logger.info(
+                    f"[render_edit_session_form] Session '{action['session_id']}' updated successfully "
+                    f"with name='{action['new_name']}', private={action['new_privacy']}"
+                )
                 for s in st.session_state["session_ids"]:
                     if s.session_id == action["session_id"]:
                         s.session_name = action["new_name"]
                         s.is_private_session = action["new_privacy"]
                         break
+        except requests.RequestException:
+            logger.exception(
+                f"[render_edit_session_form] Failed to modify session '{action['session_id']}'"
+            )
+            st.session_state["error_message"] = (
+                f"Failed to modify session: {action['session_id']}"
+            )
         finally:
             st.session_state["show_edit_form"] = False
             st.session_state["is_ui_locked"] = False
@@ -793,6 +869,9 @@ def render_chat_messages(
           and st.session_state["feedback_form_type"]
     """
     displayed_round_ids: set[int] = set()
+    logger.info(
+        f"[render_chat_messages] Rendering chat for session_id={session_id_for_display} with {len(messages)} messages"
+    )
 
     for msg in messages:
         if msg.is_deleted:
@@ -816,6 +895,9 @@ def render_chat_messages(
                 help="Delete this round",
                 disabled=disabled_ui,
             ):
+                logger.info(
+                    f"[render_chat_messages] Trash button clicked for round_id={msg.round_id} by user={user_id}"
+                )
                 st.session_state["confirm_delete_round_id"] = msg.round_id
 
             # If delete was requested, show confirmation prompt
@@ -827,6 +909,9 @@ def render_chat_messages(
                         if st.button(
                             "✅ Yes, delete", key=f"confirm_yes_{msg.round_id}"
                         ):
+                            logger.info(
+                                f"[render_chat_messages] Confirmed deletion for round_id={msg.round_id} by user={user_id}"
+                            )
                             st.session_state["is_ui_locked"] = True
                             st.session_state["ui_lock_reason"] = (
                                 "Deleting assistant response..."
@@ -842,12 +927,18 @@ def render_chat_messages(
 
             # Good button
             if col_good.button("😊", key=f"good_{msg.id}", disabled=disabled_ui):
+                logger.info(
+                    f"[render_chat_messages] GOOD feedback for message_id={msg.id} by user={user_id}"
+                )
                 st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "good"
                 st.rerun()
 
             # Bad button
             if col_bad.button("😞", key=f"bad_{msg.id}", disabled=disabled_ui):
+                logger.info(
+                    f"[render_chat_messages] BAD feedback for message_id={msg.id} by user={user_id}"
+                )
                 st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "bad"
                 st.rerun()
@@ -865,6 +956,11 @@ def render_chat_messages(
                             key="submit_feedback",
                             disabled=disabled_ui,
                         ):
+                            logger.info(
+                                f"[render_chat_messages] Submitting feedback for message_id={msg.id} by user={user_id}"
+                                f"type={st.session_state['feedback_form_type']} "
+                                f"reason='{feedback_reason}'"
+                            )
                             st.session_state["is_ui_locked"] = True
                             st.session_state["ui_lock_reason"] = (
                                 "Submitting feedback..."
@@ -891,18 +987,29 @@ def render_chat_messages(
         and st.session_state.get("pending_delete_user_id") is not None
     ):
         round_id = st.session_state.pop("pending_delete_round_id")
-        user_id = st.session_state.pop("pending_delete_user_id")
+        deleted_by_user = st.session_state.pop("pending_delete_user_id")
         try:
             delete_round(
                 server_url=server_url,
                 session_id=session_id_for_display,
                 round_id=round_id,
-                deleted_by=user_id,
+                deleted_by=deleted_by_user,
+            )
+            logger.info(
+                f"[render_chat_messages] Deleted round_id={round_id} by user={deleted_by_user}"
             )
             for m in messages:
                 if m.round_id == round_id:
                     m.is_deleted = True
             st.session_state["session_histories"][session_id_for_display] = messages
+        except requests.exceptions.RequestException as e:
+            logger.warning(
+                f"[render_chat_messages] RequestException while deleting round_id={round_id}: {e}"
+            )
+        except Exception:
+            logger.exception(
+                f"[render_chat_messages] Unexpected error while deleting round_id={round_id}"
+            )
         finally:
             st.session_state["is_ui_locked"] = False
             st.session_state["ui_lock_reason"] = ""
@@ -912,6 +1019,10 @@ def render_chat_messages(
     if "pending_feedback" in st.session_state:
         try:
             pending = st.session_state.pop("pending_feedback")
+            logger.info(
+                f"[render_chat_messages] Feedback submitted: message_id={pending['llm_output_id']} by user={user_id}"
+                f"type={pending['feedback_type']} reason='{pending['reason']}'"
+            )
             patch_feedback(
                 server_url=server_url,
                 llm_output_id=pending["llm_output_id"],
@@ -920,6 +1031,14 @@ def render_chat_messages(
             )
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
+        except requests.exceptions.RequestException as e:
+            logger.exception(
+                f"[render_chat_messages] RequestException while submitting feedback for message_id={pending['llm_output_id']} by user={user_id}"
+            )
+        except Exception:
+            logger.exception(
+                f"[render_chat_messages] Unexpected error while submitting feedback for message_id={pending['llm_output_id']} by user={user_id}"
+            )
         finally:
             st.session_state["is_ui_locked"] = False
             st.session_state["ui_lock_reason"] = ""
@@ -990,6 +1109,9 @@ def render_user_chat_input(
     if st.session_state.get("pending_user_input"):
         try:
             user_input = st.session_state.pop("pending_user_input")
+            logger.info(
+                f"[render_user_chat_input] User '{user_id}' submitted query: {user_input}"
+            )
             # 2a) Build the short array of recent non-deleted messages
             last_msgs = last_n_non_deleted(messages, num_of_prev_msg_with_llm)
             messages_to_send = [
@@ -1023,6 +1145,11 @@ def render_user_chat_input(
             with st.chat_message("user"):
                 st.write(user_input)
 
+            logger.info(
+                f"[render_user_chat_input] Sending query to FastAPI: "
+                f"session_id={session_id_for_display}, round_id={new_round_id}, rag_mode={rag_mode}, reranker={use_reranker}"
+            )
+
             # 3) Post to FastAPI (streaming)
             try:
                 response = post_query_to_fastapi(
@@ -1039,9 +1166,14 @@ def render_user_chat_input(
                     use_reranker=use_reranker,
                 )
             except requests.exceptions.RequestException as e:
+                logger.exception(
+                    "[render_user_chat_input] Failed to post query to FastAPI"
+                )
                 with st.chat_message("assistant"):
                     st.error(f"Request failed: {e}")
                 return
+
+            logger.info("[render_user_chat_input] Streaming response started")
 
             # 4) Stream partial assistant responses
             # Initialize buffer for streaming
@@ -1057,11 +1189,15 @@ def render_user_chat_input(
                         if not event.startswith(SSE_DATA_PREFIX):
                             continue
 
+                        json_str = event[len(SSE_DATA_PREFIX) :]
                         try:
                             payload = json.loads(event[len(SSE_DATA_PREFIX) :])
                         except json.JSONDecodeError:
                             logger.warning(
-                                "Invalid JSON: %r", event[len(SSE_DATA_PREFIX) :]
+                                f"[render_user_chat_input] Invalid JSON in chunk: {json_str}"
+                            )
+                            logger.debug(
+                                f"[render_user_chat_input] Raw chunk data: {json_str}"
                             )
                             continue
 
@@ -1120,6 +1256,9 @@ def main() -> None:
     with an ability to delete (is_deleted) a round via a trash button.
     """
     st.title("RAG + LLM Streamlit App")
+
+    # Show global error messages at the top of sidebar
+    show_sidebar_error_message()
 
     # Initialize session state variables for UI locking
     st.session_state.setdefault("is_ui_locked", False)
