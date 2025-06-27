@@ -23,6 +23,7 @@ class DevTestConfig:
     simulate_session_autocreate_failure: bool = False
     simulate_llm_stream_error: bool = False
     simulate_llm_invalid_json: bool = False
+    simulate_unexpected_exception: bool = False
 
 
 # Initialize logger
@@ -413,6 +414,12 @@ def render_dev_test_settings() -> None:
             value=dev_cfg.simulate_llm_invalid_json,
         )
 
+        unexpected_exception = st.checkbox(
+            "🧪 Simulate Unexpected Exception",
+            key="dev_unexpected_exception",
+            value=dev_cfg.simulate_unexpected_exception,
+        )
+
         # Always rebuild from primitive widget state
         st.session_state["dev_test_config"] = DevTestConfig(
             simulate_delay_seconds=st.session_state["dev_delay_sec"],
@@ -425,6 +432,7 @@ def render_dev_test_settings() -> None:
             ],
             simulate_llm_stream_error=st.session_state["dev_llm_stream_error"],
             simulate_llm_invalid_json=st.session_state["dev_llm_invalid_json"],
+            simulate_unexpected_exception=st.session_state["dev_unexpected_exception"],
         )
 
 
@@ -449,11 +457,23 @@ def show_sidebar_error_message() -> None:
     Displays any error message stored in st.session_state['error_message'] in the sidebar,
     and logs the message using logger.warning. After displaying, the message is deleted.
     """
-    if "error_message" in st.session_state:
-        error_msg = st.session_state["error_message"]
+    error_msg = st.session_state.pop("error_message", None)
+    if error_msg:
         logger.warning(f"[UI] Showing deferred error message: {error_msg}")
         st.sidebar.error(error_msg)
-        del st.session_state["error_message"]
+
+
+def show_chat_error_message() -> None:
+    """
+    Displays any error message stored in st.session_state['chat_error_message']
+    in the assistant's chat area, and logs the message using logger.warning.
+    After displaying, the message is deleted.
+    """
+    error_msg = st.session_state.pop("chat_error_message", None)
+    if error_msg:
+        logger.warning(f"[UI][Chat] Showing chat error message: {error_msg}")
+        # with st.chat_message("assistant"):
+        st.error(error_msg)
 
 
 def load_session_ids(server_url: str, user_id: str, app_name: str) -> list[SessionData]:
@@ -555,6 +575,12 @@ def render_create_session_form(
             if dev_cfg.simulate_backend_failure:
                 raise requests.exceptions.RequestException("Simulated backend failure")
 
+            # Optional simulated unexpected exception
+            if dev_cfg.simulate_unexpected_exception:
+                raise RuntimeError(
+                    "[DevTest] Simulated unexpected exception during session creation"
+                )
+
             # Real logic
             new_session_id: str = str(uuid.uuid4())
             put_session_info(
@@ -586,6 +612,15 @@ def render_create_session_form(
                 f"[render_create_session_form] Failed to create session '{data['name']}'"
             )
             st.session_state["error_message"] = f"Failed to create a new session: {exc}"
+
+        except Exception:
+            logger.exception(
+                "[render_create_session_form] Unexpected error during session creation"
+            )
+            st.session_state["error_message"] = (
+                "An unexpected error occurred during session creation."
+            )
+
         finally:
             st.session_state["is_ui_locked"] = False
             st.session_state["ui_lock_reason"] = ""
@@ -627,7 +662,7 @@ def render_session_list(
                     "dev_test_config", DevTestConfig()
                 )
                 if dev_cfg.simulate_session_autocreate_failure:
-                    raise RuntimeError(
+                    raise requests.exceptions.RequestException(
                         "[DevTest] Simulated failure during auto session creation"
                     )
 
@@ -642,6 +677,10 @@ def render_session_list(
                 )
             except requests.exceptions.RequestException as exc:
                 st.sidebar.error(f"Failed to register default session to server: {exc}")
+                st.stop()
+            except Exception as e:
+                # Catch simulated or unexpected errors like RuntimeError
+                st.sidebar.error(f"Auto session creation failed: {e}")
                 st.stop()
 
             new_session = SessionData(
@@ -825,6 +864,11 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
                     "Simulated backend failure during session edit"
                 )
 
+            if dev_cfg.simulate_unexpected_exception:
+                raise RuntimeError(
+                    "[DevTest] Simulated unexpected exception during session modification"
+                )
+
             if action["delete"]:
                 patch_session_info(
                     server_url=server_url,
@@ -871,6 +915,13 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
             )
             st.session_state["error_message"] = (
                 f"Failed to modify session: {action['session_id']}"
+            )
+        except Exception as e:
+            logger.exception(
+                f"[render_edit_session_form] Unexpected error during session modification for session '{action['session_id']}'"
+            )
+            st.session_state["error_message"] = (
+                f"Unexpected error occurred while modifying session: {e}"
             )
         finally:
             st.session_state["show_edit_form"] = False
@@ -1031,6 +1082,10 @@ def render_chat_messages(
                 raise requests.exceptions.RequestException(
                     "Simulated backend failure (delete_round)"
                 )
+            if dev_cfg.simulate_unexpected_exception:
+                raise RuntimeError(
+                    "[DevTest] Simulated unexpected exception in delete_round"
+                )
 
             delete_round(
                 server_url=server_url,
@@ -1049,9 +1104,15 @@ def render_chat_messages(
             logger.warning(
                 f"[render_chat_messages] RequestException while deleting round_id={round_id}: {e}"
             )
+            st.session_state["chat_error_message"] = (
+                "Failed to delete the message. Please try again."
+            )
         except Exception:
             logger.exception(
                 f"[render_chat_messages] Unexpected error while deleting round_id={round_id}"
+            )
+            st.session_state["chat_error_message"] = (
+                "An unexpected error occurred during deletion. Please contact support if the issue persists."
             )
         finally:
             st.session_state["is_ui_locked"] = False
@@ -1071,6 +1132,10 @@ def render_chat_messages(
                 raise requests.exceptions.RequestException(
                     "Simulated backend failure (patch_feedback)"
                 )
+            if dev_cfg.simulate_unexpected_exception:
+                raise RuntimeError(
+                    "[DevTest] Simulated unexpected exception in feedback submission"
+                )
 
             patch_feedback(
                 server_url=server_url,
@@ -1084,10 +1149,20 @@ def render_chat_messages(
             logger.exception(
                 f"[render_chat_messages] RequestException while submitting feedback for message_id={pending['llm_output_id']} by user={user_id}"
             )
+            st.session_state["chat_error_message"] = (
+                "Failed to submit feedback. Please try again."
+            )
+            st.session_state["feedback_form_id"] = None
+            st.session_state["feedback_form_type"] = None
         except Exception:
             logger.exception(
                 f"[render_chat_messages] Unexpected error while submitting feedback for message_id={pending['llm_output_id']} by user={user_id}"
             )
+            st.session_state["chat_error_message"] = (
+                "An unexpected error occurred during feedback submission."
+            )
+            st.session_state["feedback_form_id"] = None
+            st.session_state["feedback_form_type"] = None
         finally:
             st.session_state["is_ui_locked"] = False
             st.session_state["ui_lock_reason"] = ""
@@ -1160,10 +1235,17 @@ def render_user_chat_input(
             dev_cfg: DevTestConfig = st.session_state.get(
                 "dev_test_config", DevTestConfig()
             )
+
             user_input = st.session_state.pop("pending_user_input")
             logger.info(
                 f"[render_user_chat_input] User '{user_id}' submitted query: {user_input}"
             )
+
+            if dev_cfg.simulate_unexpected_exception:
+                raise RuntimeError(
+                    "[DevTest] Simulated unexpected exception in user chat input"
+                )
+
             # 2a) Build the short array of recent non-deleted messages
             last_msgs = last_n_non_deleted(messages, num_of_prev_msg_with_llm)
             messages_to_send = [
@@ -1226,8 +1308,7 @@ def render_user_chat_input(
                 logger.exception(
                     "[render_user_chat_input] Failed to post query to FastAPI"
                 )
-                with st.chat_message("assistant"):
-                    st.error(f"Request failed: {e}")
+                st.session_state["chat_error_message"] = f"Request failed: {e}"
                 return
 
             logger.info("[render_user_chat_input] Streaming response started")
@@ -1266,7 +1347,7 @@ def render_user_chat_input(
                                 logger.warning(
                                     f"[render_user_chat_input] Invalid assistant response structure: data is not string ({type(data)})"
                                 )
-                                st.error(
+                                st.session_state["chat_error_message"] = (
                                     "The assistant response could not be processed due to unexpected format."
                                 )
                                 return
@@ -1274,7 +1355,7 @@ def render_user_chat_input(
                             logger.warning(
                                 f"[render_user_chat_input] Invalid JSON in chunk: {json_str}"
                             )
-                            st.error(
+                            st.session_state["chat_error_message"] = (
                                 "The assistant response was malformed and could not be processed."
                             )
                             return
@@ -1317,8 +1398,9 @@ def render_user_chat_input(
             st.session_state["session_ids"].sort(key=lambda x: x.last_touched_at)
         except Exception as e:
             logger.exception("[render_user_chat_input] Unexpected error in main block")
-            with st.chat_message("assistant"):
-                st.error("An unexpected error occurred. Please try again.")
+            st.session_state["chat_error_message"] = (
+                "An unexpected error occurred. Please try again."
+            )
         finally:
             st.session_state["is_ui_locked"] = False
             st.session_state["ui_lock_reason"] = ""
@@ -1405,6 +1487,7 @@ def main() -> None:
     messages: list[Message] = st.session_state["session_histories"][
         session_id_for_display
     ]
+    messages.sort(key=lambda m: (m.round_id, 0 if m.role == "user" else 1))
 
     render_chat_messages(
         messages=messages,
@@ -1413,6 +1496,9 @@ def main() -> None:
         user_id=user_id,
         disabled_ui=disabled_ui,
     )
+
+    # Step 6.5: Show any chat error messages
+    show_chat_error_message()
 
     # Step 7: Handle new user input
     render_user_chat_input(
