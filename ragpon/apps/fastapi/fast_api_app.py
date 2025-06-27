@@ -36,7 +36,7 @@ app = FastAPI()
 
 db_pool = SimpleConnectionPool(
     minconn=1,
-    maxconn=10,
+    maxconn=32,
     host="postgres",
     dbname="postgres",
     user="postgres",
