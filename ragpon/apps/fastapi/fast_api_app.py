@@ -46,14 +46,15 @@ db_pool = SimpleConnectionPool(
 )
 
 
-def get_connection():
+def get_connection() -> psycopg2.extensions.connection:
     """Fetch a connection from the pool."""
     return db_pool.getconn()
 
 
-def put_connection(conn):
-    """Return a connection to the pool."""
-    db_pool.putconn(conn)
+def put_connection(conn: psycopg2.extensions.connection | None) -> None:
+    """Return a connection to the pool if not None."""
+    if conn is not None:
+        db_pool.putconn(conn)
 
 
 def raise_internal_server_error(
@@ -149,11 +150,22 @@ def insert_three_records(
     rag_mode: str,
     optimized_queries: list[str] | None = None,
     use_reranker: bool = False,
-    connection: psycopg2.extensions.connection | None = None,
 ) -> None:
     """
     Inserts three message records (user, system, assistant) into the messages table
     using explicit UUIDs and a single atomic transaction.
+
+    This function stores a single conversational round composed of:
+    - The user's input (`user_query`)
+    - The retrieved knowledge base context (`retrieved_contexts_str`) as a system message
+    - The assistant's final response (`total_stream_content`)
+
+    If `optimized_queries` are provided, they are appended to the system message with
+    a "--- Optimized Queries ---" separator for visibility and downstream auditing.
+
+    This function ensures all three messages are inserted into the database within a
+    single transaction. If any part of the insertion fails, the entire transaction
+    is rolled back to maintain data consistency.
 
     Args:
         user_id: user id.
@@ -169,8 +181,11 @@ def insert_three_records(
         llm_model: Name of the LLM used (optional).
         rerank_model: Name of the reranker used (optional).
         rag_mode: Retrieval-Augmented Generation mode (optional).
+        optimized_queries (list[str] | None, optional): A list of optimized queries.
         use_reranker: Whether reranking was used.
-        connection: Active psycopg2 PostgreSQL connection.
+
+    Raises:
+        psycopg2.Error: If any of the insert operations fail.
     """
     created_at = datetime.now(timezone.utc)
 
@@ -200,49 +215,62 @@ def insert_three_records(
             "created_by": "assistant",
         },
     ]
-
-    with connection:
-        with connection.cursor() as cursor:
-            for record in records:
-                cursor.execute(
-                    """
-                    INSERT INTO messages (
-                        id, round_id, user_id, session_id, app_name,
-                        content, message_type,
-                        created_at, created_by,
-                        is_deleted,
-                        llm_model, use_reranker, rerank_model,
-                        rag_mode
-                    ) VALUES (
-                        %s, %s, %s, %s, %s,
-                        %s, %s,
-                        %s, %s,
-                        %s,
-                        %s, %s, %s,
-                        %s
+    try:
+        connection = get_connection()
+        with connection:
+            with connection.cursor() as cursor:
+                for record in records:
+                    cursor.execute(
+                        """
+                        INSERT INTO messages (
+                            id, round_id, user_id, session_id, app_name,
+                            content, message_type,
+                            created_at, created_by,
+                            is_deleted,
+                            llm_model, use_reranker, rerank_model,
+                            rag_mode
+                        ) VALUES (
+                            %s, %s, %s, %s, %s,
+                            %s, %s,
+                            %s, %s,
+                            %s,
+                            %s, %s, %s,
+                            %s
+                        )
+                        """,
+                        (
+                            record["id"],
+                            round_id,
+                            user_id,
+                            session_id,
+                            app_name,
+                            record["content"],
+                            record["message_type"],
+                            created_at,
+                            record["created_by"],
+                            False,
+                            llm_model,
+                            use_reranker,
+                            rerank_model,
+                            rag_mode,
+                        ),
                     )
-                    """,
-                    (
-                        record["id"],
-                        round_id,
-                        user_id,
-                        session_id,
-                        app_name,
-                        record["content"],
-                        record["message_type"],
-                        created_at,
-                        record["created_by"],
-                        False,
-                        llm_model,
-                        use_reranker,
-                        rerank_model,
-                        rag_mode,
-                    ),
-                )
+    except psycopg2.Error as e:
+        logger.exception(
+            f"[insert_three_records] DB insertion failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
+        if connection:
+            connection.rollback()
+        raise
+    finally:
+        put_connection(connection)
 
 
 def generate_queries_from_history(
-    messages_list: list[dict[str, str]], system_instructions: str
+    user_id: str,
+    session_id: str,
+    messages_list: list[dict[str, str]],
+    system_instructions: str,
 ) -> list[str]:
     """
     Generate multiple search queries from a given conversation history.
@@ -253,6 +281,8 @@ def generate_queries_from_history(
     and a list of query strings is returned.
 
     Args:
+        user_id (str): ID of the user (used for logging).
+        session_id (str): ID of the session (used for logging).
         messages_list (list[dict[str, str]]):
             The conversation so far, e.g.:
             [
@@ -291,22 +321,38 @@ def generate_queries_from_history(
 
     # 3) Call the OpenAI ChatCompletion API
     response = client.chat.completions.create(**kwargs)
-    raw_text = response.choices[0].message.content.strip()
+    try:
+        raw_text = response.choices[0].message.content.strip()
+        logger.info(
+            f"[generate_queries_from_history] Generated queries: user_id={user_id}, session_id={session_id}"
+        )
+    except (IndexError, AttributeError) as exc:
+        logger.exception(
+            f"[generate_queries_from_history] Failed to extract text from OpenAI response: user_id={user_id}, session_id={session_id}"
+        )
+        raise ValueError("OpenAI response missing expected content") from exc
+    except Exception as exc:
+        logger.exception(
+            f"[generate_queries_from_history] OpenAI API call failed: user_id={user_id}, session_id={session_id}"
+        )
+        raise ValueError("Failed to call language model") from exc
 
     # 4) Parse the JSON output (expected: [{"query": "..."}])
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         logger.warning(
-            "[generate_queries_from_history] Failed to parse JSON from model response",
+            f"[generate_queries_from_history] Failed to parse JSON from model response: user_id={user_id}, session_id={session_id}"
+        )
+        logger.debug(
+            f"Raw response from model for user_id={user_id}, session_id={session_id}: {raw_text}",
             exc_info=True,
         )
-        logger.debug(f"Raw response from model: {raw_text}")
         raise ValueError(f"Failed to parse JSON from model: {raw_text}") from exc
 
     if not isinstance(parsed, list):
         logger.warning(
-            f"[generate_queries_from_history] Expected JSON list, got {type(parsed)}: {raw_text}"
+            f"[generate_queries_from_history] Expected JSON list, got {type(parsed)}: {raw_text} for user_id={user_id}, session_id={session_id}"
         )
         raise ValueError(f"Expected a JSON list, got: {type(parsed)}")
 
@@ -315,12 +361,12 @@ def generate_queries_from_history(
     for i, item in enumerate(parsed):
         if not isinstance(item, dict):
             logger.warning(
-                f"[generate_queries_from_history] Invalid type at index {i}: expected dict, got {type(item)}"
+                f"[generate_queries_from_history] Invalid type at index {i}: expected dict, got {type(item)} for user_id={user_id}, session_id={session_id}"
             )
             raise ValueError(f"Expected dict at index {i}, got: {type(item)}")
         if "query" not in item:
             logger.warning(
-                f"[generate_queries_from_history] Missing 'query' key at index {i}: {item}"
+                f"[generate_queries_from_history] Missing 'query' key at index {i}: {item} for user_id={user_id}, session_id={session_id}"
             )
             raise ValueError(f"Missing 'query' key at index {i} in: {item}")
         queries.append(item["query"])
@@ -328,14 +374,19 @@ def generate_queries_from_history(
     return queries
 
 
-def generate_session_title(query: str) -> str:
+def generate_session_title(query: str, user_id: str, session_id: str) -> str:
     """Generate a concise session title from the user's query.
 
     Args:
         query (str): The user's first query string.
+        user_id (str): The ID of the user (for logging).
+        session_id (str): The session ID (for logging).
 
     Returns:
         str: A generated session title (up to 15 characters, in Japanese).
+
+    Raises:
+        ValueError: If the API call fails or response is invalid.
     """
     # System prompt asks for ≤15‐char Japanese title
     messages = [
@@ -359,9 +410,26 @@ def generate_session_title(query: str) -> str:
     if OPENAI_TYPE == "azure" and DEPLOYMENT_ID is not None:
         kwargs["model"] = DEPLOYMENT_ID
 
-    response = client.chat.completions.create(**kwargs)
-    title = response.choices[0].message.content.strip()
-    return title
+    try:
+        response = client.chat.completions.create(**kwargs)
+        title = response.choices[0].message.content.strip()
+        logger.info(
+            f"[generate_session_title] Title generated for user_id={user_id}, session_id={session_id}"
+        )
+        logger.debug(
+            f"[generate_session_title] Title generated: '{title}' for user_id={user_id}, session_id={session_id}, query='{query}'"
+        )
+        return title
+    except (IndexError, AttributeError) as exc:
+        logger.exception(
+            f"[generate_session_title] Failed to extract title for user_id={user_id}, session_id={session_id}"
+        )
+        raise ValueError("OpenAI response missing expected content") from exc
+    except Exception as exc:
+        logger.exception(
+            f"[generate_session_title] OpenAI API call failed for user_id={user_id}, session_id={session_id}"
+        )
+        raise ValueError("Failed to call language model for session title") from exc
 
 
 def stream_chat_completion(
@@ -377,15 +445,14 @@ def stream_chat_completion(
     rag_mode: str,
     optimized_queries: list[str] | None = None,
     use_reranker: bool = False,
-    conn: psycopg2.extensions.connection | None = None,
 ) -> Generator[str, None, None]:
     """
     Generates a streaming response for the user's query by calling the LLM, then
-    inserts three records into a mock database once the streaming completes.
+    inserts three records into a database once the streaming completes.
 
     This function yields chunks of text to the client via Server-Sent Events (SSE)
     and accumulates the entire assistant response locally. After the final chunk
-    is yielded, it performs a mock database insertion for user/system/assistant
+    is yielded, it performs a database insertion for user/system/assistant
     messages, including relevant metadata.
 
     Args:
@@ -403,7 +470,6 @@ def stream_chat_completion(
         rag_mode (str): The mode to use for generating queries from rag results.
         optimized_queries (list[str] | None, optional): A list of optimized queries.
         use_reranker (bool, optional): Whether to use a reranker model. Defaults to False.
-        conn (psycopg2.extensions.connection, optional): A live PostgreSQL connection used to insert records.
 
     Yields:
         str: SSE data chunks in the format "data: ...\\n\\n" for each partial response
@@ -417,6 +483,9 @@ def stream_chat_completion(
     """
     accumulated_content = ""  # Will hold the entire assistant response
     rerank_model = None  # If you want to pass something else, do so
+    logger.info(
+        f"[stream_chat_completion] Start: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+    )
 
     try:
         # 1) Build the OpenAI messages array
@@ -462,10 +531,15 @@ def stream_chat_completion(
         # (A) Yield chunks to the client and accumulate them
         for chunk in response:
             try:
-                if chunk.choices and chunk.choices[0].delta.content is not None:
-                    content = chunk.choices[0].delta.content
-                    accumulated_content += content
-                    yield f"data: {json.dumps({'data': content}, ensure_ascii=False)}\n\n"
+                choices = chunk.choices
+                if not choices or choices[0].delta.content is None:
+                    logger.warning(
+                        f"[stream_chat_completion] Skipping empty or malformed chunk: user_id={user_id}, session_id={session_id}, round_id={round_id}, chunk={chunk}"
+                    )
+                    continue  # Explicitly skip
+                content = choices[0].delta.content
+                accumulated_content += content
+                yield f"data: {json.dumps({'data': content}, ensure_ascii=False)}\n\n"
             except (IndexError, AttributeError) as e:
                 truncated_chunk = str(chunk) if chunk is not None else "None"
                 if len(truncated_chunk) > MAX_CHUNK_LOG_LEN:
@@ -486,8 +560,6 @@ def stream_chat_completion(
                 break
 
         # (B) Once streaming is finished, do the mock DB insert
-
-        conn = get_connection()
         try:
             insert_three_records(
                 user_id=user_id,
@@ -505,43 +577,67 @@ def stream_chat_completion(
                 rag_mode=rag_mode,
                 optimized_queries=optimized_queries,
                 use_reranker=use_reranker,
-                connection=conn,
             )
-        finally:
-            put_connection(conn)
+        except Exception:
+            logger.exception(
+                f"[stream_chat_completion] Failed to insert records: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+            )
+            raise
 
         # (C) If this was the first user query and the session still has the default name,
         # generate a new title and update the sessions table
         if round_id == 0:
-            conn2 = get_connection()
+            conn: psycopg2.extensions.connection | None = None
             try:
-                with conn2.cursor() as c2:
+                conn = get_connection()
+                with conn.cursor() as c2:
                     c2.execute(
                         "SELECT session_name FROM sessions WHERE session_id = %s",
                         (session_id,),
                     )
-                    current_name = c2.fetchone()[0]
+                    result = c2.fetchone()
+                    if result is None:
+                        logger.warning(
+                            f"[stream_chat_completion] Session ID not found: user_id={user_id}, session_id={session_id}"
+                        )
+                        return
+                    current_name = result[0]
                     if current_name == "Untitled Session":
                         # Ask the LLM for a concise title
-                        new_title = generate_session_title(user_query)
-                        c2.execute(
-                            """
-                            UPDATE sessions
-                            SET session_name = %s,
-                                updated_at = %s,
-                                updated_by = %s
-                            WHERE session_id = %s
-                            """,
-                            (
-                                new_title,
-                                datetime.now(timezone.utc),
-                                user_id,
-                                session_id,
-                            ),
-                        )
-                        conn2.commit()
+                        try:
+                            new_title = generate_session_title(
+                                query=user_query, user_id=user_id, session_id=session_id
+                            )
+                            c2.execute(
+                                """
+                                UPDATE sessions
+                                SET session_name = %s,
+                                    updated_at = %s,
+                                    updated_by = %s
+                                WHERE session_id = %s
+                                """,
+                                (
+                                    new_title,
+                                    datetime.now(timezone.utc),
+                                    user_id,
+                                    session_id,
+                                ),
+                            )
+                            conn.commit()
+                        except Exception:
+                            logger.warning(
+                                f"[stream_chat_completion] Failed to generate session title: user_id={user_id}, session_id={session_id}"
+                            )
+            except Exception as e:
+                logger.exception(
+                    f"[stream_chat_completion] Failed to update session title: user_id={user_id}, session_id={session_id}"
+                )
             finally:
-                put_connection(conn2)
+                put_connection(conn)
+
+        logger.info(
+            f"[stream_chat_completion] Done streaming: user_id={user_id}, session_id={session_id}, round_id={round_id}, total_chars={len(accumulated_content)}"
+        )
 
     except Exception:
         logger.exception(
@@ -1005,7 +1101,6 @@ async def handle_query(
     if rag_mode == "No RAG":
         retrieved_contexts_str = ""
         try:
-            conn = get_connection()
             return StreamingResponse(
                 stream_chat_completion(
                     user_id=user_id,
@@ -1020,12 +1115,12 @@ async def handle_query(
                     rag_mode=rag_mode,
                     optimized_queries=None,
                     use_reranker=use_reranker,
-                    conn=conn,
                 ),
                 media_type="text/event-stream",
             )
         finally:
-            put_connection(conn)
+            pass
+            # put_connection(conn)
 
     if rag_mode == "RAG (Optimized Query)":
         # Example usage of generate_queries_from_history, if needed:
@@ -1046,7 +1141,10 @@ async def handle_query(
 
         try:
             optimized_queries = generate_queries_from_history(
-                messages_list, instructions
+                user_id=user_id,
+                session_id=session_id,
+                messages_list=messages_list,
+                system_instructions=instructions,
             )
             logger.info(f"Optimized queries from LLM: {optimized_queries}")
         except ValueError as exc:
@@ -1102,7 +1200,6 @@ async def handle_query(
     retrieved_contexts_str = build_context_string(
         enhanced_results, use_chromadb=use_chromadb, use_bm25=use_bm25
     )
-    conn = get_connection()
     try:
         return StreamingResponse(
             stream_chat_completion(
@@ -1118,7 +1215,6 @@ async def handle_query(
                 rag_mode=rag_mode,
                 optimized_queries=optimized_queries,
                 use_reranker=use_reranker,
-                conn=conn,
             ),
             media_type="text/event-stream",
         )
@@ -1127,6 +1223,3 @@ async def handle_query(
             f"Streaming failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
         raise HTTPException(status_code=500, detail="Internal server error.")
-
-    finally:
-        put_connection(conn)
