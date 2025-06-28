@@ -4,9 +4,10 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncGenerator, Generator, Literal, NoReturn, cast
+from typing import Any, AsyncGenerator, Generator, Literal, NoReturn, cast
 
 import psycopg2
+import psycopg2.extensions
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
@@ -30,6 +31,7 @@ from ragpon.api.client_init import (
     create_async_openai_client,
     create_openai_client,
 )
+from ragpon.apps.fastapi.db.db_session import get_database_client
 from ragpon.domain.chat import (
     DeleteRoundPayload,
     Message,
@@ -50,6 +52,7 @@ logging.basicConfig(
 app = FastAPI()
 
 MAX_CHUNK_LOG_LEN = 300
+DB_TYPE = "postgres"
 
 try:
     client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
@@ -142,38 +145,6 @@ else:
     logger.warning("BM25_DB is disabled, skipping bm25 retrieval.")
 
 
-def get_connection() -> psycopg2.extensions.connection:
-    """Fetch a connection from the pool."""
-    return db_pool.getconn()
-
-
-def put_connection(conn: psycopg2.extensions.connection | None) -> None:
-    """Return a connection to the pool if not None."""
-    if conn is not None:
-        db_pool.putconn(conn)
-
-
-def raise_internal_server_error(
-    conn: psycopg2.extensions.connection,
-    log_message: str,
-    user_message: str = "Internal server error.",
-) -> NoReturn:
-    """
-    Rolls back the current transaction, logs the error, and raises a standardized HTTP 500 error.
-
-    Args:
-        conn (psycopg2.extensions.connection): The active PostgreSQL connection to rollback.
-        log_message: Log message for internal debugging.
-        user_message: Message to show to the client.
-
-    Raises:
-        HTTPException: Always raises HTTP 500 with the given user_message.
-    """
-    conn.rollback()
-    logger.exception(log_message)
-    raise HTTPException(status_code=500, detail=user_message)
-
-
 def insert_three_records(
     user_id: str,
     session_id: str,
@@ -225,7 +196,7 @@ def insert_three_records(
         use_reranker: Whether reranking was used.
 
     Raises:
-        psycopg2.Error: If any of the insert operations fail.
+        ValueError: if connection is not provided.
     """
     created_at = datetime.now(timezone.utc)
 
@@ -235,6 +206,9 @@ def insert_three_records(
             optimized_queries
         )
 
+    # Each record represents a message to insert with fixed schema mapping
+    created_by_system = "system"
+    created_by_assistant = "assistant"
     records = [
         {
             "id": user_msg_id,
@@ -246,64 +220,63 @@ def insert_three_records(
             "id": system_msg_id,
             "message_type": "system",
             "content": system_content,
-            "created_by": "system",
+            "created_by": created_by_system,
         },
         {
             "id": assistant_msg_id,
             "message_type": "assistant",
             "content": total_stream_content,
-            "created_by": "assistant",
+            "created_by": created_by_assistant,
         },
     ]
     try:
-        connection = get_connection()
-        with connection:
-            with connection.cursor() as cursor:
-                for record in records:
-                    cursor.execute(
-                        """
-                        INSERT INTO messages (
-                            id, round_id, user_id, session_id, app_name,
-                            content, message_type,
-                            created_at, created_by,
-                            is_deleted,
-                            llm_model, use_reranker, rerank_model,
-                            rag_mode
-                        ) VALUES (
-                            %s, %s, %s, %s, %s,
-                            %s, %s,
-                            %s, %s,
-                            %s,
-                            %s, %s, %s,
-                            %s
-                        )
-                        """,
-                        (
-                            record["id"],
-                            round_id,
-                            user_id,
-                            session_id,
-                            app_name,
-                            record["content"],
-                            record["message_type"],
-                            created_at,
-                            record["created_by"],
-                            False,
-                            llm_model,
-                            use_reranker,
-                            rerank_model,
-                            rag_mode,
-                        ),
+        with get_database_client(DB_TYPE, db_pool) as db:
+            for record in records:
+                db.execute(
+                    """
+                    INSERT INTO messages (
+                        id, round_id, user_id, session_id, app_name,
+                        content, message_type,
+                        created_at, created_by,
+                        is_deleted,
+                        llm_model, use_reranker, rerank_model,
+                        rag_mode
+                    ) VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s,
+                        %s, %s,
+                        %s,
+                        %s, %s, %s,
+                        %s
                     )
-    except psycopg2.Error as e:
-        logger.exception(
-            f"[insert_three_records] DB insertion failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+                    """,
+                    (
+                        record["id"],
+                        round_id,
+                        user_id,
+                        session_id,
+                        app_name,
+                        record["content"],
+                        record["message_type"],
+                        created_at,
+                        record["created_by"],
+                        False,
+                        llm_model,
+                        use_reranker,
+                        rerank_model,
+                        rag_mode,
+                    ),
+                )
+
+        logger.info(
+            f"[insert_three_records] Inserted round successfully: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
-        if connection:
-            connection.rollback()
+
+    except Exception:
+        logger.exception(
+            f"[insert_three_records] insert_three_records failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
         raise
-    finally:
-        put_connection(connection)
 
 
 def generate_queries_from_history(
@@ -574,6 +547,7 @@ def stream_chat_completion(
     and accumulates the entire assistant response locally. After the final chunk
     is yielded, it performs a database insertion for user/system/assistant
     messages, including relevant metadata.
+    It also attempts to generate a session title if it's the first round.
 
     Args:
         user_id (str): The ID of the user initiating the query.
@@ -668,21 +642,19 @@ def stream_chat_completion(
         )
 
         if round_id == 0:
-            conn: psycopg2.extensions.connection | None = None
             try:
-                conn = get_connection()
-                with conn.cursor() as c2:
-                    c2.execute(
+                with get_database_client(DB_TYPE, db_pool) as db:
+                    db.execute(
                         "SELECT session_name FROM sessions WHERE session_id = %s",
                         (session_id,),
                     )
-                    result = c2.fetchone()
+                    result = db.fetchone()
                     if result is None:
                         logger.warning(
                             f"[stream_chat_completion] Session ID not found: user_id={user_id}, session_id={session_id}"
                         )
                         return
-                    elif result and result[0] == "Untitled Session":
+                    elif result[0] == "Untitled Session":
                         try:
                             new_title = generate_session_title(
                                 query=user_query,
@@ -692,7 +664,7 @@ def stream_chat_completion(
                                 model_name=model_name,
                                 model_type=model_type,
                             )
-                            c2.execute(
+                            db.execute(
                                 """
                                 UPDATE sessions SET session_name = %s, updated_at = %s, updated_by = %s
                                 WHERE session_id = %s
@@ -704,7 +676,6 @@ def stream_chat_completion(
                                     session_id,
                                 ),
                             )
-                            conn.commit()
                         except Exception:
                             logger.warning(
                                 f"[stream_chat_completion] Failed to generate session title: user_id={user_id}, session_id={session_id}"
@@ -713,9 +684,6 @@ def stream_chat_completion(
                 logger.exception(
                     f"[stream_chat_completion] Failed to update session title: user_id={user_id}, session_id={session_id}"
                 )
-            finally:
-                if conn:
-                    put_connection(conn)
 
         logger.info(
             f"[stream_chat_completion] Done streaming: user_id={user_id}, session_id={session_id}, round_id={round_id}, total_chars={len(accumulated_content)}"
@@ -723,7 +691,7 @@ def stream_chat_completion(
 
     except Exception:
         logger.exception(
-            f"[stream_chat_completion] Streaming failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+            f"[stream_chat_completion] Error: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
         yield f"data: {json.dumps({'error': 'Internal server error occurred'}, ensure_ascii=False)}\n\n"
 
@@ -778,12 +746,13 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
     Returns:
         list[dict]: A list of session objects.
     """
-    logger.info(f"Fetching sessions for user_id={user_id}, app_name={app_name}")
+    logger.info(
+        f"[list_sessions] Fetching sessions for user_id={user_id}, app_name={app_name}"
+    )
 
-    conn = get_connection()
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(
+        with get_database_client(DB_TYPE, db_pool) as db:
+            db.execute(
                 """
                 SELECT
                     s.session_id,
@@ -807,7 +776,7 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
                 """,
                 (user_id, app_name),
             )
-            rows = cursor.fetchall()
+            rows = db.fetchall()
 
         sessions = [
             {
@@ -821,13 +790,10 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
         return sessions
 
     except Exception:
-        raise_internal_server_error(
-            conn=conn,
-            log_message=f"Failed to fetch sessions: user_id={user_id}, app_name={app_name}",
-            user_message="Failed to retrieve sessions.",
+        logger.exception(
+            f"[list_sessions] Failed to fetch sessions: user_id={user_id}, app_name={app_name}"
         )
-    finally:
-        put_connection(conn)
+        raise HTTPException(status_code=500, detail="Failed to retrieve sessions.")
 
 
 @app.get(
@@ -840,16 +806,22 @@ async def list_session_queries(
     """
     Retrieve user and assistant messages for a specific session,
     ensuring user_id and app_name match, ordered by round_id.
-    """
-    conn = get_connection()
 
+    Args:
+        user_id: ID of the user.
+        app_name: Name of the application.
+        session_id: Target session UUID.
+
+    Returns:
+        list[Message]: Messages in the session (user and assistant only).
+    """
     logger.info(
-        f"Querying messages: user_id={user_id}, app_name={app_name}, session_id={session_id}"
+        f"[list_session_queries] Querying messages: user_id={user_id}, app_name={app_name}, session_id={session_id}"
     )
 
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(
+        with get_database_client(DB_TYPE, db_pool) as db:
+            db.execute(
                 """
                 SELECT id, round_id, message_type, content, is_deleted
                 FROM messages
@@ -861,7 +833,7 @@ async def list_session_queries(
                 """,
                 (user_id, app_name, session_id),
             )
-            rows = cursor.fetchall()
+            rows = db.fetchall()
 
         messages = [
             Message(
@@ -876,14 +848,13 @@ async def list_session_queries(
 
         return messages
 
-    except Exception as e:
-        raise_internal_server_error(
-            conn=conn,
-            log_message=f"Failed to list session queries: user_id={user_id}, app_name={app_name}, session_id={session_id}",
-            user_message="Failed to retrieve session queries.",
+    except Exception:
+        logger.exception(
+            f"[list_session_queries] Failed to list session queries: user_id={user_id}, app_name={app_name}, session_id={session_id}"
         )
-    finally:
-        put_connection(conn)
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve session queries."
+        )
 
 
 @app.put("/users/{user_id}/apps/{app_name}/sessions/{session_id}")
@@ -894,28 +865,42 @@ async def create_session(
     session_data: SessionCreate = Body(...),
 ):
     """
-    Mock endpoint to create a new session. Prints out the received fields instead of actually creating a new session.
+    Creates a new session record in the sessions table.
+
+    This endpoint is typically used to register a new chat session
+    for a specific user and application. The session ID is provided
+    by the client, not auto-generated.
 
     Args:
-        user_id (str): The user ID associated with the session.
-        app_name (str): The name of the application context.
-        session_id (str): The ID of the new session.
-        session_data (SessionUpdate): The body payload containing the new session name, privacy flag, and deletion flag.
+        user_id (str): ID of the user creating the session.
+        app_name (str): Name of the application context.
+        session_id (str): Unique identifier for the session (UUID format).
+        session_data (SessionCreate): JSON body containing:
+            - session_name (str): Human-readable title of the session.
+            - is_private_session (bool): Whether the session is private.
+            - is_deleted (bool): Logical deletion flag.
 
     Returns:
-        dict: A simple confirmation response indicating success.
+        dict: A JSON object indicating success or failure. On success:
+            {
+                "status": "ok",
+                "detail": "Session created successfully."
+            }
+
+    Raises:
+        HTTPException: If a session with the same ID already exists (409),
+                       or if database insertion fails (500).
     """
     logger.info(
-        f"Creating session: user_id={user_id}, app_name={app_name}, session_id={session_id}, "
+        f"[create_session] Creating session: user_id={user_id}, app_name={app_name}, session_id={session_id}, "
         f"session_name='{session_data.session_name}', "
         f"is_private_session={session_data.is_private_session}, "
         f"is_deleted={session_data.is_deleted}"
     )
 
-    conn = get_connection()
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(
+        with get_database_client(DB_TYPE, db_pool) as db:
+            db.execute(
                 """
                 INSERT INTO sessions (
                     user_id, session_id, app_name, session_name,
@@ -941,26 +926,23 @@ async def create_session(
                     user_id,
                 ),
             )
-            conn.commit()
+
         logger.info(
-            f"Session created: user_id={user_id}, session_id={session_id}, name={session_data.session_name}"
+            f"[create_session] Session created: user_id={user_id}, session_id={session_id}, name={session_data.session_name}"
         )
         return {"status": "ok", "detail": "Session created successfully."}
 
     except errors.UniqueViolation:
-        conn.rollback()
         logger.warning(
-            f"Session already exists: user_id={user_id}, session_id={session_id}"
+            f"[create_session] Session already exists: user_id={user_id}, session_id={session_id}"
         )
         raise HTTPException(status_code=409, detail="Session already exists.")
-    except Exception as e:
-        raise_internal_server_error(
-            conn=conn,
-            log_message="Failed to create session.",
-            user_message="Internal server error.",
+
+    except Exception:
+        logger.exception(
+            f"[create_session] Failed to create session: user_id={user_id}, session_id={session_id}"
         )
-    finally:
-        put_connection(conn)
+        raise HTTPException(status_code=500, detail="Internal server error.")
 
 
 @app.patch("/users/{user_id}/sessions/{session_id}")
@@ -974,23 +956,25 @@ async def patch_session_info(
 
     Args:
         user_id (str): The user ID associated with the session.
-        session_id (str): The ID of the session to be updated.
-        update_data (SessionUpdate): New session name, flags, etc.
+        session_id (str): The UUID of the session to be updated.
+        update_data (SessionUpdate): Fields to update (name, flags, etc.).
 
     Returns:
-        dict: Status response.
+        JSONResponse: Success response message.
+
+    Raises:
+        HTTPException: 404 if session not found, 500 on internal DB error.
     """
     logger.info(
-        f"PATCH session info: user_id={user_id}, session_id={session_id}, "
+        f"[patch_session_info] PATCH session info: user_id={user_id}, session_id={session_id}, "
         f"session_name='{update_data.session_name}', "
         f"is_private_session={update_data.is_private_session}, "
         f"is_deleted={update_data.is_deleted}"
     )
 
-    conn = get_connection()
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(
+        with get_database_client(DB_TYPE, db_pool) as db:
+            db.execute(
                 """
                 UPDATE sessions
                 SET session_name = %s,
@@ -1011,53 +995,55 @@ async def patch_session_info(
                     session_id,
                 ),
             )
-            if cursor.rowcount == 0:
+            if db.rowcount == 0:
                 logger.warning(
-                    f"Session not found: user_id={user_id}, session_id={session_id}"
+                    f"[patch_session_info] Session not found: user_id={user_id}, session_id={session_id}"
                 )
                 raise HTTPException(status_code=404, detail="Session not found")
 
-            conn.commit()
-
         logger.info(
-            f"Session updated: user_id={user_id}, session_id={session_id}, name={update_data.session_name}"
+            f"[patch_session_info] Session updated: user_id={user_id}, session_id={session_id}, name={update_data.session_name}"
         )
         return JSONResponse({"status": "ok", "detail": "Session updated successfully."})
 
     except HTTPException as e:
         logger.warning(
-            f"Client error while updating session: {e.status_code} - {e.detail}"
+            f"[patch_session_info] Client error while updating session: user_id={user_id}, session_id={session_id}, "
+            f"{e.status_code} - {e.detail}"
         )
         raise
     except Exception:
-        raise_internal_server_error(
-            conn=conn,
-            log_message=f"Failed to update session: user_id={user_id}, session_id={session_id}",
+        logger.exception(
+            f"[patch_session_info] Failed to update session: user_id={user_id}, session_id={session_id}"
         )
-    finally:
-        put_connection(conn)
+        raise HTTPException(status_code=500, detail="Failed to update session.")
 
 
 @app.delete("/sessions/{session_id}/rounds/{round_id}")
 async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPayload):
     """
-    Logically deletes all messages in the given round for the specified session.
+    Marks all messages in a specific round as deleted.
 
     Args:
         session_id (str): The UUID of the session.
-        round_id (int): The round number (e.g., 0, 1, 2).
-        payload (DeleteRoundPayload): Includes who performed the deletion.
+        round_id (int): The round number to delete.
+        payload (DeleteRoundRequest): Contains user_id as deleted_by.
 
     Returns:
-        JSONResponse: Confirmation message.
+        JSONResponse: A response indicating successful logical deletion.
+
+    Raises:
+        HTTPException: 404 if no messages were found, 500 on internal DB error.
     """
+    user_id = payload.deleted_by
+
     logger.info(
-        f"Deleting round {round_id} from session {session_id} by {payload.deleted_by}"
+        f"[delete_round] DELETE round (logical): user_id={user_id}, session_id={session_id}, round_id={round_id}"
     )
-    conn = get_connection()
+
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(
+        with get_database_client(DB_TYPE, db_pool) as db:
+            db.execute(
                 """
                 UPDATE messages
                 SET is_deleted = TRUE,
@@ -1069,33 +1055,31 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
                   AND is_deleted = FALSE
                 """,
                 (
-                    payload.deleted_by,
+                    user_id,
                     datetime.now(timezone.utc),
-                    payload.deleted_by,
+                    user_id,
                     session_id,
                     round_id,
                 ),
             )
-            conn.commit()
+
+            if db.rowcount == 0:
+                logger.warning(
+                    f"[delete_round] No active messages found to delete: user_id={user_id}, "
+                    f"session_id={session_id}, round_id={round_id}"
+                )
+                raise HTTPException(status_code=404, detail="No messages to delete")
 
         logger.info(
-            f"Round deleted: session_id={session_id}, round_id={round_id}, deleted_by={payload.deleted_by}"
+            f"[delete_round] Round marked as deleted: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
-        return JSONResponse(
-            {
-                "status": "ok",
-                "msg": f"Round {round_id} deleted in session {session_id}.",
-            }
-        )
+        return JSONResponse({"status": "ok", "detail": "Messages logically deleted."})
 
     except Exception:
-        raise_internal_server_error(
-            conn=conn,
-            log_message=f"Failed to delete round: user_id={payload.deleted_by}, session_id={session_id}, round_id={round_id}",
+        logger.exception(
+            f"[delete_round] Failed to logically delete round: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
-
-    finally:
-        put_connection(conn)
+        raise HTTPException(status_code=500, detail="Failed to delete round.")
 
 
 @app.patch("/llm_outputs/{llm_output_id}")
@@ -1109,52 +1093,63 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
 
     Returns:
         JSONResponse: Confirmation message.
+
+    Raises:
+        HTTPException: 404 if the message was not found, 500 on DB failure.
     """
     logger.info(
-        f"Patching feedback for id={llm_output_id}: feedback={payload.feedback}, reason={payload.reason}"
+        f"[patch_feedback] Patching feedback: user_id={payload.user_id}, session_id={payload.session_id}, "
+        f"id={llm_output_id}, feedback={payload.feedback}, reason={payload.reason}"
     )
 
-    conn = get_connection()
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(
+        with get_database_client(DB_TYPE, db_pool) as db:
+            db.execute(
                 """
                 UPDATE messages
                 SET feedback = %s,
                     feedback_reason = %s,
                     feedback_at = %s,
-                    updated_at = %s
+                    updated_at = %s,
+                    updated_by = %s
                 WHERE id = %s
-                  AND message_type = 'assistant'
+                    AND session_id = %s
+                    AND message_type = 'assistant'
                 """,
                 (
                     payload.feedback,
                     payload.reason,
                     datetime.now(timezone.utc),
                     datetime.now(timezone.utc),
+                    payload.user_id,
                     llm_output_id,
+                    payload.session_id,
                 ),
             )
-            if cursor.rowcount == 0:
-                logger.warning(f"LLM output not found: id={llm_output_id}")
+            if db.rowcount == 0:
+                logger.warning(
+                    f"[patch_feedback] LLM output not found: id={llm_output_id}, user_id={payload.user_id}, session_id={payload.session_id}"
+                )
                 raise HTTPException(status_code=404, detail="LLM output not found")
 
-            conn.commit()
-
         logger.info(
-            f"Feedback patched: id={llm_output_id}, feedback={payload.feedback}, reason={payload.reason}"
+            f"[patch_feedback] Feedback patched: id={llm_output_id}, feedback={payload.feedback}, reason={payload.reason}, user_id={payload.user_id}, session_id={payload.session_id}"
         )
+
         return JSONResponse({"status": "ok", "msg": "Feedback patched successfully."})
 
     except HTTPException as e:
-        logger.warning(f"Client error in feedback patch: {e.status_code} - {e.detail}")
-        raise
-    except Exception:
-        raise_internal_server_error(
-            conn=conn, log_message=f"Failed to patch feedback: id={llm_output_id}"
+        logger.warning(
+            f"[patch_feedback] Client error in feedback patch: status_code={e.status_code}, detail={e.detail}, "
+            f"user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
         )
-    finally:
-        put_connection(conn)
+        raise
+
+    except Exception:
+        logger.exception(
+            f"[patch_feedback] Failed to patch feedback: user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
+        )
+        raise HTTPException(status_code=500, detail="Failed to patch feedback")
 
 
 @app.post("/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries")
@@ -1171,7 +1166,7 @@ async def handle_query(
         rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
         use_reranker = data.get("use_reranker", False)
     except Exception as e:
-        logger.exception("Failed to parse query request")
+        logger.exception("[handle_query] Failed to parse query request")
         raise HTTPException(status_code=400, detail="Invalid query payload")
 
     user_query = ""
@@ -1231,10 +1226,12 @@ async def handle_query(
                 messages_list=messages_list,
                 system_instructions=instructions,
             )
-            logger.info(f"Optimized queries from LLM: {optimized_queries}")
+            logger.info(
+                f"[handle_query] Optimized queries from LLM: {optimized_queries}"
+            )
         except ValueError as exc:
             logger.warning(
-                f"Failed to generate optimized queries. Using fallback. Error: {exc}"
+                f"[handle_query] Failed to generate optimized queries. Using fallback. Error: {exc}"
             )
             optimized_queries = [user_query]
     else:
@@ -1253,14 +1250,14 @@ async def handle_query(
 
         if use_chromadb and chroma_repo:
             embedded_query = embedder(query)
-            logger.info(f"Searching in ChromaDB for query: {query}")
+            logger.info(f"[handle_query] Searching in ChromaDB for query: {query}")
             partial_chroma = chroma_repo.search(
                 query, top_k=top_k_for_chroma, query_embeddings=embedded_query
             )
             search_results["chroma"].extend(partial_chroma)
 
         if use_bm25 and bm25_repo:
-            logger.info(f"Searching in BM25 for query: {query}")
+            logger.info(f"[handle_query] Searching in BM25 for query: {query}")
             partial_bm25 = bm25_repo.search(query, top_k=top_k_for_bm25)
             search_results["bm25"].extend(partial_bm25)
 
@@ -1308,6 +1305,9 @@ async def handle_query(
         )
     except Exception:
         logger.exception(
-            f"Streaming failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+            f"[handle_query] Streaming failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
         raise HTTPException(status_code=500, detail="Internal server error.")
+
+
+# %%

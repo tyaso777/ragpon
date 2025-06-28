@@ -174,7 +174,7 @@ def call_llm_sync_with_handling(
                         if delta.content:
                             yield delta.content
                         else:
-                            logger.warning(
+                            logger.debug(
                                 f"[call_llm_sync_with_handling] Unexpected empty chunk: "
                                 f"user_id={user_id}, session_id={session_id}, chunk={chunk}"
                             )

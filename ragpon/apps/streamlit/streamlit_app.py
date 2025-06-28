@@ -327,7 +327,12 @@ def delete_round(
 
 
 def patch_feedback(
-    server_url: str, llm_output_id: str, feedback: str, reason: str
+    server_url: str,
+    llm_output_id: str,
+    feedback: str,
+    reason: str | None,
+    user_id: str,
+    session_id: str,
 ) -> None:
     """
     Calls the FastAPI endpoint to patch feedback for a given LLM output ID.
@@ -337,9 +342,20 @@ def patch_feedback(
         llm_output_id (str): The ID of the LLM output to patch feedback on.
         feedback (str): "good" or "bad" feedback type.
         reason (str): The user's explanation or comment for the feedback.
+        user_id (str): The user submitting the feedback.
+        session_id (str): The session associated with the feedback.
+
+    Raises:
+        HTTPError: If the PATCH request fails (non-2xx response).
+
     """
     endpoint = f"{server_url}/llm_outputs/{llm_output_id}"
-    payload = {"feedback": feedback, "reason": reason}
+    payload = {
+        "feedback": feedback,
+        "reason": reason,
+        "user_id": user_id,
+        "session_id": session_id,
+    }
     # Make a PATCH request with a JSON body
     response = requests.patch(endpoint, json=payload)
     response.raise_for_status()
@@ -1142,6 +1158,8 @@ def render_chat_messages(
                 llm_output_id=pending["llm_output_id"],
                 feedback=pending["feedback_type"],
                 reason=pending["reason"],
+                user_id=user_id,
+                session_id=session_id_for_display,
             )
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
@@ -1308,7 +1326,9 @@ def render_user_chat_input(
                 logger.exception(
                     "[render_user_chat_input] Failed to post query to FastAPI"
                 )
-                st.session_state["chat_error_message"] = f"Sorry, something went wrong while sending your message. Please try again."
+                st.session_state["chat_error_message"] = (
+                    f"Sorry, something went wrong while sending your message. Please try again."
+                )
                 return
 
             logger.info("[render_user_chat_input] Streaming response started")

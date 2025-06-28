@@ -118,7 +118,11 @@ class DeleteRoundPayload(BaseModel):
 
 
 class PatchFeedbackPayload(BaseModel):
+    user_id: str = Field(..., description="The user who submitted the feedback.")
+    session_id: str = Field(
+        ..., description="The session in which the message was generated."
+    )
     feedback: Literal["good", "bad"] = Field(
-        ..., description="The feedback message provided by the user."
+        ..., description="The feedback type provided by the user."
     )
     reason: str | None = Field(None, description="The reason for the feedback, if any.")
