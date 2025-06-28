@@ -1308,7 +1308,7 @@ def render_user_chat_input(
                 logger.exception(
                     "[render_user_chat_input] Failed to post query to FastAPI"
                 )
-                st.session_state["chat_error_message"] = f"Request failed: {e}"
+                st.session_state["chat_error_message"] = f"Sorry, something went wrong while sending your message. Please try again."
                 return
 
             logger.info("[render_user_chat_input] Streaming response started")
