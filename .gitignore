@@ -15,3 +15,5 @@ venv/
 # Sphinx の成果物
 docs/build/
 
+# Ignore everything under ragpon/apps/fastapi/models
+ragpon/apps/fastapi/models/**
