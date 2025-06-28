@@ -10,7 +10,7 @@ import requests
 import streamlit as st
 
 from ragpon._utils.logging_helper import get_library_logger
-from ragpon.domain.chat import Message, SessionData
+from ragpon.apps.chat_domain import Message, SessionData
 
 
 @dataclass

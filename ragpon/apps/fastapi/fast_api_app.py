@@ -30,7 +30,7 @@ from ragpon.apps.fastapi.openai.client_init import (
     create_async_openai_client,
     create_openai_client,
 )
-from ragpon.domain.chat import (
+from ragpon.apps.chat_domain import (
     DeleteRoundPayload,
     Message,
     PatchFeedbackPayload,
