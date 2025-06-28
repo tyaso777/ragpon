@@ -4,11 +4,13 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Generator, NoReturn
+from typing import AsyncGenerator, Generator, Literal, NoReturn, cast
 
 import psycopg2
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
+from openai.types.chat import ChatCompletion
 from psycopg2 import errors
 from psycopg2.pool import SimpleConnectionPool
 
@@ -22,7 +24,12 @@ from ragpon import (
     RuriLargeEmbedder,
 )
 from ragpon._utils.logging_helper import get_library_logger
-from ragpon.api.client_init import create_openai_client
+from ragpon.api.client_init import (
+    call_llm_async_with_handling,
+    call_llm_sync_with_handling,
+    create_async_openai_client,
+    create_openai_client,
+)
 from ragpon.domain.chat import (
     DeleteRoundPayload,
     Message,
@@ -32,7 +39,17 @@ from ragpon.domain.chat import (
 )
 from ragpon.tokenizer import SudachiTokenizer
 
+# Initialize logger
+logger = get_library_logger(__name__)
+
+# logging settings for debugging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+
 app = FastAPI()
+
+client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
 
 MAX_CHUNK_LOG_LEN = 300
 
@@ -95,13 +112,6 @@ else:
 
 embedder = ChromaDBEmbeddingAdapter(RuriLargeEmbedder(config=config))
 
-# Initialize logger
-logger = get_library_logger(__name__)
-
-# logging settings for debugging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 
 # Instantiate repositories only if enabled in config
 chroma_repo = (
@@ -130,8 +140,6 @@ bm25_repo = (
     if use_bm25
     else None
 )
-
-client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
 
 
 def insert_three_records(
@@ -374,21 +382,31 @@ def generate_queries_from_history(
     return queries
 
 
-def generate_session_title(query: str, user_id: str, session_id: str) -> str:
-    """Generate a concise session title from the user's query.
+def generate_session_title(
+    query: str,
+    user_id: str,
+    session_id: str,
+    client: OpenAI | AzureOpenAI,
+    model_name: str,
+    model_type: Literal["openai", "azure"],
+) -> str:
+    """
+    Generates a concise session title from the user's query using a language model.
 
     Args:
-        query (str): The user's first query string.
-        user_id (str): The ID of the user (for logging).
-        session_id (str): The session ID (for logging).
+        query (str): The user's initial query string.
+        user_id (str): The user ID for logging and traceability.
+        session_id (str): The session ID for logging and traceability.
+        client (OpenAI | AzureOpenAI): The OpenAI-compatible client instance.
+        model_name (str): The model name (OpenAI) or deployment ID (Azure).
+        model_type (Literal["openai", "azure"]): Indicates which backend is in use.
 
     Returns:
-        str: A generated session title (up to 15 characters, in Japanese).
+        str: A concise session title (up to 15 characters) in Japanese.
 
     Raises:
-        ValueError: If the API call fails or response is invalid.
+        ValueError: If the API call fails or the response is invalid.
     """
-    # System prompt asks for ≤15‐char Japanese title
     messages = [
         {
             "role": "system",
@@ -401,38 +419,105 @@ def generate_session_title(query: str, user_id: str, session_id: str) -> str:
         {"role": "user", "content": query},
     ]
 
-    # Build API args
-    kwargs: dict = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "temperature": 0.0,  # deterministic
-    }
-    if OPENAI_TYPE == "azure" and DEPLOYMENT_ID is not None:
-        kwargs["model"] = DEPLOYMENT_ID
+    response: ChatCompletion = call_llm_sync_with_handling(
+        client=client,
+        model=model_name,
+        messages=messages,
+        user_id=user_id,
+        session_id=session_id,
+        temperature=0.0,
+        stream=False,
+        model_type=model_type,
+    )
 
     try:
-        response = client.chat.completions.create(**kwargs)
-        title = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content.strip()
+        if not content:
+            logger.exception(
+                f"[generate_session_title] OpenAI returned empty title for user_id={user_id}, session_id={session_id}"
+            )
+            raise ValueError("OpenAI returned empty title content")
         logger.info(
-            f"[generate_session_title] Title generated for user_id={user_id}, session_id={session_id}"
+            f"[generate_session_title] Title generated"
+            f"for user_id={user_id}, session_id={session_id}, query='{query}'"
         )
-        logger.debug(
-            f"[generate_session_title] Title generated: '{title}' for user_id={user_id}, session_id={session_id}, query='{query}'"
-        )
-        return title
+        return content
     except (IndexError, AttributeError) as exc:
         logger.exception(
             f"[generate_session_title] Failed to extract title for user_id={user_id}, session_id={session_id}"
         )
         raise ValueError("OpenAI response missing expected content") from exc
-    except Exception as exc:
-        logger.exception(
-            f"[generate_session_title] OpenAI API call failed for user_id={user_id}, session_id={session_id}"
+
+
+async def generate_session_title_async(
+    query: str,
+    user_id: str,
+    session_id: str,
+    client: AsyncOpenAI | AsyncAzureOpenAI,
+    model_name: str,
+    model_type: Literal["openai", "azure"],
+) -> str:
+    """
+    Generates a concise session title from the user's query using a language model.
+
+    Args:
+        query (str): The user's initial query string.
+        user_id (str): The user ID for logging and traceability.
+        session_id (str): The session ID for logging and traceability.
+        client (AsyncOpenAI | AsyncAzureOpenAI): The OpenAI-compatible async client instance.
+        model_name (str): The model name (OpenAI) or deployment ID (Azure).
+        model_type (Literal["openai", "azure"]): Indicates which backend is in use.
+
+    Returns:
+        str: A concise session title (up to 15 characters) in Japanese.
+
+    Raises:
+        ValueError: If the API call fails or the response is invalid.
+    """
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an assistant that generates concise session titles. "
+                "Based on the user's first query, provide a title of at most "
+                "15 characters in Japanese."
+            ),
+        },
+        {"role": "user", "content": query},
+    ]
+
+    response: ChatCompletion = await call_llm_async_with_handling(
+        client=client,
+        model=model_name,
+        messages=messages,
+        user_id=user_id,
+        session_id=session_id,
+        temperature=0.0,
+        stream=False,
+        model_type=model_type,
+    )
+
+    try:
+        content = response.choices[0].message.content.strip()
+        if not content:
+            logger.exception(
+                f"[generate_session_title_async] OpenAI returned empty title for user_id={user_id}, session_id={session_id}"
+            )
+            raise ValueError("OpenAI returned empty title content")
+        logger.info(
+            f"[generate_session_title_async] Title generated"
+            f"for user_id={user_id}, session_id={session_id}, query='{query}'"
         )
-        raise ValueError("Failed to call language model for session title") from exc
+        return content
+    except (IndexError, AttributeError) as exc:
+        logger.exception(
+            f"[generate_session_title_async] Failed to extract title for user_id={user_id}, session_id={session_id}"
+        )
+        raise ValueError("OpenAI response missing expected content") from exc
 
 
 def stream_chat_completion(
+    *,
     user_id: str,
     session_id: str,
     app_name: str,
@@ -443,6 +528,9 @@ def stream_chat_completion(
     messages: list[dict],
     retrieved_contexts_str: str,
     rag_mode: str,
+    client: OpenAI | AzureOpenAI,
+    model_name: str,
+    model_type: Literal["openai", "azure"],
     optimized_queries: list[str] | None = None,
     use_reranker: bool = False,
 ) -> Generator[str, None, None]:
@@ -457,29 +545,28 @@ def stream_chat_completion(
 
     Args:
         user_id (str): The ID of the user initiating the query.
-        session_id (str): The ID of the session associated with this conversation.
-        app_name (str): The name of the application or service.
-        round_id (int): The conversation round number (used to group messages).
-        user_msg_id (str): Unique identifier for the user's message.
-        system_msg_id (str): Unique identifier for the system message.
-        assistant_msg_id (str): Unique identifier for the assistant's message.
-        messages (list[dict]): A list of messages in the format:
+        session_id (str): The ID of the chat session.
+        app_name (str): The name of the calling application.
+        round_id (int): The round number of the current interaction.
+        user_msg_id (str): The UUID for the user's message.
+        system_msg_id (str): The UUID for the system message.
+        assistant_msg_id (str): The UUID for the assistant's message.
+        messages (list[dict]): The list of chat messages for the prompt.
             [ { "role": "user"/"assistant"/"system", "content": "..." }, ... ]
-        retrieved_contexts_str (str): A string containing retrieved context data
-            (e.g., from RAG search) to be provided to the LLM.
-        rag_mode (str): The mode to use for generating queries from rag results.
-        optimized_queries (list[str] | None, optional): A list of optimized queries.
-        use_reranker (bool, optional): Whether to use a reranker model. Defaults to False.
+        retrieved_contexts_str (str): The optional context string to inject (e.g., from RAG).
+        rag_mode (str): The retrieval-augmented generation mode ("No RAG", etc.).
+        client (OpenAI | AzureOpenAI): OpenAI or Azure client.
+        model_name (str): The model name or deployment ID.
+        model_type (Literal["openai", "azure"]): Indicates which backend is being used.
+        optimized_queries (list[str] | None, optional): Optimized queries used for context retrieval.
+        use_reranker (bool, optional): Whether a reranker was applied during retrieval.
 
     Yields:
-        str: SSE data chunks in the format "data: ...\\n\\n" for each partial response
-        from the LLM. Also yields a
-        final "[DONE]" marker if streaming completes
-        successfully.
+        str: A text chunk in Server-Sent Events format (e.g., "data: ...\\n\\n").
 
     Raises:
-        Exception: Propagates any exceptions encountered during the LLM streaming
-        process, yielding an error message to the SSE client.
+        Exception: If streaming fails or DB insertion fails, a generic exception is raised,
+            and a fallback "[error]" message is streamed instead.
     """
     accumulated_content = ""  # Will hold the entire assistant response
     rerank_model = None  # If you want to pass something else, do so
@@ -487,105 +574,67 @@ def stream_chat_completion(
         f"[stream_chat_completion] Start: user_id={user_id}, session_id={session_id}, round_id={round_id}"
     )
 
+    if rag_mode == "No RAG":
+        openai_messages = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Please answer in Japanese.",
+            }
+        ]
+    else:
+        openai_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful assistant. In your responses, please "
+                    "include the file names and page numbers that serve as "
+                    "the basis for your statements.  Please answer in Japanese."
+                ),
+            },
+            {"role": "system", "content": f"Context: {retrieved_contexts_str}"},
+        ]
+    openai_messages.extend(messages)
+
     try:
-        # 1) Build the OpenAI messages array
-        if rag_mode == "No RAG":
-            openai_messages = [
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant. Please answer in Japanese.",
-                },
-            ]
-            openai_messages.extend(messages)
-        else:
-            #    We can prepend system instructions + RAG context, then append the conversation
-            openai_messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful assistant. In your responses, please "
-                        "include the file names and page numbers that serve as "
-                        "the basis for your statements.  Please answer in Japanese."
-                    ),
-                },
-                {
-                    "role": "system",
-                    "content": f"Context: {retrieved_contexts_str}",
-                },
-            ]
-            # Now extend with each item in 'messages'
-            # (We assume each item in messages is already {"role": ..., "content": ...})
-            openai_messages.extend(messages)
+        response_stream = call_llm_sync_with_handling(
+            client=client,
+            model=model_name,
+            messages=openai_messages,
+            user_id=user_id,
+            session_id=session_id,
+            stream=True,
+            temperature=0.7,
+            model_type=model_type,
+        )
 
-        kwargs = {
-            "model": MODEL_NAME,
-            "messages": openai_messages,
-            "temperature": 0.7,
-            "stream": True,
-        }
-        if OPENAI_TYPE == "azure":
-            kwargs["model"] = DEPLOYMENT_ID
-
-        response = client.chat.completions.create(**kwargs)
-
-        # (A) Yield chunks to the client and accumulate them
-        for chunk in response:
-            try:
-                choices = chunk.choices
-                if not choices or choices[0].delta.content is None:
-                    logger.warning(
-                        f"[stream_chat_completion] Skipping empty or malformed chunk: user_id={user_id}, session_id={session_id}, round_id={round_id}, chunk={chunk}"
-                    )
-                    continue  # Explicitly skip
-                content = choices[0].delta.content
-                accumulated_content += content
-                yield f"data: {json.dumps({'data': content}, ensure_ascii=False)}\n\n"
-            except (IndexError, AttributeError) as e:
-                truncated_chunk = str(chunk) if chunk is not None else "None"
-                if len(truncated_chunk) > MAX_CHUNK_LOG_LEN:
-                    truncated_chunk = (
-                        truncated_chunk[:MAX_CHUNK_LOG_LEN] + "...[truncated]"
-                    )
-                logger.warning(
-                    f"[stream_chat_completion] Error processing chunk: {e}; "
-                    f"user_id={user_id}, session_id={session_id}, round_id={round_id}, chunk={truncated_chunk}"
-                )
+        for content_chunk in cast(Generator[str, None, None], response_stream):
+            accumulated_content += content_chunk
+            yield f"data: {json.dumps({'data': content_chunk}, ensure_ascii=False)}\n\n"
 
         yield f"data: {json.dumps({'data': '[DONE]'}, ensure_ascii=False)}\n\n"
 
-        user_query = ""
-        for msg in reversed(messages):
-            if msg["role"] == "user":
-                user_query = msg["content"]
-                break
+        user_query = next(
+            (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
+        )
 
-        # (B) Once streaming is finished, do the mock DB insert
-        try:
-            insert_three_records(
-                user_id=user_id,
-                session_id=session_id,
-                app_name=app_name,
-                round_id=round_id,
-                user_msg_id=user_msg_id,
-                system_msg_id=system_msg_id,
-                assistant_msg_id=assistant_msg_id,
-                user_query=user_query,
-                retrieved_contexts_str=retrieved_contexts_str,
-                total_stream_content=accumulated_content,
-                llm_model=MODEL_NAME,
-                rerank_model=rerank_model,
-                rag_mode=rag_mode,
-                optimized_queries=optimized_queries,
-                use_reranker=use_reranker,
-            )
-        except Exception:
-            logger.exception(
-                f"[stream_chat_completion] Failed to insert records: user_id={user_id}, session_id={session_id}, round_id={round_id}"
-            )
-            raise
+        insert_three_records(
+            user_id=user_id,
+            session_id=session_id,
+            app_name=app_name,
+            round_id=round_id,
+            user_msg_id=user_msg_id,
+            system_msg_id=system_msg_id,
+            assistant_msg_id=assistant_msg_id,
+            user_query=user_query,
+            retrieved_contexts_str=retrieved_contexts_str,
+            total_stream_content=accumulated_content,
+            llm_model=model_name,
+            rerank_model=rerank_model,
+            rag_mode=rag_mode,
+            optimized_queries=optimized_queries,
+            use_reranker=use_reranker,
+        )
 
-        # (C) If this was the first user query and the session still has the default name,
-        # generate a new title and update the sessions table
         if round_id == 0:
             conn: psycopg2.extensions.connection | None = None
             try:
@@ -601,19 +650,19 @@ def stream_chat_completion(
                             f"[stream_chat_completion] Session ID not found: user_id={user_id}, session_id={session_id}"
                         )
                         return
-                    current_name = result[0]
-                    if current_name == "Untitled Session":
-                        # Ask the LLM for a concise title
+                    elif result and result[0] == "Untitled Session":
                         try:
                             new_title = generate_session_title(
-                                query=user_query, user_id=user_id, session_id=session_id
+                                query=user_query,
+                                user_id=user_id,
+                                session_id=session_id,
+                                client=client,
+                                model_name=model_name,
+                                model_type=model_type,
                             )
                             c2.execute(
                                 """
-                                UPDATE sessions
-                                SET session_name = %s,
-                                    updated_at = %s,
-                                    updated_by = %s
+                                UPDATE sessions SET session_name = %s, updated_at = %s, updated_by = %s
                                 WHERE session_id = %s
                                 """,
                                 (
@@ -628,12 +677,13 @@ def stream_chat_completion(
                             logger.warning(
                                 f"[stream_chat_completion] Failed to generate session title: user_id={user_id}, session_id={session_id}"
                             )
-            except Exception as e:
+            except Exception:
                 logger.exception(
                     f"[stream_chat_completion] Failed to update session title: user_id={user_id}, session_id={session_id}"
                 )
             finally:
-                put_connection(conn)
+                if conn:
+                    put_connection(conn)
 
         logger.info(
             f"[stream_chat_completion] Done streaming: user_id={user_id}, session_id={session_id}, round_id={round_id}, total_chars={len(accumulated_content)}"
@@ -641,7 +691,7 @@ def stream_chat_completion(
 
     except Exception:
         logger.exception(
-            f"Streaming failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+            f"[stream_chat_completion] Streaming failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
         yield f"data: {json.dumps({'error': 'Internal server error occurred'}, ensure_ascii=False)}\n\n"
 
@@ -1113,6 +1163,9 @@ async def handle_query(
                     messages=messages_list,
                     retrieved_contexts_str=retrieved_contexts_str,
                     rag_mode=rag_mode,
+                    client=client,
+                    model_name=MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID,
+                    model_type=OPENAI_TYPE,
                     optimized_queries=None,
                     use_reranker=use_reranker,
                 ),
@@ -1213,6 +1266,9 @@ async def handle_query(
                 messages=messages_list,
                 retrieved_contexts_str=retrieved_contexts_str,
                 rag_mode=rag_mode,
+                client=client,
+                model_name=MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID,
+                model_type=OPENAI_TYPE,
                 optimized_queries=optimized_queries,
                 use_reranker=use_reranker,
             ),
