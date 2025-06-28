@@ -2,34 +2,38 @@
 
 # 2. to run POSTGRES
    # For Windows Podman.
-   ```powershell
-      podman run -d `
-      --name postgres `
-      --network ragnet `
-      -p 5432:5432 `
-      -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\apps\postgres\initdb:/docker-entrypoint-initdb.d:Z" `
-      -v postgres:/var/lib/postgresql/data `
-      -e POSTGRES_DB=postgres `
-      -e POSTGRES_USER=postgres `
-      -e POSTGRES_PASSWORD=postgres123 `
-      --restart=unless-stopped `
-      docker.io/postgres:17.4
-   ```
+      ```powershell
+         podman run -d `
+         --name postgres `
+         --network ragnet `
+         -p 5432:5432 `
+         -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\apps\postgres\initdb:/docker-entrypoint-initdb.d:Z" `
+         -v postgres:/var/lib/postgresql/data `
+         -e POSTGRES_DB=postgres `
+         -e POSTGRES_USER=postgres `
+         -e POSTGRES_PASSWORD=postgres123 `
+         --restart=unless-stopped `
+         docker.io/postgres:17.4
+      ```
+      or
+      ```powershell
+         podman start postgres
+      ```
 
    # For WSL podman.
       ```powershell
-      podman machine ssh
-      podman run -d \
-         --name postgres \
-         --network ragnet \
-         -p 5432:5432 \
-         -v postgres:/var/lib/postgresql/data \
-         -v /home/user/ragpon/ragpon/apps/postgres/initdb:/docker-entrypoint-initdb.d:Z \
-         -e POSTGRES_DB=postgres \
-         -e POSTGRES_USER=postgres \
-         -e POSTGRES_PASSWORD=postgres123 \
-         --restart=unless-stopped \
-         docker.io/postgres:17.4
+         podman machine ssh
+         podman run -d \
+            --name postgres \
+            --network ragnet \
+            -p 5432:5432 \
+            -v postgres:/var/lib/postgresql/data \
+            -v /home/user/ragpon/ragpon/apps/postgres/initdb:/docker-entrypoint-initdb.d:Z \
+            -e POSTGRES_DB=postgres \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres123 \
+            --restart=unless-stopped \
+            docker.io/postgres:17.4
       ```
 
 # 3. to run CHROMADB
@@ -67,6 +71,28 @@
             -p 8006:8006 `
             ragpon-fastapi
       ```
+      or
+      ```powershell
+      podman run -it --rm `
+         --name ragpon-fastapi `
+         --network ragnet `
+         -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon:/app:Z" `
+         --workdir /app `
+         -e PYTHONPATH=/app `
+         -e OPENAI_API_KEY=$Env:OPENAI_API_KEY `
+         -p 8006:8006 `
+         ragpon-fastapi `
+         bash -c "
+            unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && \
+            uvicorn ragpon.apps.fastapi.fast_api_app:app \
+                  --host 0.0.0.0 \
+                  --port 8006 \
+                  --workers 4 \
+                  --reload
+         "
+      ```
+
+
 
    # For WSL podman.
       ```powershell
@@ -99,6 +125,7 @@
       ```
 
 # 5. to run STREAMLIT
+   # For Windows Podman.
       ```powershell
          podman run -it --rm `
             --name ragpon-streamlit `
@@ -112,6 +139,7 @@
             bash -c "streamlit run ragpon/apps/streamlit/streamlit_app.py --server.port 8005 --server.address 0.0.0.0"
       ```
 
+   # For WSL podman.
       ```powershell
          podman machine ssh
          podman run -it --rm \
@@ -135,3 +163,15 @@
             "
       ```
 
+# 6. to run Locust
+   # For Windows Podman.
+      ```
+         podman run -it --rm `
+            --name ragpon-locust `
+            --network ragnet `
+            -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\apps\locust:/mnt/locust:Z" `
+            -p 8089:8089 `
+            -w /mnt/locust `
+            ragpon-locust `
+            locust -f locustfile.py --host http://ragpon-fastapi:8006 --web-host 0.0.0.0
+      ```
