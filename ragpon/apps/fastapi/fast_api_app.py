@@ -6,8 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Generator, Literal, NoReturn, cast
 
-import psycopg2
-import psycopg2.extensions
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
@@ -25,13 +23,13 @@ from ragpon import (
     RuriLargeEmbedder,
 )
 from ragpon._utils.logging_helper import get_library_logger
-from ragpon.api.client_init import (
+from ragpon.apps.fastapi.db.db_session import get_database_client
+from ragpon.apps.fastapi.openai.client_init import (
     call_llm_async_with_handling,
     call_llm_sync_with_handling,
     create_async_openai_client,
     create_openai_client,
 )
-from ragpon.apps.fastapi.db.db_session import get_database_client
 from ragpon.domain.chat import (
     DeleteRoundPayload,
     Message,
