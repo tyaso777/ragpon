@@ -49,18 +49,97 @@ logging.basicConfig(
 
 app = FastAPI()
 
-client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
-
 MAX_CHUNK_LOG_LEN = 300
 
-db_pool = SimpleConnectionPool(
-    minconn=1,
-    maxconn=32,
-    host="postgres",
-    dbname="postgres",
-    user="postgres",
-    password="postgres123",
-)
+try:
+    client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
+    logger.info(
+        f"OpenAI client initialized: model={MODEL_NAME}, deployment={DEPLOYMENT_ID}, type={OPENAI_TYPE}"
+    )
+except Exception as e:
+    logger.exception("Failed to initialize OpenAI client during startup")
+    raise
+
+try:
+    db_pool = SimpleConnectionPool(
+        minconn=1,
+        maxconn=32,
+        host="postgres",
+        dbname="postgres",
+        user="postgres",
+        password="postgres123",
+    )
+    logger.info("PostgreSQL connection pool initialized")
+except Exception:
+    logger.exception("Failed to initialize PostgreSQL connection pool")
+    raise
+
+base_path = Path(__file__).parent
+try:
+    config = Config(config_file=base_path / "config" / "sample_config.yml")
+    logger.info("Config file loaded successfully")
+except Exception:
+    logger.exception("Failed to load configuration file")
+    raise
+
+
+# Load feature flags from config
+raw_use_bm25 = config.get("DATABASES.USE_BM25", False)
+if isinstance(raw_use_bm25, str):
+    use_bm25: bool = raw_use_bm25.lower() in ("true", "1", "yes")
+else:
+    use_bm25 = bool(raw_use_bm25)
+
+raw_use_chromadb = config.get("DATABASES.USE_CHROMADB", False)
+if isinstance(raw_use_chromadb, str):
+    use_chromadb: bool = raw_use_chromadb.lower() in ("true", "1", "yes")
+else:
+    use_chromadb = bool(raw_use_chromadb)
+
+try:
+    embedder = ChromaDBEmbeddingAdapter(RuriLargeEmbedder(config=config))
+    logger.info("Embedder initialized successfully")
+except Exception:
+    logger.exception("Failed to initialize embedder")
+    raise
+
+# Instantiate repositories only if enabled in config
+if use_chromadb:
+    try:
+        chroma_repo = ChromaDBRepository(
+            collection_name="pdf_collection",
+            embed_func=embedder,
+            metadata_class=BaseDocument,
+            result_class=Document,
+            similarity="cosine",
+            connection_mode="http",
+            folder_path=None,
+            http_url="chromadb",
+            port=8007,
+        )
+        logger.info("ChromaDB repository initialized")
+    except Exception:
+        logger.exception("Failed to initialize ChromaDB repository")
+        raise
+else:
+    chroma_repo = None
+    logger.warning("ChromaDB is disabled, skipping vector retrieval.")
+
+if use_bm25:
+    try:
+        bm25_repo = BM25Repository(
+            db_path=config.get("DATABASES.BM25_PATH"),
+            schema=BaseDocument,
+            result_class=Document,
+            tokenizer=SudachiTokenizer(),
+        )
+        logger.info("BM25 repository initialized")
+    except Exception:
+        logger.exception("Failed to initialize BM25 repository")
+        raise
+else:
+    bm25_repo = None
+    logger.warning("BM25_DB is disabled, skipping bm25 retrieval.")
 
 
 def get_connection() -> psycopg2.extensions.connection:
@@ -93,53 +172,6 @@ def raise_internal_server_error(
     conn.rollback()
     logger.exception(log_message)
     raise HTTPException(status_code=500, detail=user_message)
-
-
-base_path = Path(__file__).parent
-config = Config(config_file=base_path / "config" / "sample_config.yml")
-
-# Load feature flags from config
-raw_use_bm25 = config.get("DATABASES.USE_BM25", False)
-if isinstance(raw_use_bm25, str):
-    use_bm25: bool = raw_use_bm25.lower() in ("true", "1", "yes")
-else:
-    use_bm25 = bool(raw_use_bm25)
-raw_use_chromadb = config.get("DATABASES.USE_CHROMADB", False)
-if isinstance(raw_use_chromadb, str):
-    use_chromadb: bool = raw_use_chromadb.lower() in ("true", "1", "yes")
-else:
-    use_chromadb = bool(raw_use_chromadb)
-
-embedder = ChromaDBEmbeddingAdapter(RuriLargeEmbedder(config=config))
-
-
-# Instantiate repositories only if enabled in config
-chroma_repo = (
-    ChromaDBRepository(
-        collection_name="pdf_collection",
-        embed_func=embedder,
-        metadata_class=BaseDocument,
-        result_class=Document,
-        similarity="cosine",
-        connection_mode="http",
-        folder_path=None,
-        http_url="chromadb",
-        port=8007,
-    )
-    if use_chromadb
-    else None
-)
-
-bm25_repo = (
-    BM25Repository(
-        db_path=config.get("DATABASES.BM25_PATH"),
-        schema=BaseDocument,
-        result_class=Document,
-        tokenizer=SudachiTokenizer(),
-    )
-    if use_bm25
-    else None
-)
 
 
 def insert_three_records(
