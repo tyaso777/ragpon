@@ -101,21 +101,23 @@ def fetch_session_ids(
     """
     endpoint = f"{server_url}/users/{user_id}/apps/{app_name}/sessions"
     logger.info(
-        f"[fetch_session_ids] Fetching sessions for user={user_id}, app={app_name}"
+        f"[fetch_session_ids] Fetching sessions for user_id={user_id}, app={app_name}"
     )
-    logger.debug(f"[fetch_session_ids] GET {endpoint}")
+    logger.debug(
+        f"[fetch_session_ids] GET {endpoint}, user_id={user_id}, app={app_name}"
+    )
     try:
         response = requests.get(endpoint)
         response.raise_for_status()
     except requests.RequestException as e:
         logger.exception(
-            f"[fetch_session_ids] Failed to fetch sessions from {endpoint}"
+            f"[fetch_session_ids] Failed to fetch sessions from {endpoint}, user_id={user_id}"
         )
         raise
 
     # Expecting a JSON array of objects
     data = response.json()
-    logger.debug(f"[fetch_session_ids] Received response: {data}")
+    logger.debug(f"[fetch_session_ids] Received response for user_id={user_id}: {data}")
 
     # Convert each JSON object into a SessionData instance
     session_list = []
@@ -130,7 +132,9 @@ def fetch_session_ids(
                 ).astimezone(timezone.utc),
             )
         )
-    logger.info(f"[fetch_session_ids] Loaded {len(session_list)} sessions")
+    logger.info(
+        f"[fetch_session_ids] Loaded {len(session_list)} sessions for user_id={user_id}"
+    )
     return session_list
 
 
@@ -224,18 +228,26 @@ def post_query_to_fastapi(
     }
 
     logger.info(
-        f"[post_query_to_fastapi] Posting query for user={user_id}, session={session_id}, round={round_id}"
+        f"[post_query_to_fastapi] Posting query for user_id={user_id}, session_id={session_id}, round_id={round_id}"
     )
-    logger.debug(f"[post_query_to_fastapi] POST {endpoint}")
-    logger.debug(f"[post_query_to_fastapi] Payload: {payload}")
+    logger.debug(
+        f"[post_query_to_fastapi] POST {endpoint} for user_id={user_id}, session_id={session_id}, round_id={round_id}"
+    )
+    logger.debug(
+        f"[post_query_to_fastapi] Payload: {payload} for user_id={user_id}, session_id={session_id}, round_id={round_id}"
+    )
 
     try:
         response = requests.post(endpoint, json=payload, stream=True)
         response.raise_for_status()
-        logger.info("[post_query_to_fastapi] POST succeeded")
+        logger.info(
+            f"[post_query_to_fastapi] POST succeeded for user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
         return response
     except requests.RequestException as e:
-        logger.exception("[post_query_to_fastapi] POST failed")
+        logger.exception(
+            f"[post_query_to_fastapi] POST failed for user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
         raise
 
 
@@ -468,26 +480,36 @@ def sync_dev_test_config() -> None:
     )
 
 
-def show_sidebar_error_message() -> None:
+def show_sidebar_error_message(user_id: str) -> None:
     """
     Displays any error message stored in st.session_state['error_message'] in the sidebar,
     and logs the message using logger.warning. After displaying, the message is deleted.
+
+    Args:
+        user_id (str): The user ID associated with the error message.
     """
     error_msg = st.session_state.pop("error_message", None)
     if error_msg:
-        logger.warning(f"[UI] Showing deferred error message: {error_msg}")
+        logger.warning(
+            f"[UI] Showing deferred error message for user_id={user_id}: {error_msg}"
+        )
         st.sidebar.error(error_msg)
 
 
-def show_chat_error_message() -> None:
+def show_chat_error_message(user_id: str) -> None:
     """
     Displays any error message stored in st.session_state['chat_error_message']
     in the assistant's chat area, and logs the message using logger.warning.
     After displaying, the message is deleted.
+
+    Args:
+        user_id (str): The user ID associated with the error message.
     """
     error_msg = st.session_state.pop("chat_error_message", None)
     if error_msg:
-        logger.warning(f"[UI][Chat] Showing chat error message: {error_msg}")
+        logger.warning(
+            f"[UI][Chat] Showing chat error message for user_id={user_id}: {error_msg}"
+        )
         # with st.chat_message("assistant"):
         st.error(error_msg)
 
@@ -574,8 +596,8 @@ def render_create_session_form(
 
         try:
             logger.info(
-                f"[render_create_session_form] User '{user_id}' requested session creation: "
-                f"name='{data['name']}', private={data['is_private']}"
+                f"[render_create_session_form] Session creation requested: "
+                f"user_id={user_id}, name='{data['name']}', private={data['is_private']}"
             )
 
             # --- Developer test hooks ---
@@ -620,18 +642,18 @@ def render_create_session_form(
 
             logger.info(
                 f"[render_create_session_form] Session created successfully: "
-                f"id={new_session_id}, name='{data['name']}'"
+                f"id={new_session_id}, session_name='{data['name']}' for user_id={user_id}"
             )
 
         except requests.exceptions.RequestException as exc:
             logger.exception(
-                f"[render_create_session_form] Failed to create session '{data['name']}'"
+                f"[render_create_session_form] Failed to create session '{data['name']}' for user_id={user_id}, session_id={new_session_id}"
             )
             st.session_state["error_message"] = f"Failed to create a new session: {exc}"
 
         except Exception:
             logger.exception(
-                "[render_create_session_form] Unexpected error during session creation"
+                f"[render_create_session_form] Unexpected error during session creation for user_id={user_id}, session_id={new_session_id}"
             )
             st.session_state["error_message"] = (
                 "An unexpected error occurred during session creation."
@@ -862,9 +884,10 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
         action = st.session_state.pop("pending_edit_action")
         try:
             logger.info(
-                f"[render_edit_session_form] User '{user_id}' requested to "
-                f"{'DELETE' if action['delete'] else 'UPDATE'} session '{action['session_id']}' "
-                f"with name='{action['new_name']}', private={action['new_privacy']}"
+                f"[render_edit_session_form] Processing session update request: "
+                f"user_id={user_id}, action={'DELETE' if action['delete'] else 'UPDATE'}, "
+                f"session_id={action['session_id']}, new_name='{action['new_name']}', "
+                f"private={action['new_privacy']}"
             )
 
             # --- Developer test hooks ---
@@ -895,7 +918,8 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
                     is_deleted=True,
                 )
                 logger.info(
-                    f"[render_edit_session_form] Session '{action['session_id']}' deleted successfully"
+                    f"[render_edit_session_form] Successfully deleted session: "
+                    f"user_id={user_id}, session_id={action['session_id']}"
                 )
                 st.session_state["session_ids"] = [
                     s
@@ -918,7 +942,7 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
                 )
                 logger.info(
                     f"[render_edit_session_form] Session '{action['session_id']}' updated successfully "
-                    f"with name='{action['new_name']}', private={action['new_privacy']}"
+                    f"with name='{action['new_name']}', private={action['new_privacy']}, user_id={user_id}."
                 )
                 for s in st.session_state["session_ids"]:
                     if s.session_id == action["session_id"]:
@@ -927,14 +951,14 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
                         break
         except requests.RequestException:
             logger.exception(
-                f"[render_edit_session_form] Failed to modify session '{action['session_id']}'"
+                f"[render_edit_session_form] Failed to modify session '{action['session_id']}' for user_id={user_id}."
             )
             st.session_state["error_message"] = (
                 f"Failed to modify session: {action['session_id']}"
             )
         except Exception as e:
             logger.exception(
-                f"[render_edit_session_form] Unexpected error during session modification for session '{action['session_id']}'"
+                f"[render_edit_session_form] Unexpected error during session modification for session '{action['session_id']}', user_id={user_id}"
             )
             st.session_state["error_message"] = (
                 f"Unexpected error occurred while modifying session: {e}"
@@ -973,7 +997,7 @@ def render_chat_messages(
     """
     displayed_round_ids: set[int] = set()
     logger.info(
-        f"[render_chat_messages] Rendering chat for session_id={session_id_for_display} with {len(messages)} messages"
+        f"[render_chat_messages] Rendering chat for user_id={user_id}, session_id={session_id_for_display} with {len(messages)} messages"
     )
 
     dev_cfg: DevTestConfig = st.session_state.get("dev_test_config", DevTestConfig())
@@ -1001,7 +1025,7 @@ def render_chat_messages(
                 disabled=disabled_ui,
             ):
                 logger.info(
-                    f"[render_chat_messages] Trash button clicked for round_id={msg.round_id} by user={user_id}"
+                    f"[render_chat_messages] Trash button clicked for round_id={msg.round_id} by user_id={user_id}"
                 )
                 st.session_state["confirm_delete_round_id"] = msg.round_id
 
@@ -1015,7 +1039,7 @@ def render_chat_messages(
                             "✅ Yes, delete", key=f"confirm_yes_{msg.round_id}"
                         ):
                             logger.info(
-                                f"[render_chat_messages] Confirmed deletion for round_id={msg.round_id} by user={user_id}"
+                                f"[render_chat_messages] Confirmed deletion for round_id={msg.round_id} by user_id={user_id}"
                             )
                             st.session_state["is_ui_locked"] = True
                             st.session_state["ui_lock_reason"] = (
@@ -1033,7 +1057,7 @@ def render_chat_messages(
             # Good button
             if col_good.button("😊", key=f"good_{msg.id}", disabled=disabled_ui):
                 logger.info(
-                    f"[render_chat_messages] GOOD feedback for message_id={msg.id} by user={user_id}"
+                    f"[render_chat_messages] GOOD feedback for message_id={msg.id} by user_id={user_id}"
                 )
                 st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "good"
@@ -1042,7 +1066,7 @@ def render_chat_messages(
             # Bad button
             if col_bad.button("😞", key=f"bad_{msg.id}", disabled=disabled_ui):
                 logger.info(
-                    f"[render_chat_messages] BAD feedback for message_id={msg.id} by user={user_id}"
+                    f"[render_chat_messages] BAD feedback for message_id={msg.id} by user_id={user_id}"
                 )
                 st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "bad"
@@ -1062,7 +1086,7 @@ def render_chat_messages(
                             disabled=disabled_ui,
                         ):
                             logger.info(
-                                f"[render_chat_messages] Submitting feedback for message_id={msg.id} by user={user_id}"
+                                f"[render_chat_messages] Submitting feedback for message_id={msg.id} by user_id={user_id}"
                                 f"type={st.session_state['feedback_form_type']} "
                                 f"reason='{feedback_reason}'"
                             )
@@ -1118,14 +1142,14 @@ def render_chat_messages(
             st.session_state["session_histories"][session_id_for_display] = messages
         except requests.exceptions.RequestException as e:
             logger.warning(
-                f"[render_chat_messages] RequestException while deleting round_id={round_id}: {e}"
+                f"[render_chat_messages] RequestException while deleting round_id={round_id} for user_id={user_id}: {e}"
             )
             st.session_state["chat_error_message"] = (
                 "Failed to delete the message. Please try again."
             )
         except Exception:
             logger.exception(
-                f"[render_chat_messages] Unexpected error while deleting round_id={round_id}"
+                f"[render_chat_messages] Unexpected error while deleting round_id={round_id} for user_id={user_id}"
             )
             st.session_state["chat_error_message"] = (
                 "An unexpected error occurred during deletion. Please contact support if the issue persists."
@@ -1140,7 +1164,7 @@ def render_chat_messages(
         try:
             pending = st.session_state.pop("pending_feedback")
             logger.info(
-                f"[render_chat_messages] Feedback submitted: message_id={pending['llm_output_id']} by user={user_id}"
+                f"[render_chat_messages] Feedback submitted: message_id={pending['llm_output_id']} by user_id={user_id}"
                 f"type={pending['feedback_type']} reason='{pending['reason']}'"
             )
 
@@ -1165,7 +1189,7 @@ def render_chat_messages(
             st.session_state["feedback_form_type"] = None
         except requests.exceptions.RequestException as e:
             logger.exception(
-                f"[render_chat_messages] RequestException while submitting feedback for message_id={pending['llm_output_id']} by user={user_id}"
+                f"[render_chat_messages] RequestException while submitting feedback for message_id={pending['llm_output_id']} by user_id={user_id}"
             )
             st.session_state["chat_error_message"] = (
                 "Failed to submit feedback. Please try again."
@@ -1174,7 +1198,7 @@ def render_chat_messages(
             st.session_state["feedback_form_type"] = None
         except Exception:
             logger.exception(
-                f"[render_chat_messages] Unexpected error while submitting feedback for message_id={pending['llm_output_id']} by user={user_id}"
+                f"[render_chat_messages] Unexpected error while submitting feedback for message_id={pending['llm_output_id']} by user_id={user_id}"
             )
             st.session_state["chat_error_message"] = (
                 "An unexpected error occurred during feedback submission."
@@ -1256,7 +1280,10 @@ def render_user_chat_input(
 
             user_input = st.session_state.pop("pending_user_input")
             logger.info(
-                f"[render_user_chat_input] User '{user_id}' submitted query: {user_input}"
+                f"[render_user_chat_input] Query submitted by user_id={user_id}, session_id={session_id_for_display}"
+            )
+            logger.debug(
+                f"[render_user_chat_input] Query submitted by user_id={user_id}, session_id={session_id_for_display}, user_input={user_input}"
             )
 
             if dev_cfg.simulate_unexpected_exception:
@@ -1299,7 +1326,7 @@ def render_user_chat_input(
 
             logger.info(
                 f"[render_user_chat_input] Sending query to FastAPI: "
-                f"session_id={session_id_for_display}, round_id={new_round_id}, rag_mode={rag_mode}, reranker={use_reranker}"
+                f"user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}, rag_mode={rag_mode}, reranker={use_reranker}"
             )
 
             # 3) Post to FastAPI (streaming)
@@ -1324,14 +1351,16 @@ def render_user_chat_input(
                 )
             except requests.exceptions.RequestException as e:
                 logger.exception(
-                    "[render_user_chat_input] Failed to post query to FastAPI"
+                    f"[render_user_chat_input] Failed to post query to FastAPI for user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}"
                 )
                 st.session_state["chat_error_message"] = (
                     f"Sorry, something went wrong while sending your message. Please try again."
                 )
                 return
 
-            logger.info("[render_user_chat_input] Streaming response started")
+            logger.info(
+                f"[render_user_chat_input] Streaming response started for user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}"
+            )
 
             # 4) Stream partial assistant responses
             # Initialize buffer for streaming
@@ -1352,7 +1381,10 @@ def render_user_chat_input(
                         stream_chunk_index += 1
 
                     buf += chunk
-                    logger.debug(f"Chunk: {chunk}")
+
+                    logger.debug(
+                        f"[render_user_chat_input] Stream chunk [{stream_chunk_index}] for user_id={user_id}: {chunk[:300] + ('...[truncated]' if len(chunk) > 300 else '')}"
+                    )
 
                     while "\n\n" in buf:
                         event, buf = buf.split("\n\n", 1)
@@ -1365,7 +1397,7 @@ def render_user_chat_input(
                             data = payload.get("data")
                             if not isinstance(data, str):
                                 logger.warning(
-                                    f"[render_user_chat_input] Invalid assistant response structure: data is not string ({type(data)})"
+                                    f"[render_user_chat_input] Invalid assistant response structure for user_id={user_id}: data is not string ({type(data)})"
                                 )
                                 st.session_state["chat_error_message"] = (
                                     "The assistant response could not be processed due to unexpected format."
@@ -1373,7 +1405,7 @@ def render_user_chat_input(
                                 return
                         except json.JSONDecodeError:
                             logger.warning(
-                                f"[render_user_chat_input] Invalid JSON in chunk: {json_str}"
+                                f"[render_user_chat_input] Invalid JSON in chunk for user_id={user_id}: {json_str}"
                             )
                             st.session_state["chat_error_message"] = (
                                 "The assistant response was malformed and could not be processed."
@@ -1416,8 +1448,10 @@ def render_user_chat_input(
                     s.last_touched_at = now
                     break
             st.session_state["session_ids"].sort(key=lambda x: x.last_touched_at)
-        except Exception as e:
-            logger.exception("[render_user_chat_input] Unexpected error in main block")
+        except Exception:
+            logger.exception(
+                f"[render_user_chat_input] Unexpected error in main block for user_id={user_id}, session_id={session_id_for_display}"
+            )
             st.session_state["chat_error_message"] = (
                 "An unexpected error occurred. Please try again."
             )
@@ -1438,9 +1472,6 @@ def main() -> None:
     with an ability to delete (is_deleted) a round via a trash button.
     """
     st.title("RAG + LLM Streamlit App")
-
-    # Show global error messages at the top of sidebar
-    show_sidebar_error_message()
 
     # Initialize session state variables for UI locking
     st.session_state.setdefault("is_ui_locked", False)
@@ -1469,6 +1500,9 @@ def main() -> None:
     num_of_prev_msg_with_llm: int = (
         6  # Number of messages to keep in the chat with the assistant
     )
+
+    # Step 1.5: Show global error messages at the top of sidebar
+    show_sidebar_error_message(user_id=user_id)
 
     # Step 2: Fetch list of sessions
     load_session_ids(server_url=server_url, user_id=user_id, app_name=app_name)
@@ -1518,7 +1552,7 @@ def main() -> None:
     )
 
     # Step 6.5: Show any chat error messages
-    show_chat_error_message()
+    show_chat_error_message(user_id=user_id)
 
     # Step 7: Handle new user input
     render_user_chat_input(
