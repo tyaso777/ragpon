@@ -143,7 +143,9 @@ class PostgreDBSession(DatabaseSession):
                 self.conn.commit()
             else:
                 self.conn.rollback()
-                logger.exception("Transaction rolled back due to exception.")
+                logger.exception(
+                    "[PostgreDBSession] Transaction rolled back due to exception."
+                )
             self.pool.putconn(self.conn)
 
     def execute(self, query: str, params: tuple = ()) -> None:
@@ -160,7 +162,9 @@ class PostgreDBSession(DatabaseSession):
             logger.error(
                 "[PostgreDBSession] execute() called but cursor is not initialized"
             )
-            raise RuntimeError("Cursor not initialized. Use within a 'with' context.")
+            raise RuntimeError(
+                "[PostgreDBSession] Cursor not initialized. Use within a 'with' context."
+            )
         self.cursor.execute(query, params)
 
     def fetchall(self) -> list[tuple]:
@@ -176,7 +180,9 @@ class PostgreDBSession(DatabaseSession):
             logger.error(
                 "[PostgreDBSession] fetchall() called but cursor is not initialized"
             )
-            raise RuntimeError("Cursor not initialized. Use within a 'with' context.")
+            raise RuntimeError(
+                "[PostgreDBSession] Cursor not initialized. Use within a 'with' context."
+            )
         return self.cursor.fetchall()
 
     def fetchone(self) -> tuple | None:
@@ -192,7 +198,9 @@ class PostgreDBSession(DatabaseSession):
             logger.error(
                 "[PostgreDBSession] fetchone() called but cursor is not initialized"
             )
-            raise RuntimeError("Cursor not initialized. Use within a 'with' context.")
+            raise RuntimeError(
+                "[PostgreDBSession] Cursor not initialized. Use within a 'with' context."
+            )
         return self.cursor.fetchone()
 
     @property
@@ -201,7 +209,9 @@ class PostgreDBSession(DatabaseSession):
             logger.error(
                 "[PostgreDBSession] fetchone() called but cursor is not initialized"
             )
-            raise RuntimeError("Cursor not initialized. Use within a 'with' context.")
+            raise RuntimeError(
+                "[PostgreDBSession] Cursor not initialized. Use within a 'with' context."
+            )
         return self.cursor.rowcount
 
 
@@ -219,6 +229,8 @@ def get_database_client(db_type: str, pool: Any) -> DatabaseSession:
     if db_type == "postgres":
         return PostgreDBSession(pool)
     elif db_type == "mysql":
-        raise ValueError(f"MySQL support is not implemented yet: db_type={db_type}")
+        raise ValueError(
+            f"[get_database_client] MySQL support is not implemented yet: db_type={db_type}"
+        )
     else:
-        raise ValueError(f"Unsupported database type: {db_type}")
+        raise ValueError(f"[get_database_client] Unsupported database type: {db_type}")

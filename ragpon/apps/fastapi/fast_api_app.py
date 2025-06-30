@@ -23,19 +23,19 @@ from ragpon import (
     RuriLargeEmbedder,
 )
 from ragpon._utils.logging_helper import get_library_logger
-from ragpon.apps.fastapi.db.db_session import get_database_client
-from ragpon.apps.fastapi.openai.client_init import (
-    call_llm_async_with_handling,
-    call_llm_sync_with_handling,
-    create_async_openai_client,
-    create_openai_client,
-)
 from ragpon.apps.chat_domain import (
     DeleteRoundPayload,
     Message,
     PatchFeedbackPayload,
     SessionCreate,
     SessionUpdate,
+)
+from ragpon.apps.fastapi.db.db_session import get_database_client
+from ragpon.apps.fastapi.openai.client_init import (
+    call_llm_async_with_handling,
+    call_llm_sync_with_handling,
+    create_async_openai_client,
+    create_openai_client,
 )
 from ragpon.tokenizer import SudachiTokenizer
 
@@ -44,8 +44,10 @@ logger = get_library_logger(__name__)
 
 # logging settings for debugging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.WARNING, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+# Set INFO level logging specifically for the ragpon.apps.fastapi package
+logging.getLogger("ragpon.apps.fastapi").setLevel(logging.INFO)
 
 app = FastAPI()
 
@@ -55,10 +57,10 @@ DB_TYPE = "postgres"
 try:
     client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
     logger.info(
-        f"OpenAI client initialized: model={MODEL_NAME}, deployment={DEPLOYMENT_ID}, type={OPENAI_TYPE}"
+        f"[Startup] OpenAI client initialized: model={MODEL_NAME}, deployment={DEPLOYMENT_ID}, type={OPENAI_TYPE}"
     )
-except Exception as e:
-    logger.exception("Failed to initialize OpenAI client during startup")
+except Exception:
+    logger.exception("[Startup] Failed to initialize OpenAI client during startup")
     raise
 
 try:
@@ -70,17 +72,17 @@ try:
         user="postgres",
         password="postgres123",
     )
-    logger.info("PostgreSQL connection pool initialized")
+    logger.info("[Startup] PostgreSQL connection pool initialized")
 except Exception:
-    logger.exception("Failed to initialize PostgreSQL connection pool")
+    logger.exception("[Startup] Failed to initialize PostgreSQL connection pool")
     raise
 
 base_path = Path(__file__).parent
 try:
     config = Config(config_file=base_path / "config" / "sample_config.yml")
-    logger.info("Config file loaded successfully")
+    logger.info("[Startup] Config file loaded successfully")
 except Exception:
-    logger.exception("Failed to load configuration file")
+    logger.exception("[Startup] Failed to load configuration file")
     raise
 
 
@@ -99,10 +101,12 @@ else:
 
 try:
     embedder = ChromaDBEmbeddingAdapter(RuriLargeEmbedder(config=config))
-    logger.info("Embedder initialized successfully")
+    logger.info("[Startup] Embedder initialized successfully")
 except Exception:
-    logger.exception("Failed to initialize embedder")
+    logger.exception("[Startup] Failed to initialize embedder")
     raise
+
+logger.info(f"[Startup] use_chromadb = {use_chromadb}, use_bm25 = {use_bm25}")
 
 # Instantiate repositories only if enabled in config
 if use_chromadb:
@@ -118,13 +122,13 @@ if use_chromadb:
             http_url="chromadb",
             port=8007,
         )
-        logger.info("ChromaDB repository initialized")
+        logger.info("[Startup] ChromaDB repository initialized")
     except Exception:
-        logger.exception("Failed to initialize ChromaDB repository")
+        logger.exception("[Startup] Failed to initialize ChromaDB repository")
         raise
 else:
     chroma_repo = None
-    logger.warning("ChromaDB is disabled, skipping vector retrieval.")
+    logger.warning("[Startup] ChromaDB initialization is skipped (disabled by config)")
 
 if use_bm25:
     try:
@@ -134,13 +138,13 @@ if use_bm25:
             result_class=Document,
             tokenizer=SudachiTokenizer(),
         )
-        logger.info("BM25 repository initialized")
+        logger.info("[Startup] BM25 repository initialized")
     except Exception:
-        logger.exception("Failed to initialize BM25 repository")
+        logger.exception("[Startup] Failed to initialize BM25 repository")
         raise
 else:
     bm25_repo = None
-    logger.warning("BM25_DB is disabled, skipping bm25 retrieval.")
+    logger.warning("[Startup] BM25_DB initialization is skipped (disabled by config)")
 
 
 def insert_three_records(
@@ -1164,7 +1168,9 @@ async def handle_query(
         rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
         use_reranker = data.get("use_reranker", False)
     except Exception as e:
-        logger.exception("[handle_query] Failed to parse query request")
+        logger.exception(
+            f"[handle_query] Failed to parse query request for user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
         raise HTTPException(status_code=400, detail="Invalid query payload")
 
     user_query = ""
@@ -1172,6 +1178,14 @@ async def handle_query(
         if msg["role"] == "user":
             user_query = msg["content"]
             break
+
+    if not user_query:
+        logger.warning(
+            f"[handle_query] No user message found in messages_list for user_id={user_id}, session_id={session_id}"
+        )
+        raise HTTPException(
+            status_code=500, detail="No user message found in request. Cannot proceed."
+        )
 
     if rag_mode == "No RAG":
         retrieved_contexts_str = ""
@@ -1196,9 +1210,11 @@ async def handle_query(
                 ),
                 media_type="text/event-stream",
             )
-        finally:
-            pass
-            # put_connection(conn)
+        except Exception:
+            logger.exception(
+                f"[handle_query] Streaming failed for No RAG Mode: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+            )
+            raise HTTPException(status_code=500, detail="Internal server error.")
 
     if rag_mode == "RAG (Optimized Query)":
         # Example usage of generate_queries_from_history, if needed:
@@ -1225,14 +1241,18 @@ async def handle_query(
                 system_instructions=instructions,
             )
             logger.info(
-                f"[handle_query] Optimized queries from LLM: {optimized_queries}"
+                f"[handle_query] Optimized queries from LLM for user_id={user_id}, session_id={session_id}, round_id={round_id}"
+            )
+            logger.debug(
+                f"[handle_query] Optimized queries from LLM for user_id={user_id}, session_id={session_id}, round_id={round_id}: {optimized_queries}"
             )
         except ValueError as exc:
             logger.warning(
-                f"[handle_query] Failed to generate optimized queries. Using fallback. Error: {exc}"
+                f"[handle_query] Failed to generate optimized queries for user_id={user_id}, session_id={session_id}, round_id={round_id}. Using fallback. Error: {exc}"
             )
             optimized_queries = [user_query]
     else:
+        # RAG (Standard) or fallback mode
         optimized_queries = [user_query]
 
     search_results = {
@@ -1248,14 +1268,24 @@ async def handle_query(
 
         if use_chromadb and chroma_repo:
             embedded_query = embedder(query)
-            logger.info(f"[handle_query] Searching in ChromaDB for query: {query}")
+            logger.info(
+                f"[handle_query] Searching in ChromaDB for user_id={user_id}, session_id={session_id}"
+            )
+            logger.debug(
+                f"[handle_query] Searching in ChromaDB for user_id={user_id}, session_id={session_id}, query={query}"
+            )
             partial_chroma = chroma_repo.search(
                 query, top_k=top_k_for_chroma, query_embeddings=embedded_query
             )
             search_results["chroma"].extend(partial_chroma)
 
         if use_bm25 and bm25_repo:
-            logger.info(f"[handle_query] Searching in BM25 for query: {query}")
+            logger.info(
+                f"[handle_query] Searching in BM25 for user_id={user_id}, session_id={session_id}"
+            )
+            logger.debug(
+                f"[handle_query] Searching in BM25 for user_id={user_id}, session_id={session_id}, query={query}"
+            )
             partial_bm25 = bm25_repo.search(query, top_k=top_k_for_bm25)
             search_results["bm25"].extend(partial_bm25)
 
