@@ -44,16 +44,8 @@ CMD ["uvicorn", "ragpon.apps.fastapi.fast_api_app:app", "--host", "0.0.0.0", "--
 # podman build -f ragpon/apps/fastapi/Dockerfile -t ragpon-fastapi .
 
 # how to run:
-# podman run -it --rm `
-#   --name ragpon-fastapi `
-#   --network ragnet `
-#   -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon:/app:Z" `
-#   --workdir /app `
-#   -e PYTHONPATH=/app `
-#   -e OPENAI_API_KEY=$Env:OPENAI_API_KEY `
-#   -p 8006:8006 `
-#   ragpon-fastapi
+# see how_to_run_memo.txt
 
-# For deployment, you can delete the -v option by using Copy command when creating the image.
+# For deployment, you can delete the -v option by using Copy command when creating the image if necessary.
 
 
