@@ -1319,6 +1319,31 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
 async def handle_query(
     user_id: str, app_name: str, session_id: str, request: Request
 ) -> StreamingResponse:
+    """
+    Handles a user query request, performs optional retrieval-augmented generation (RAG),
+    and streams the assistant's response using Server-Sent Events (SSE).
+
+    This endpoint supports two modes:
+    - "No RAG": Directly sends user messages to the LLM.
+    - "RAG (Optimized Query)": Generates optimized queries, retrieves relevant documents,
+      enhances them with surrounding context, and streams the final LLM response.
+
+    The function performs validation, optimized query generation, document search (ChromaDB/BM25),
+    context enhancement, and response streaming. It also logs all important events.
+
+    Args:
+        user_id (str): ID of the user issuing the query.
+        app_name (str): Name of the calling application.
+        session_id (str): Unique session identifier for the conversation.
+        request (Request): The incoming POST request, including query data.
+
+    Returns:
+        StreamingResponse: A server-sent event stream containing the assistant's response.
+
+    Raises:
+        HTTPException: On JSON parsing error, missing user message, search/enhancement failure,
+        or unexpected internal server error.
+    """
     try:
         data = await request.json()
     except Exception:
@@ -1422,40 +1447,80 @@ async def handle_query(
         enhance_num_after = DEFAULT_ENHANCE_AFTER
 
         if use_chromadb and chroma_repo:
-            embedded_query = embedder(query)
-            logger.info(
-                f"[handle_query] Searching in ChromaDB for user_id={user_id}, session_id={session_id}"
-            )
-            logger.debug(
-                f"[handle_query] Searching in ChromaDB for user_id={user_id}, session_id={session_id}, query={query}"
-            )
-            partial_chroma = chroma_repo.search(
-                query, top_k=top_k_for_chroma, query_embeddings=embedded_query
-            )
-            search_results["chroma"].extend(partial_chroma)
+            try:
+                embedded_query = embedder(query)
+                logger.info(
+                    f"[handle_query] Searching in ChromaDB for user_id={user_id}, session_id={session_id}"
+                )
+                logger.debug(
+                    f"[handle_query] Searching in ChromaDB for user_id={user_id}, session_id={session_id}, query={query}"
+                )
+                partial_chroma = chroma_repo.search(
+                    query, top_k=top_k_for_chroma, query_embeddings=embedded_query
+                )
+                search_results["chroma"].extend(partial_chroma)
+            except Exception as e:
+                logger.exception(
+                    f"[handle_query] ChromaDB search failed for query='{query}': user_id={user_id}, session_id={session_id}"
+                )
 
         if use_bm25 and bm25_repo:
-            logger.info(
-                f"[handle_query] Searching in BM25 for user_id={user_id}, session_id={session_id}"
-            )
-            logger.debug(
-                f"[handle_query] Searching in BM25 for user_id={user_id}, session_id={session_id}, query={query}"
-            )
-            partial_bm25 = bm25_repo.search(query, top_k=top_k_for_bm25)
-            search_results["bm25"].extend(partial_bm25)
+            try:
+                logger.info(
+                    f"[handle_query] Searching in BM25 for user_id={user_id}, session_id={session_id}"
+                )
+                logger.debug(
+                    f"[handle_query] Searching in BM25 for user_id={user_id}, session_id={session_id}, query={query}"
+                )
+                partial_bm25 = bm25_repo.search(query, top_k=top_k_for_bm25)
+                search_results["bm25"].extend(partial_bm25)
+            except Exception as e:
+                logger.exception(
+                    f"[handle_query] BM25 search failed for query='{query}': user_id={user_id}, session_id={session_id}"
+                )
 
+    if not search_results["chroma"] and not search_results["bm25"]:
+        logger.error(
+            f"[handle_query] No search results found from either ChromaDB or BM25: user_id={user_id}, session_id={session_id}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="No documents were retrieved from either ChromaDB or BM25 search.",
+        )
+
+    # TODO: add Try/Except for each search to handle individual failures
     enhanced_results = {}
     if use_chromadb and chroma_repo:
-        enhanced_results["chroma"] = chroma_repo.enhance(
-            search_results["chroma"],
-            num_before=enhance_num_before,
-            num_after=enhance_num_after,
-        )
+        try:
+            enhanced_results["chroma"] = chroma_repo.enhance(
+                search_results["chroma"],
+                num_before=enhance_num_before,
+                num_after=enhance_num_after,
+            )
+        except Exception:
+            logger.exception(
+                f"[handle_query] ChromaDB enhancement failed: user_id={user_id}, session_id={session_id}"
+            )
+
     if use_bm25 and chroma_repo:
-        enhanced_results["bm25"] = chroma_repo.enhance(
-            search_results["bm25"],
-            num_before=enhance_num_before,
-            num_after=enhance_num_after,
+        try:
+            enhanced_results["bm25"] = chroma_repo.enhance(
+                search_results["bm25"],
+                num_before=enhance_num_before,
+                num_after=enhance_num_after,
+            )
+        except Exception:
+            logger.exception(
+                f"[handle_query] BM25 enhancement failed: user_id={user_id}, session_id={session_id}"
+            )
+
+    if not enhanced_results.get("chroma") and not enhanced_results.get("bm25"):
+        logger.error(
+            f"[handle_query] No enhanced results available from either ChromaDB or BM25: user_id={user_id}, session_id={session_id}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Document retrieval succeeded, but context enhancement failed for both ChromaDB and BM25.",
         )
 
     # please write rerank process
