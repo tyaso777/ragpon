@@ -2,6 +2,7 @@
 # FastAPI side
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Generator, Literal, NoReturn, cast
@@ -42,17 +43,65 @@ from ragpon.tokenizer import SudachiTokenizer
 # Initialize logger
 logger = get_library_logger(__name__)
 
+# Global (other) logger level
+other_level_str = os.getenv("RAGPON_OTHER_LOG_LEVEL", "WARNING").upper()
+other_level = getattr(logging, other_level_str, logging.WARNING)
+
+# RAGPON-specific logger level
+app_level_str = os.getenv("RAGPON_APP_LOG_LEVEL", "INFO").upper()
+app_level = getattr(logging, app_level_str, logging.INFO)
+
+
 # logging settings for debugging
 logging.basicConfig(
-    level=logging.WARNING, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=other_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
 # Set INFO level logging specifically for the ragpon.apps.fastapi package
-logging.getLogger("ragpon.apps.fastapi").setLevel(logging.INFO)
+logging.getLogger("ragpon.apps.fastapi").setLevel(app_level)
+
+# Log the resolved log levels
+logger.info(
+    f"[Startup] RAGPON_APP_LOG_LEVEL resolved to {logging.getLevelName(app_level)}"
+)
+logger.info(
+    f"[Startup] RAGPON_OTHER_LOG_LEVEL resolved to {logging.getLevelName(other_level)}"
+)
 
 app = FastAPI()
 
 MAX_CHUNK_LOG_LEN = 300
 DB_TYPE = "postgres"
+MAX_TOP_K = 30
+
+SYSTEM_PROMPT_NO_RAG = "You are a helpful assistant. Please answer in Japanese."
+
+SYSTEM_PROMPT_WITH_CONTEXT = (
+    "You are a helpful assistant. Please answer in Japanese.\n"
+    "You MUST always cite the reference materials that support your statements using their RAG Rank.\n"
+    "Use the format: [[RAG_RANK=number]].\n"
+    "This format is REQUIRED so the system can later extract references.\n"
+    "If multiple sources are used, include all relevant RAG Rank values like [[RAG_RANK=1]], [[RAG_RANK=2]].\n"
+    "Do NOT include doc_id or semantic distance.\n"
+    "Every factual statement based on retrieved content MUST include the RAG Rank.\n"
+    "Example:\n"
+    "強化されたテキストは、検索文脈を明確にするのに役立ちます [[RAG_RANK=2]]。\n"
+    "Be concise and accurate in your response."
+)
+
+OPTIMIZED_QUERY_INSTRUCTION = """
+Your task is to reconstruct the user's request from the conversation above so it can effectively retrieve the most relevant documents using vector search in **Japanese**. 
+Currently, only vector search is used (not BM25+), so it is essential that your reformulated queries maximize semantic relevance.
+
+Please focus on generating queries that will help answer the **final user question** in the conversation. You may refer to the context of the entire conversation to understand the user's intent, but your output should support answering the final question directly and concretely.
+
+If needed, split the request into multiple queries. You must respond **only** with strictly valid JSON, containing an array of objects, each with a single 'query' key. No extra text or explanation is allowed. For example:
+[
+    {"query": "Example query 1"},
+    {"query": "Example query 2"}
+]
+If only one query is sufficient, you may include just one object. Ensure that each query captures the user's intent clearly and naturally, using language that enhances the effectiveness of vector-based retrieval.
+"""
 
 try:
     client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
@@ -145,6 +194,44 @@ if use_bm25:
 else:
     bm25_repo = None
     logger.warning("[Startup] BM25_DB initialization is skipped (disabled by config)")
+
+# Load retrieval-related parameters from config with validation and logging
+try:
+    # NOTE: config.config is the raw dict loaded from YAML;
+    retrieval_cfg = config.config.get("RETRIEVAL", {})
+    logger.debug(f"[Startup] Loaded RETRIEVAL config: {retrieval_cfg}")
+
+    DEFAULT_TOP_K_CHROMA = int(retrieval_cfg.get("TOP_K_CHROMADB", 12))
+    DEFAULT_TOP_K_BM25 = int(retrieval_cfg.get("TOP_K_BM25", 4))
+    DEFAULT_ENHANCE_BEFORE = int(retrieval_cfg.get("ENHANCE_NUM_BEFORE", 1))
+    DEFAULT_ENHANCE_AFTER = int(retrieval_cfg.get("ENHANCE_NUM_AFTER", 1))
+
+    # Validate top_k values must be positive
+    if DEFAULT_TOP_K_CHROMA <= 0 or DEFAULT_TOP_K_BM25 <= 0:
+        raise ValueError("TOP_K values must be positive integers")
+
+    # Warn if values are too large (e.g., might slow down retrieval)
+    if DEFAULT_TOP_K_CHROMA > MAX_TOP_K:
+        logger.warning(
+            f"[Startup] TOP_K_CHROMADB={DEFAULT_TOP_K_CHROMA} may be too large and impact performance"
+        )
+    if DEFAULT_TOP_K_BM25 > MAX_TOP_K:
+        logger.warning(
+            f"[Startup] TOP_K_BM25={DEFAULT_TOP_K_BM25} may be too large and impact performance"
+        )
+
+    logger.info(
+        f"[Startup] Retrieval parameters loaded: "
+        f"TOP_K_CHROMADB={DEFAULT_TOP_K_CHROMA}, "
+        f"TOP_K_BM25={DEFAULT_TOP_K_BM25}, "
+        f"ENHANCE_BEFORE={DEFAULT_ENHANCE_BEFORE}, "
+        f"ENHANCE_AFTER={DEFAULT_ENHANCE_AFTER}"
+    )
+except (ValueError, TypeError) as exc:
+    logger.exception(
+        f"[Startup] Failed to parse retrieval parameters from config: {retrieval_cfg}"
+    )
+    raise RuntimeError("Invalid retrieval configuration values") from exc
 
 
 def insert_three_records(
@@ -586,20 +673,16 @@ def stream_chat_completion(
         openai_messages = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant. Please answer in Japanese.",
+                "content": SYSTEM_PROMPT_NO_RAG,
             }
         ]
     else:
         openai_messages = [
             {
                 "role": "system",
-                "content": (
-                    "You are a helpful assistant. In your responses, please "
-                    "include the file names and page numbers that serve as "
-                    "the basis for your statements.  Please answer in Japanese."
-                ),
+                "content": (SYSTEM_PROMPT_WITH_CONTEXT),
             },
-            {"role": "system", "content": f"Context: {retrieved_contexts_str}"},
+            {"role": "user", "content": retrieved_contexts_str},
         ]
     openai_messages.extend(messages)
 
@@ -702,6 +785,8 @@ def build_context_string(
     rag_results: dict[str, list[Document]],
     use_chromadb: bool,
     use_bm25: bool,
+    user_id: str,
+    session_id: str,
 ) -> str:
     """
     Convert the dictionary of RAG results into a text block
@@ -711,8 +796,16 @@ def build_context_string(
             Mapping from backend name ("chroma" or "bm25") to list of docs.
         use_chromadb (bool): Whether chromadb results should be included.
         use_bm25 (bool): Whether bm25 results should be included.
+        user_id (str): ID of the user for logging context.
+        session_id (str): Session ID for logging context.
+
     Returns:
         str: Multiline string with file, page, and text from each doc.
+
+    Raises:
+        Exception: If any unexpected error occurs during the context string
+        construction. Per-document errors are logged and skipped, but a
+        failure in the outer loop or formatting may still raise.
     """
     # Determine which backends to include based on feature flags
     db_types: list[str] = []
@@ -722,15 +815,55 @@ def build_context_string(
         db_types.append("bm25")
 
     lines: list[str] = []
-    for db_type in db_types:
-        for doc in rag_results.get(db_type, []):
-            # Append metadata and enhanced text
-            lines.append(f"File: {doc.base_document.metadata['file_path']}")
-            lines.append(f"Page: {doc.base_document.metadata['page_number']}")
-            lines.append(f"Text: {doc.enhanced_text}")
-            lines.append("---")
+    try:
+        for db_type in db_types:
+            for i, doc in enumerate(rag_results.get(db_type, [])):
+                try:
+                    doc_id = doc.base_document.doc_id
+                    distance = doc.base_document.distance
+                    # file_path = doc.base_document.metadata.get("file_path", "unknown")
+                    # page_number = doc.base_document.metadata.get(
+                    #     "page_number", "unknown"
+                    # )
+                    enhanced_text = doc.enhanced_text or ""
 
-    return "\n".join(lines)
+                    # Append metadata and enhanced text
+                    lines.append(f"RAG Rank: {i}")
+                    lines.append(f"doc_id: {doc_id}")
+                    lines.append(f"semantic distance: {distance}")
+                    # lines.append(f"File: {file_path}")
+                    # lines.append(f"Page: {page_number}")
+                    lines.append(f"Text: {enhanced_text}")
+
+                except Exception as e:
+                    logger.warning(
+                        f"[build_context_string] Failed to process document from {db_type}: {e}; "
+                        f"user_id={user_id}, session_id={session_id}"
+                    )
+
+        max_len = 300
+        joined_lines = "\n".join(lines)
+
+        if len(joined_lines) <= max_len * 2:
+            trimmed = joined_lines
+        else:
+            trimmed = (
+                f"{joined_lines[:max_len]}... [truncated] ...{joined_lines[-max_len:]}"
+            )
+
+        logger.info(
+            f"[build_context_string] Context built: user_id={user_id}, session_id={session_id}, total_lines={len(joined_lines)}"
+        )
+        logger.debug(
+            f"[build_context_string] Context built: user_id={user_id}, session_id={session_id}, lines=\n{trimmed}"
+        )
+        return joined_lines
+
+    except Exception:
+        logger.exception(
+            f"[build_context_string] Unexpected error while building context string: user_id={user_id}, session_id={session_id}"
+        )
+        return ""
 
 
 @app.get("/users/{user_id}/apps/{app_name}/sessions")
@@ -749,7 +882,7 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
         list[dict]: A list of session objects.
     """
     logger.info(
-        f"[list_sessions] Fetching sessions for user_id={user_id}, app_name={app_name}"
+        f"[list_sessions] Fetching sessions: user_id={user_id}, app_name={app_name}"
     )
 
     try:
@@ -789,13 +922,20 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
             }
             for row in rows
         ]
+
+        logger.info(
+            f"[list_sessions] Retrieved {len(sessions)} sessions for user_id={user_id}"
+        )
+
         return sessions
 
     except Exception:
         logger.exception(
             f"[list_sessions] Failed to fetch sessions: user_id={user_id}, app_name={app_name}"
         )
-        raise HTTPException(status_code=500, detail="Failed to retrieve sessions.")
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve session list from the database."
+        )
 
 
 @app.get(
@@ -810,15 +950,18 @@ async def list_session_queries(
     ensuring user_id and app_name match, ordered by round_id.
 
     Args:
-        user_id: ID of the user.
-        app_name: Name of the application.
-        session_id: Target session UUID.
+        user_id (str): ID of the user.
+        app_name (str): Name of the application.
+        session_id (str): Target session UUID.
 
     Returns:
         list[Message]: Messages in the session (user and assistant only).
+
+    Raises:
+        HTTPException: If the query fails due to database issues or unexpected errors.
     """
     logger.info(
-        f"[list_session_queries] Querying messages: user_id={user_id}, app_name={app_name}, session_id={session_id}"
+        f"[list_session_queries] Start querying messages: user_id={user_id}, app_name={app_name}, session_id={session_id}"
     )
 
     try:
@@ -848,14 +991,20 @@ async def list_session_queries(
             for row in rows
         ]
 
+        logger.info(
+            f"[list_session_queries] Retrieved {len(messages)} messages "
+            f"for user_id={user_id}, session_id={session_id}"
+        )
+
         return messages
 
     except Exception:
         logger.exception(
-            f"[list_session_queries] Failed to list session queries: user_id={user_id}, app_name={app_name}, session_id={session_id}"
+            f"[list_session_queries] Failed to fetch messages: user_id={user_id}, session_id={session_id}"
         )
         raise HTTPException(
-            status_code=500, detail="Failed to retrieve session queries."
+            status_code=500,
+            detail="Failed to retrieve session queries from the database.",
         )
 
 
@@ -890,8 +1039,9 @@ async def create_session(
             }
 
     Raises:
-        HTTPException: If a session with the same ID already exists (409),
-                       or if database insertion fails (500).
+        HTTPException:
+            - 409: If a session with the same ID already exists.
+            - 500: If a database error occurs during insertion.
     """
     logger.info(
         f"[create_session] Creating session: user_id={user_id}, app_name={app_name}, session_id={session_id}, "
@@ -901,6 +1051,7 @@ async def create_session(
     )
 
     try:
+        now = datetime.now(timezone.utc)
         with get_database_client(DB_TYPE, db_pool) as db:
             db.execute(
                 """
@@ -920,9 +1071,9 @@ async def create_session(
                     app_name,
                     session_data.session_name,
                     session_data.is_private_session,
-                    datetime.now(timezone.utc),
+                    now,
                     user_id,
-                    datetime.now(timezone.utc),
+                    now,
                     user_id,
                     session_data.is_deleted,
                     user_id,
@@ -930,7 +1081,7 @@ async def create_session(
             )
 
         logger.info(
-            f"[create_session] Session created: user_id={user_id}, session_id={session_id}, name={session_data.session_name}"
+            f"[create_session] Session successfully created: user_id={user_id}, session_id={session_id}"
         )
         return {"status": "ok", "detail": "Session created successfully."}
 
@@ -965,16 +1116,19 @@ async def patch_session_info(
         JSONResponse: Success response message.
 
     Raises:
-        HTTPException: 404 if session not found, 500 on internal DB error.
+        HTTPException:
+            - 404: If no session matched the given user_id and session_id.
+            - 500: If a database error occurs during update.
     """
     logger.info(
-        f"[patch_session_info] PATCH session info: user_id={user_id}, session_id={session_id}, "
+        f"[patch_session_info] PATCH request: user_id={user_id}, session_id={session_id}, "
         f"session_name='{update_data.session_name}', "
         f"is_private_session={update_data.is_private_session}, "
         f"is_deleted={update_data.is_deleted}"
     )
 
     try:
+        now = datetime.now(timezone.utc)
         with get_database_client(DB_TYPE, db_pool) as db:
             db.execute(
                 """
@@ -991,7 +1145,7 @@ async def patch_session_info(
                     update_data.session_name,
                     update_data.is_private_session,
                     update_data.is_deleted,
-                    datetime.now(timezone.utc),
+                    now,
                     user_id,
                     user_id,
                     session_id,
@@ -1016,7 +1170,7 @@ async def patch_session_info(
         raise
     except Exception:
         logger.exception(
-            f"[patch_session_info] Failed to update session: user_id={user_id}, session_id={session_id}"
+            f"[patch_session_info] Unexpected error while updating session: user_id={user_id}, session_id={session_id}"
         )
         raise HTTPException(status_code=500, detail="Failed to update session.")
 
@@ -1029,13 +1183,15 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
     Args:
         session_id (str): The UUID of the session.
         round_id (int): The round number to delete.
-        payload (DeleteRoundRequest): Contains user_id as deleted_by.
+        payload (DeleteRoundPayload): Contains user_id as deleted_by.
 
     Returns:
         JSONResponse: A response indicating successful logical deletion.
 
     Raises:
-        HTTPException: 404 if no messages were found, 500 on internal DB error.
+        HTTPException:
+            - 404: If no messages were found to delete (already deleted or non-existent).
+            - 500: On unexpected database or system errors.
     """
     user_id = payload.deleted_by
 
@@ -1044,6 +1200,7 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
     )
 
     try:
+        now = datetime.now(timezone.utc)
         with get_database_client(DB_TYPE, db_pool) as db:
             db.execute(
                 """
@@ -1058,7 +1215,7 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
                 """,
                 (
                     user_id,
-                    datetime.now(timezone.utc),
+                    now,
                     user_id,
                     session_id,
                     round_id,
@@ -1067,8 +1224,8 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
 
             if db.rowcount == 0:
                 logger.warning(
-                    f"[delete_round] No active messages found to delete: user_id={user_id}, "
-                    f"session_id={session_id}, round_id={round_id}"
+                    f"[delete_round] No active messages found to delete: "
+                    f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
                 )
                 raise HTTPException(status_code=404, detail="No messages to delete")
 
@@ -1076,6 +1233,9 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
             f"[delete_round] Round marked as deleted: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
         return JSONResponse({"status": "ok", "detail": "Messages logically deleted."})
+
+    except HTTPException:
+        raise
 
     except Exception:
         logger.exception(
@@ -1100,11 +1260,12 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
         HTTPException: 404 if the message was not found, 500 on DB failure.
     """
     logger.info(
-        f"[patch_feedback] Patching feedback: user_id={payload.user_id}, session_id={payload.session_id}, "
-        f"id={llm_output_id}, feedback={payload.feedback}, reason={payload.reason}"
+        f"[patch_feedback] Attempting feedback patch: user_id={payload.user_id}, session_id={payload.session_id}, "
+        f"llm_output_id={llm_output_id}, feedback={payload.feedback}, reason={payload.reason}"
     )
 
     try:
+        now = datetime.now(timezone.utc)
         with get_database_client(DB_TYPE, db_pool) as db:
             db.execute(
                 """
@@ -1121,8 +1282,8 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
                 (
                     payload.feedback,
                     payload.reason,
-                    datetime.now(timezone.utc),
-                    datetime.now(timezone.utc),
+                    now,
+                    now,
                     payload.user_id,
                     llm_output_id,
                     payload.session_id,
@@ -1130,26 +1291,26 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
             )
             if db.rowcount == 0:
                 logger.warning(
-                    f"[patch_feedback] LLM output not found: id={llm_output_id}, user_id={payload.user_id}, session_id={payload.session_id}"
+                    f"[patch_feedback] Feedbacked LLM output not found: user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
                 )
                 raise HTTPException(status_code=404, detail="LLM output not found")
 
         logger.info(
-            f"[patch_feedback] Feedback patched: id={llm_output_id}, feedback={payload.feedback}, reason={payload.reason}, user_id={payload.user_id}, session_id={payload.session_id}"
+            f"[patch_feedback] Feedback successfully patched: user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
         )
 
         return JSONResponse({"status": "ok", "msg": "Feedback patched successfully."})
 
     except HTTPException as e:
         logger.warning(
-            f"[patch_feedback] Client error in feedback patch: status_code={e.status_code}, detail={e.detail}, "
-            f"user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
+            f"[patch_feedback] Client error: "
+            f"user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}, status_code={e.status_code}, detail={e.detail}"
         )
         raise
 
     except Exception:
         logger.exception(
-            f"[patch_feedback] Failed to patch feedback: user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
+            f"[patch_feedback] Unexpected failure: user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
         )
         raise HTTPException(status_code=500, detail="Failed to patch feedback")
 
@@ -1160,22 +1321,24 @@ async def handle_query(
 ) -> StreamingResponse:
     try:
         data = await request.json()
-        user_msg_id = data.get("user_msg_id", "")
-        system_msg_id = data.get("system_msg_id", "")
-        assistant_msg_id = data.get("assistant_msg_id", "")
-        round_id = data.get("round_id", 0)
-        messages_list = data.get("messages", [])  # an array of {role, content}
-        rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
-        use_reranker = data.get("use_reranker", False)
-    except Exception as e:
+    except Exception:
         logger.exception(
-            f"[handle_query] Failed to parse query request for user_id={user_id}, session_id={session_id}, round_id={round_id}"
+            f"[handle_query] Failed to parse query request for user_id={user_id}, session_id={session_id}"
         )
         raise HTTPException(status_code=400, detail="Invalid query payload")
 
+    # Extract fields after successful parsing
+    user_msg_id = data.get("user_msg_id", "")
+    system_msg_id = data.get("system_msg_id", "")
+    assistant_msg_id = data.get("assistant_msg_id", "")
+    round_id = data.get("round_id", 0)
+    messages_list = data.get("messages", [])  # an array of {role, content}
+    rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
+    use_reranker = data.get("use_reranker", False)
+
     user_query = ""
     for msg in reversed(messages_list):
-        if msg["role"] == "user":
+        if msg.get("role") == "user":
             user_query = msg["content"]
             break
 
@@ -1218,20 +1381,7 @@ async def handle_query(
 
     if rag_mode == "RAG (Optimized Query)":
         # Example usage of generate_queries_from_history, if needed:
-        instructions = (
-            "Your task is to reconstruct the user’s request from the conversation above so it can "
-            "effectively retrieve relevant documents using both vector search and BM25+ search in **Japanese**. "
-            "If needed, split the request into multiple queries. You must respond **only** with "
-            "strictly valid JSON, containing an array of objects, each with a single 'query' key. "
-            "No extra text or explanation is allowed. For example:\n"
-            "[\n"
-            '  {"query": "Example query 1"},\n'
-            '  {"query": "Example query 2"}\n'
-            "]\n"
-            "If only one query is sufficient, you may include just one object. Make sure you "
-            "accurately capture the user’s intent, adding any relevant context if necessary to "
-            "produce clear, natural-sounding queries."
-        )
+        instructions = OPTIMIZED_QUERY_INSTRUCTION
 
         try:
             optimized_queries = generate_queries_from_history(
@@ -1248,7 +1398,12 @@ async def handle_query(
             )
         except ValueError as exc:
             logger.warning(
-                f"[handle_query] Failed to generate optimized queries for user_id={user_id}, session_id={session_id}, round_id={round_id}. Using fallback. Error: {exc}"
+                f"[handle_query] Failed to generate optimized queries, fallback to user query: user_id={user_id}, session_id={session_id}, round_id={round_id}, error={exc}"
+            )
+            optimized_queries = [user_query]
+        except Exception as exc:
+            logger.warning(
+                f"[handle_query] Unexpected Error while generating optimized queries, fallback to user query: user_id={user_id}, session_id={session_id}, round_id={round_id}, error={exc}"
             )
             optimized_queries = [user_query]
     else:
@@ -1261,10 +1416,10 @@ async def handle_query(
     }
 
     for query in optimized_queries:
-        top_k_for_chroma = 12 // (len(optimized_queries))
-        top_k_for_bm25 = 4 // (len(optimized_queries))
-        enhance_num_brefore = 2
-        enhance_num_after = 3
+        top_k_for_chroma = DEFAULT_TOP_K_CHROMA // (len(optimized_queries))
+        top_k_for_bm25 = DEFAULT_TOP_K_BM25 // (len(optimized_queries))
+        enhance_num_before = DEFAULT_ENHANCE_BEFORE
+        enhance_num_after = DEFAULT_ENHANCE_AFTER
 
         if use_chromadb and chroma_repo:
             embedded_query = embedder(query)
@@ -1293,13 +1448,13 @@ async def handle_query(
     if use_chromadb and chroma_repo:
         enhanced_results["chroma"] = chroma_repo.enhance(
             search_results["chroma"],
-            num_before=enhance_num_brefore,
+            num_before=enhance_num_before,
             num_after=enhance_num_after,
         )
     if use_bm25 and chroma_repo:
         enhanced_results["bm25"] = chroma_repo.enhance(
             search_results["bm25"],
-            num_before=enhance_num_brefore,
+            num_before=enhance_num_before,
             num_after=enhance_num_after,
         )
 
@@ -1308,7 +1463,11 @@ async def handle_query(
         pass
 
     retrieved_contexts_str = build_context_string(
-        enhanced_results, use_chromadb=use_chromadb, use_bm25=use_bm25
+        enhanced_results,
+        use_chromadb=use_chromadb,
+        use_bm25=use_bm25,
+        user_id=user_id,
+        session_id=session_id,
     )
     try:
         return StreamingResponse(
@@ -1336,6 +1495,3 @@ async def handle_query(
             f"[handle_query] Streaming failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
         raise HTTPException(status_code=500, detail="Internal server error.")
-
-
-# %%
