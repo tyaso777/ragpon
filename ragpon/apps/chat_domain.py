@@ -1,15 +1,17 @@
 from datetime import datetime, timezone
 from enum import Enum
+from json import loads
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 class RoleEnum(str, Enum):
     """Allowed roles for a chat message."""
 
-    user = "user"
-    assistant = "assistant"
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
 
 
 class SessionData(BaseModel):
@@ -33,15 +35,15 @@ class Message(BaseModel):
     Represents a single chat message with role, content, message ID, and round ID.
 
     Attributes:
-        role (RoleEnum): The role of the sender, either "user" or "assistant".
-        content (str): The message content.
+        role (RoleEnum): The role of the sender, either "user", "assistant", or "system".
+        content (str): The message content. Must be JSON if role is "system".
         id (str): A unique identifier for the message. (alias: id)
         round_id (int): The round number in the conversation.
         is_deleted (bool): Indicates if the message is deleted. Defaults to False.
     """
 
     role: RoleEnum = Field(
-        ..., description="Role of the sender. Either 'user' or 'assistant'."
+        ..., description="Role of the sender. Either 'user', 'assistant', or 'system'."
     )
     content: str = Field(..., description="The content of the message.")
     id: str = Field(..., alias="id", description="Unique identifier for the message.")
@@ -50,6 +52,18 @@ class Message(BaseModel):
         default=False,
         description="Indicates if the message has been marked as deleted.",
     )
+
+    @field_validator("content", mode="after")
+    @classmethod
+    def validate_content_for_system_role(cls, v: str, info: ValidationInfo) -> str:
+        """Ensure content is valid JSON if role is 'system'."""
+        role = info.data.get("role") if info.data else None
+        if role == RoleEnum.SYSTEM:
+            try:
+                loads(v)
+            except Exception as exc:
+                raise ValueError("System message content must be valid JSON") from exc
+        return v
 
     class Config:
         populate_by_name = True

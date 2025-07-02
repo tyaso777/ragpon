@@ -157,6 +157,10 @@ def call_llm_sync_with_handling(
         kwargs["stream"] = stream
 
         if stream:
+            logger.info(
+                f"[call_llm_sync_with_handling] Streaming LLM call initiated: "
+                f"user_id={user_id}, session_id={session_id}, model={model}, model_type={model_type}"
+            )
 
             def stream_generator() -> Generator[str, None, None]:
                 response = client.chat.completions.create(**kwargs)
@@ -185,6 +189,10 @@ def call_llm_sync_with_handling(
 
             return stream_generator()
         else:
+            logger.info(
+                f"[call_llm_sync_with_handling] Non-streaming LLM call initiated: "
+                f"user_id={user_id}, session_id={session_id}, model={model}, model_type={model_type}"
+            )
             response = client.chat.completions.create(**kwargs)
             return response
 

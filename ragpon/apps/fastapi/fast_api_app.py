@@ -3,7 +3,9 @@
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
+from json import dumps
 from pathlib import Path
 from typing import Any, AsyncGenerator, Generator, Literal, NoReturn, cast
 
@@ -85,7 +87,8 @@ SYSTEM_PROMPT_WITH_CONTEXT = (
     "Do NOT include doc_id or semantic distance.\n"
     "Every factual statement based on retrieved content MUST include the RAG Rank.\n"
     "Example:\n"
-    "強化されたテキストは、検索文脈を明確にするのに役立ちます [[RAG_RANK=2]]。\n"
+    "1. 強化されたテキストは、検索文脈を明確にするのに役立ちます [[RAG_RANK=5]]。\n"
+    "2. 様々なテキストを扱えることで柔軟なインプットを可能にしています [[RAG_RANK=8]]。\n"
     "Be concise and accurate in your response."
 )
 
@@ -702,6 +705,31 @@ def stream_chat_completion(
             accumulated_content += content_chunk
             yield f"data: {json.dumps({'data': content_chunk}, ensure_ascii=False)}\n\n"
 
+        context_rows = parse_context_string_to_structured(
+            content=retrieved_contexts_str, user_id=user_id, session_id=session_id
+        )
+
+        # Extract referenced RAG ranks from assistant content
+        referenced_ranks = extract_referenced_rag_ranks(
+            text=accumulated_content, user_id=user_id, session_id=session_id
+        )
+
+        # Filter *and* preserve the order in which ranks were referenced
+        rank_order: dict[int, int] = {r: i for i, r in enumerate(referenced_ranks)}
+        filtered_context_rows = sorted(
+            (row for row in context_rows if row["rag_rank"] in rank_order),
+            key=lambda r: rank_order[r["rag_rank"]],
+        )
+
+        logger.debug(
+            f"[stream_chat_completion] Referenced RAG ranks for user_id={user_id}, session_id={session_id}: {referenced_ranks}"
+        )
+        logger.debug(
+            f"[stream_chat_completion] Filtered context rows for user_id={user_id}, session_id={session_id}: {len(filtered_context_rows)} items"
+        )
+
+        yield f"data: {json.dumps({'system_context_rows': filtered_context_rows}, ensure_ascii=False)}\n\n"
+
         yield f"data: {json.dumps({'data': '[DONE]'}, ensure_ascii=False)}\n\n"
 
         user_query = next(
@@ -866,6 +894,90 @@ def build_context_string(
         return ""
 
 
+def parse_context_string_to_structured(
+    content: str,
+    user_id: str,
+    session_id: str,
+) -> list[dict[str, str | float | int]]:
+    """
+    Parses a previously generated context string into structured RAG entries.
+
+    This function is used to reverse-engineer the structured format when only the
+    stringified context (stored in DB) is available.
+
+    Args:
+        content (str): Retrieved context string in fixed textual format.
+        user_id (str): The user ID for logging and traceability.
+        session_id (str): The session ID for logging and traceability.
+
+    Returns:
+        list[dict[str, str | float | int]]: List of structured entries with rag_rank, doc_id, semantic_distance, and text.
+
+    Raises:
+        Exception: If parsing fails, returns partial results and logs errors.
+    """
+
+    results: list[dict[str, str | float | int]] = []
+    try:
+        context_only = content.split("\n\n--- Optimized Queries ---\n")[0]
+
+        pattern = re.compile(
+            r"RAG Rank: (?P<rank>\d+)\n"
+            r"doc_id: (?P<doc_id>.+?)\n"
+            r"semantic distance: (?P<distance>.+?)\n"
+            r"Text: (?P<text>.*?)(?=\nRAG Rank:|\Z)",
+            re.DOTALL,
+        )
+
+        for match in pattern.finditer(context_only):
+            results.append(
+                {
+                    "rag_rank": int(match.group("rank")),
+                    "doc_id": match.group("doc_id").strip(),
+                    "semantic_distance": float(match.group("distance")),
+                    "text": match.group("text").strip(),
+                }
+            )
+    except Exception as exc:
+        logger.warning(
+            f"[parse_context_string_to_structured] Failed to parse context string: user_id={user_id}, session_id={session_id}, error={exc}"
+        )
+
+    return results
+
+
+def extract_referenced_rag_ranks(text: str, user_id: str, session_id: str) -> list[int]:
+    """
+    Extracts all unique RAG_RANK references from a given string,
+    in the order they first appear.
+
+    Example: "...これは重要です [[RAG_RANK=7]] または [[RAG_RANK=3]] ... [[RAG_RANK=3]] ..."
+    will return [7, 3]
+
+    Args:
+        text (str): LLM response or assistant message.
+        user_id (str): The user ID for logging and traceability.
+        session_id (str): The session ID for logging and traceability.
+
+    Returns:
+        list[int]: List of unique RAG rank numbers in the order they appear.
+    """
+    try:
+        seen = set()
+        result: list[int] = []
+        for match in re.findall(r"\[\[RAG_RANK=(\d+)\]\]", text):
+            rank = int(match)
+            if rank not in seen:
+                seen.add(rank)
+                result.append(rank)
+        return result
+    except Exception as exc:
+        logger.warning(
+            f"[extract_referenced_rag_ranks] Failed to extract ranks: user_id={user_id}, session_id={session_id}, error={exc}"
+        )
+        return []
+
+
 @app.get("/users/{user_id}/apps/{app_name}/sessions")
 async def list_sessions(user_id: str, app_name: str) -> list[dict]:
     """
@@ -946,16 +1058,17 @@ async def list_session_queries(
     user_id: str, app_name: str, session_id: str
 ) -> list[Message]:
     """
-    Retrieve user and assistant messages for a specific session,
-    ensuring user_id and app_name match, ordered by round_id.
+    Retrieve user, assistant, and system messages for a specific session.
+    If system message is present, its content will be updated to structured
+    JSON of referenced RAG context rows.
 
     Args:
-        user_id (str): ID of the user.
-        app_name (str): Name of the application.
-        session_id (str): Target session UUID.
+        user_id: ID of the user.
+        app_name: Name of the application.
+        session_id: Target session UUID.
 
     Returns:
-        list[Message]: Messages in the session (user and assistant only).
+        Messages in the session, structured and ordered by round_id.
 
     Raises:
         HTTPException: If the query fails due to database issues or unexpected errors.
@@ -973,30 +1086,78 @@ async def list_session_queries(
                 WHERE user_id = %s
                   AND app_name = %s
                   AND session_id = %s
-                  AND message_type IN ('user', 'assistant')
+                  AND message_type IN ('user', 'assistant', 'system')
                 ORDER BY round_id ASC
                 """,
                 (user_id, app_name, session_id),
             )
             rows = db.fetchall()
 
-        messages = [
-            Message(
-                id=str(row[0]),
-                round_id=row[1],
-                role=row[2],
-                content=row[3],
-                is_deleted=row[4],
-            )
-            for row in rows
-        ]
+        # Build intermediate structure by round_id
+        round_raws: dict[int, dict[str, object]] = {}
+
+        for row in rows:
+            raw_dict = {
+                "id": str(row[0]),
+                "round_id": row[1],
+                "role": row[2],
+                "content": row[3],
+                "is_deleted": row[4],
+            }
+            round_raws.setdefault(row[1], {})[row[2]] = raw_dict
+
+        results: list[Message] = []
+
+        for round_id in sorted(round_raws.keys()):
+            round_data = round_raws[round_id]
+
+            # Append user and assistant directly
+            if "user" in round_data:
+                results.append(Message(**round_data["user"]))
+
+            if "assistant" in round_data:
+                results.append(Message(**round_data["assistant"]))
+
+            # If system message exists, modify it based on assistant content
+            if "system" in round_data:
+                system_msg = round_data["system"]
+                try:
+                    original = round_data["system"]
+                    raw_context = str(original["content"])
+                    context_rows = parse_context_string_to_structured(
+                        content=raw_context, user_id=user_id, session_id=session_id
+                    )
+
+                    assistant_content = str(
+                        round_data.get("assistant", {}).get("content", "")
+                    )
+                    referenced_ranks = extract_referenced_rag_ranks(
+                        text=assistant_content, user_id=user_id, session_id=session_id
+                    )
+
+                    rank_order: dict[int, int] = {
+                        r: i for i, r in enumerate(referenced_ranks)
+                    }
+                    filtered = sorted(
+                        (row for row in context_rows if row["rag_rank"] in rank_order),
+                        key=lambda r: rank_order[r["rag_rank"]],
+                    )
+
+                    original["content"] = dumps(filtered, ensure_ascii=False, indent=2)
+
+                except Exception as exc:
+                    logger.warning(
+                        f"[list_session_queries] Failed to transform system context for user_id={user_id}, round_id={round_id}: {exc}"
+                    )
+                    system_msg["content"] = "[]"
+                results.append(Message(**system_msg))
 
         logger.info(
-            f"[list_session_queries] Retrieved {len(messages)} messages "
+            f"[list_session_queries] Retrieved {len(results)} messages "
             f"for user_id={user_id}, session_id={session_id}"
         )
 
-        return messages
+        return results
 
     except Exception:
         logger.exception(

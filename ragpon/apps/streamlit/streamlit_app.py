@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import islice
+from typing import Final
 
 import requests
 import streamlit as st
@@ -25,6 +26,13 @@ class DevTestConfig:
     simulate_llm_invalid_json: bool = False
     simulate_unexpected_exception: bool = False
 
+
+# Role priority for stable, explicit ordering
+ROLE_ORDER: Final[dict[str, int]] = {
+    "user": 0,
+    "assistant": 1,
+    "system": 2,
+}
 
 # Initialize logger
 logger = get_library_logger(__name__)
@@ -1006,8 +1014,30 @@ def render_chat_messages(
         if msg.is_deleted:
             continue
 
-        with st.chat_message(msg.role):
-            st.write(msg.content)
+        if msg.role in {"user", "assistant"}:
+            with st.chat_message(msg.role):
+                st.write(msg.content)
+        elif msg.role == "system":
+            try:
+                rows = json.loads(msg.content)
+                if isinstance(rows, list) and rows:
+                    with st.expander("📚 View sources used for this answer"):
+                        for row in rows:
+                            st.markdown(
+                                f"""
+**RAG Rank:** {row.get("rag_rank", "-")}  
+**Doc ID:** {row.get("doc_id", "")}  
+**Semantic Distance:** {float(row.get("semantic_distance", 0.0)):.4f}
+
+> {row.get("text", "").strip()}
+"""
+                            )
+                else:
+                    st.caption("⚠️ No relevant context entries available.")
+            except Exception as e:
+                st.warning("Failed to parse system message content.")
+                st.exception(e)
+            continue  # system message does not need feedback UI
 
         # For assistant messages, show the row of Trash/Good/Bad
         if msg.role == "assistant":
@@ -1368,6 +1398,8 @@ def render_user_chat_input(
             partial_message_text = ""
             SSE_DATA_PREFIX = "data: "
             stream_chunk_index = 0  # For dev testing, to inject errors
+            system_context_rows = None
+
             with st.chat_message("assistant"):
                 placeholder = st.empty()
 
@@ -1392,17 +1424,27 @@ def render_user_chat_input(
                             continue
 
                         json_str = event[len(SSE_DATA_PREFIX) :]
+
                         try:
-                            payload = json.loads(event[len(SSE_DATA_PREFIX) :])
-                            data = payload.get("data")
-                            if not isinstance(data, str):
-                                logger.warning(
-                                    f"[render_user_chat_input] Invalid assistant response structure for user_id={user_id}: data is not string ({type(data)})"
+                            payload = json.loads(json_str)
+                            if "data" in payload:
+                                data = payload["data"]
+                                if not isinstance(data, str):
+                                    logger.warning(
+                                        f"[render_user_chat_input] Invalid assistant response structure for user_id={user_id}: data is not string ({type(data)})"
+                                    )
+                                    st.session_state["chat_error_message"] = (
+                                        "The assistant response could not be processed due to unexpected format."
+                                    )
+                                    return
+                                if data == "[DONE]":
+                                    break
+                                partial_message_text += data
+                                placeholder.markdown(
+                                    partial_message_text, unsafe_allow_html=False
                                 )
-                                st.session_state["chat_error_message"] = (
-                                    "The assistant response could not be processed due to unexpected format."
-                                )
-                                return
+                            elif "system_context_rows" in payload:
+                                system_context_rows = payload["system_context_rows"]
                         except json.JSONDecodeError:
                             logger.warning(
                                 f"[render_user_chat_input] Invalid JSON in chunk for user_id={user_id}: {json_str}"
@@ -1411,13 +1453,23 @@ def render_user_chat_input(
                                 "The assistant response was malformed and could not be processed."
                             )
                             return
-                        if data == "[DONE]":
-                            break
 
-                        partial_message_text += data
-                        placeholder.markdown(
-                            partial_message_text, unsafe_allow_html=False
-                        )
+            # Display system context rows outside chat message
+            if isinstance(system_context_rows, list):
+                if system_context_rows:
+                    with st.expander("📚 View sources used for this answer"):
+                        for row in system_context_rows:
+                            st.markdown(
+                                f"""
+**RAG Rank:** {row.get("rag_rank", "-")}
+**Doc ID:** {row.get("doc_id", "")}
+**Semantic Distance:** {float(row.get("semantic_distance", 0.0)):.4f}
+
+> {row.get("text", "").strip()}
+    """
+                            )
+                else:
+                    st.caption("⚠️ No relevant context entries available.")
 
             # 5) Save final assistant message
             assistant_msg = Message(
@@ -1428,6 +1480,18 @@ def render_user_chat_input(
                 is_deleted=False,
             )
             messages.append(assistant_msg)
+
+            if isinstance(system_context_rows, list):
+                system_msg = Message(
+                    role="system",
+                    content=json.dumps(
+                        system_context_rows, ensure_ascii=False, indent=2
+                    ),
+                    id=system_msg_id,
+                    round_id=new_round_id,
+                    is_deleted=False,
+                )
+                messages.append(system_msg)
 
             # 6) If it was the very first query, reload all sessions
             if new_round_id == 0:
@@ -1486,7 +1550,7 @@ def main() -> None:
     if "current_session" not in st.session_state:
         st.session_state["current_session"] = None
     if "user_id" not in st.session_state:
-        st.session_state["user_id"] = "test_user3"  # Mock user
+        st.session_state["user_id"] = "test_user5"  # Mock user
     if "show_edit_form" not in st.session_state:
         st.session_state["show_edit_form"] = False
     if "session_histories" not in st.session_state:
@@ -1541,7 +1605,14 @@ def main() -> None:
     messages: list[Message] = st.session_state["session_histories"][
         session_id_for_display
     ]
-    messages.sort(key=lambda m: (m.round_id, 0 if m.role == "user" else 1))
+
+    # Sort first by round_id, then by role priority
+    messages.sort(
+        key=lambda m: (
+            m.round_id,
+            ROLE_ORDER.get(m.role, 99),  # unknown roles sink to the end
+        )
+    )
 
     render_chat_messages(
         messages=messages,
