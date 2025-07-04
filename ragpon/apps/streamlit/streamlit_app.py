@@ -42,6 +42,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
+# If you create a session with this name in the Streamlit app, a debug mode is activated.
 DEBUG_SESSION_TRIGGER = "__DEBUG_MODE__"
 
 
@@ -117,7 +118,7 @@ def fetch_session_ids(
     try:
         response = requests.get(endpoint)
         response.raise_for_status()
-    except requests.RequestException as e:
+    except requests.RequestException:
         logger.exception(
             f"[fetch_session_ids] Failed to fetch sessions from {endpoint}, user_id={user_id}"
         )
@@ -524,8 +525,18 @@ def show_chat_error_message(user_id: str) -> None:
 
 def load_session_ids(server_url: str, user_id: str, app_name: str) -> list[SessionData]:
     """
-    Loads the list of sessions from the server and returns them as a list of SessionData.
-    This was originally inline in the main() function, but refactored for clarity.
+    Load the list of session metadata from the server and cache it in Streamlit's session state.
+
+    This function initializes the session list the first time it is called, by fetching
+    data from the backend server. If already loaded, it simply returns the cached list.
+
+    Args:
+        server_url (str): The base URL of the backend server.
+        user_id (str): The user ID whose sessions should be loaded.
+        app_name (str): The name of the application associated with the sessions.
+
+    Returns:
+        list[SessionData]: A list of active session metadata objects.
     """
     # Ensure that session_ids is initialized in the session state.
     if "session_ids" not in st.session_state:
@@ -539,80 +550,102 @@ def render_create_session_form(
     server_url: str, user_id: str, app_name: str, disabled_ui: bool
 ) -> None:
     """
-    Renders the UI for creating a new session in the sidebar, and handles the
-    logic of creating the session via put_session_info(). Disables interactive UI elements
-    during ongoing operations when disabled_ui is True.
+    Render the UI and logic for creating a new session in the sidebar.
+
+    This function shows a form in the Streamlit sidebar to allow the user to create
+    a new session. If the session limit is reached, it automatically deletes the oldest
+    sessions to make room for a new one. The session creation process is deferred and
+    handled only when the user submits the form. UI is locked during the process to prevent
+    concurrent interactions.
 
     Args:
-        server_url (str): The base URL for the server.
-        user_id (str): The user ID for whom the session is being created.
-        app_name (str): The application name under which the session is managed.
-        disabled_ui (bool): If True, disables user interactions for all input widgets during ongoing operations.
+        server_url (str): The base URL of the backend server.
+        user_id (str): The ID of the current user.
+        app_name (str): The name of the application managing the sessions.
+        disabled_ui (bool): If True, disables all input elements in the form.
+
+    Side Effects:
+        - Modifies `st.session_state` to store session info.
+        - Updates UI and session list.
+        - Logs user interactions and error events.
+        - Displays warnings, errors, or success messages in the sidebar.
     """
 
     MAX_SESSION_COUNT = 10
     current_session_count = len(st.session_state.get("session_ids", []))
 
-    if current_session_count >= MAX_SESSION_COUNT:
-        st.sidebar.write(
-            f"🚫 Session limit reached ({MAX_SESSION_COUNT}). Delete existing sessions to create new ones."
-        )
-        return
-
-    with st.sidebar.expander(
-        "🆕 Create New Session", expanded=st.session_state["show_create_form"]
-    ):
-        create_label = (
-            "🆕Cancel Create Session"
-            if st.session_state["show_create_form"]
-            else "🆕Create New Session"
-        )
-        if st.button(create_label, key="toggle_create_button", disabled=disabled_ui):
-            st.session_state["show_create_form"] = not st.session_state[
-                "show_create_form"
-            ]
+    # --- Create Form ---
+    if not st.session_state["show_create_form"]:
+        if st.sidebar.button(
+            "🆕 Create New Session", key="open_create_button", disabled=disabled_ui
+        ):
+            st.session_state["show_create_form"] = True
             st.rerun()
 
-        if st.session_state["show_create_form"]:
+    if st.session_state["show_create_form"]:
+        with st.sidebar.expander("🆕 Create New Session", expanded=True):
+
+            if current_session_count >= MAX_SESSION_COUNT:
+                st.warning(
+                    f"⚠️ The session limit ({MAX_SESSION_COUNT}) has been reached. "
+                    "The oldest session will be automatically deleted to create a new one."
+                )
+
             new_session_name: str = st.text_input(
-                "📛Session Name",
+                "📛 Session Name",
                 value="Untitled Session",
                 max_chars=30,
                 key="create_session_name",
                 disabled=disabled_ui,
             )
             new_session_is_private: bool = st.radio(
-                "🙈Is Private?",
+                "🙈 Is Private?",
                 options=[True, False],
                 key="create_is_private",
                 disabled=disabled_ui,
             )
 
-            if st.button("Create", key="finalize_create_button", disabled=disabled_ui):
-                # Lock the UI and schedule creation
-                st.session_state["is_ui_locked"] = True
-                st.session_state["ui_lock_reason"] = "Creating new session..."
-                st.session_state["pending_create_session"] = {
-                    "name": new_session_name,
-                    "is_private": new_session_is_private,
-                }
-                st.rerun()
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button(
+                    "Create", key="finalize_create_button", disabled=disabled_ui
+                ):
+                    st.session_state["is_ui_locked"] = True
+                    st.session_state["ui_lock_reason"] = "Creating new session..."
+                    st.session_state["pending_create_session"] = {
+                        "name": new_session_name,
+                        "is_private": new_session_is_private,
+                    }
+                    st.session_state["show_create_form"] = False
+                    st.rerun()
+
+            with col2:
+                if st.button(
+                    "Cancel", key="cancel_create_button", disabled=disabled_ui
+                ):
+                    for k in ("create_session_name", "create_is_private"):
+                        if k in st.session_state:
+                            del st.session_state[k]
+                    st.session_state["show_create_form"] = False
+                    st.rerun()
 
     # --- Handle deferred session creation ---
     if "pending_create_session" in st.session_state:
         data = st.session_state.pop("pending_create_session")
 
+        # --- Developer test hooks ---
+        dev_cfg: DevTestConfig = st.session_state.get(
+            "dev_test_config", DevTestConfig()
+        )
+
         try:
+            # Auto-delete oldest sessions until under limit
             logger.info(
-                f"[render_create_session_form] Session creation requested: "
+                f"[render_create_session_form] Deleting Session before creating new session: "
                 f"user_id={user_id}, name='{data['name']}', private={data['is_private']}"
             )
 
             # --- Developer test hooks ---
-            dev_cfg: DevTestConfig = st.session_state.get(
-                "dev_test_config", DevTestConfig()
-            )
-
             # Optional simulated delay
             if dev_cfg.simulate_delay_seconds > 0:
                 time.sleep(dev_cfg.simulate_delay_seconds)
@@ -627,8 +660,82 @@ def render_create_session_form(
                     "[DevTest] Simulated unexpected exception during session creation"
                 )
 
-            # Real logic
+            logger.debug(
+                f"[render_create_session_form] Session count before deletion: {len(st.session_state['session_ids'])}"
+            )
+
+            while len(st.session_state["session_ids"]) >= MAX_SESSION_COUNT:
+                oldest_session = min(
+                    st.session_state["session_ids"], key=lambda s: s.last_touched_at
+                )
+
+                logger.debug(
+                    f"[render_create_session_form] Attempting to delete oldest session: user_id={user_id}, session_id={oldest_session.session_id}"
+                )
+
+                patch_session_info(
+                    server_url=server_url,
+                    user_id=user_id,
+                    session_id=oldest_session.session_id,
+                    session_name=oldest_session.session_name,
+                    is_private_session=oldest_session.is_private_session,
+                    is_deleted=True,
+                )
+                st.session_state["session_ids"] = [
+                    s
+                    for s in st.session_state["session_ids"]
+                    if s.session_id != oldest_session.session_id
+                ]
+                logger.info(
+                    f"[render_create_session_form] Auto-deleted session: user_id={user_id}, session_id={oldest_session.session_id}"
+                )
+
+        except requests.exceptions.RequestException as exc:
+            logger.exception(
+                f"[render_create_session_form] Failed to delete session '{data['name']}' for user_id={user_id}"
+            )
+            st.session_state["error_message"] = (
+                "Failed to delete the oldest session."
+                "Please try again later or manually delete old sessions."
+            )
+            st.session_state["is_ui_locked"] = False
+            st.session_state["ui_lock_reason"] = ""
+            st.rerun()
+
+        except Exception:
+            logger.exception(
+                f"[render_create_session_form] Unexpected error during session deletion for user_id={user_id}"
+            )
+            st.session_state["error_message"] = (
+                "An unexpected error occurred during session deletion."
+                "Please try again later or manually delete old sessions."
+            )
+            st.session_state["is_ui_locked"] = False
+            st.session_state["ui_lock_reason"] = ""
+            st.rerun()
+
+        try:
+            logger.info(
+                f"[render_create_session_form] Session creation started: "
+                f"user_id={user_id}, name='{data['name']}', private={data['is_private']}"
+            )
             new_session_id: str = str(uuid.uuid4())
+
+            # --- Developer test hooks ---
+            # Optional simulated delay
+            if dev_cfg.simulate_delay_seconds > 0:
+                time.sleep(dev_cfg.simulate_delay_seconds)
+
+            # Optional simulated backend failure
+            if dev_cfg.simulate_backend_failure:
+                raise requests.exceptions.RequestException("Simulated backend failure")
+
+            # Optional simulated unexpected exception
+            if dev_cfg.simulate_unexpected_exception:
+                raise RuntimeError(
+                    "[DevTest] Simulated unexpected exception during session creation"
+                )
+
             put_session_info(
                 server_url=server_url,
                 user_id=user_id,
@@ -824,31 +931,16 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
     # Display which session is active
     st.write(f"**Current Session**: {st.session_state['current_session']}")
 
-    # Edit Session button (single button for both edit and delete)
-    with st.sidebar.expander(
-        "✏️Manage Selected Session",
-        expanded=st.session_state.get("show_edit_form", False),
-    ):
-        edit_label = (
-            "✏️Cancel Edit"
-            if st.session_state.get("show_edit_form", False)
-            else "✏️Edit Session"
-        )
-
-        toggle_edit_button: bool = st.button(
-            edit_label, key="toggle_edit_button", disabled=disabled_ui
-        )
-
-        if toggle_edit_button:
-            st.session_state["show_edit_form"] = not st.session_state.get(
-                "show_edit_form", False
-            )
+    if not st.session_state["show_edit_form"]:
+        if st.sidebar.button(
+            "✏️ Manage Selected Session", key="open_edit_button", disabled=disabled_ui
+        ):
+            st.session_state["show_edit_form"] = True
             st.rerun()
 
-        # Show or hide the edit form
-        if st.session_state.get("show_edit_form", False):
-
-            current_session = st.session_state["current_session"]
+    if st.session_state["show_edit_form"]:
+        with st.sidebar.expander("✏️ Manage Selected Session", expanded=True):
+            current_session = st.session_state.get("current_session")
             if current_session is None:
                 st.warning("No session is currently selected.")
                 return
@@ -857,35 +949,47 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
             current_is_private: bool = current_session.is_private_session
 
             edited_session_name: str = st.text_input(
-                "📛Session Name",
+                "📛 Session Name",
                 value=current_name,
                 max_chars=30,
                 key="edit_session_name",
                 disabled=disabled_ui,
             )
             edited_is_private: bool = st.radio(
-                "🙈Is Private?",
+                "🙈 Is Private?",
                 options=[True, False],
                 index=0 if current_is_private else 1,
                 key="edit_is_private",
                 disabled=disabled_ui,
             )
 
-            delete_this_session: bool = st.checkbox("🗑️", key="delete_session")
+            delete_this_session: bool = st.checkbox(
+                "🗑️ Delete this session", key="delete_session"
+            )
 
-            if st.button("Update", key="update_session", disabled=disabled_ui):
-                # Lock UI and store intent
-                st.session_state["is_ui_locked"] = True
-                st.session_state["ui_lock_reason"] = (
-                    "Updating or deleting the session..."
-                )
-                st.session_state["pending_edit_action"] = {
-                    "delete": delete_this_session,
-                    "session_id": current_session.session_id,
-                    "new_name": edited_session_name,
-                    "new_privacy": edited_is_private,
-                }
-                st.rerun()
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Update", key="update_session", disabled=disabled_ui):
+                    st.session_state["is_ui_locked"] = True
+                    st.session_state["ui_lock_reason"] = (
+                        "Updating or deleting the session..."
+                    )
+                    st.session_state["pending_edit_action"] = {
+                        "delete": delete_this_session,
+                        "session_id": current_session.session_id,
+                        "new_name": edited_session_name,
+                        "new_privacy": edited_is_private,
+                    }
+                    st.session_state["show_edit_form"] = False
+                    st.rerun()
+
+            with col2:
+                if st.button("Cancel", key="cancel_edit_button", disabled=disabled_ui):
+                    for k in ("edit_session_name", "edit_is_private", "delete_session"):
+                        if k in st.session_state:
+                            del st.session_state[k]
+                    st.session_state["show_edit_form"] = False
+                    st.rerun()
 
     # --- Perform the pending edit action after rerun ---
     if "pending_edit_action" in st.session_state:
