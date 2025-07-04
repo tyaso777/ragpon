@@ -125,8 +125,7 @@
                uvicorn ragpon.apps.fastapi.fast_api_app:app \
                --host 0.0.0.0 \
                --port 8006 \
-               --workers 4 \
-               --reload"
+               --workers 4"
       ```
 
 # 5. to run STREAMLIT
@@ -160,11 +159,6 @@
             ragpon-streamlit \
             bash -c "\
                unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && \
-               export OPENAI_TYPE=azure && \
-               export AZURE_OPENAI_ENDPOINT=https://~~~.com && \
-               export AZURE_OPENAI_API_KEY=~~~ && \
-               export AZURE_OPENAI_DEPLOYMENT=gpt-4o && \
-               export AZURE_OPENAI_MODEL=2024-08-01-preview && \
                streamlit run ragpon/apps/streamlit/streamlit_app.py \
                   --server.port 8005 --server.address 0.0.0.0\
             "
