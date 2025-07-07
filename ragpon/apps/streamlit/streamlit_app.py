@@ -1639,7 +1639,49 @@ def main() -> None:
     Main Streamlit application for demonstrating multi-session RAG+LLM
     with an ability to delete (is_deleted) a round via a trash button.
     """
-    st.title("RAG + LLM Streamlit App")
+
+    # -- Header CSS: title, hide menu, shift content down
+    st.markdown(
+        """
+        <style>
+        header.stAppHeader {
+            background-color: #f9f9f9;  /* subtle background */
+            border-bottom: 1px solid #ccc;
+        }
+
+        header.stAppHeader:before {
+            content: "📘 規程・マニュアル等検索アプリ";
+            display: block;
+            font-size: 1.8rem;
+            font-weight: 600;
+            color: #333;
+            padding: 0.75rem 1rem;
+            text-align: center;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        /* Optional: Hide Streamlit menu button */
+        header.stAppHeader button[kind="icon"] {
+            display: none;
+        }
+
+        .block-container {
+            padding-top: 2rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # -- Hide Streamlit “Deploy” button
+    st.markdown(
+        """
+        <style>
+            .stAppDeployButton { display: none; }
+        </style>
+    """,
+        unsafe_allow_html=True,
+    )
 
     # Initialize session state variables for UI locking
     st.session_state.setdefault("is_ui_locked", False)

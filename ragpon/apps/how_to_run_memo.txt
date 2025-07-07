@@ -138,7 +138,7 @@
             --workdir /app `
             -e PYTHONPATH=/app `
             -e OPENAI_API_KEY=$Env:OPENAI_API_KEY `
-            -e STREAMLIT_BROWSER_GATHER_USAGE_STATS=false `
+            -e STREAMLIT_CONFIG_FILE=/app/ragpon/ragpon/apps/streamlit/config.toml `
             -p 8005:8005 `
             ragpon-streamlit `
             bash -c "streamlit run ragpon/apps/streamlit/streamlit_app.py --server.port 8005 --server.address 0.0.0.0"
@@ -154,7 +154,7 @@
             --workdir /app \
             -e PYTHONPATH=/app \
             -e OPENAI_API_KEY=$OPENAI_API_KEY \
-            -e STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
+            -e STREAMLIT_CONFIG_FILE=/app/ragpon/ragpon/apps/streamlit/config.toml \
             -p 8005:8005 \
             ragpon-streamlit \
             bash -c "\
