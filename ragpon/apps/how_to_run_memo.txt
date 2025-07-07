@@ -139,6 +139,8 @@
             -e PYTHONPATH=/app `
             -e OPENAI_API_KEY=$Env:OPENAI_API_KEY `
             -e STREAMLIT_CONFIG_FILE=/app/ragpon/ragpon/apps/streamlit/config.toml `
+            -e RAGPON_OTHER_LOG_LEVEL=WARNING `
+            -e RAGPON_APP_LOG_LEVEL=DEBUG `
             -p 8005:8005 `
             ragpon-streamlit `
             bash -c "streamlit run ragpon/apps/streamlit/streamlit_app.py --server.port 8005 --server.address 0.0.0.0"
@@ -155,6 +157,8 @@
             -e PYTHONPATH=/app \
             -e OPENAI_API_KEY=$OPENAI_API_KEY \
             -e STREAMLIT_CONFIG_FILE=/app/ragpon/ragpon/apps/streamlit/config.toml \
+            -e RAGPON_OTHER_LOG_LEVEL=WARNING \
+            -e RAGPON_APP_LOG_LEVEL=DEBUG \
             -p 8005:8005 \
             ragpon-streamlit \
             bash -c "\

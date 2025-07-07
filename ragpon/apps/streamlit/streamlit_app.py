@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -34,13 +35,35 @@ ROLE_ORDER: Final[dict[str, int]] = {
     "system": 2,
 }
 
-# Initialize logger
-logger = get_library_logger(__name__)
 
-# logging settings for debugging
+# Set root logger level from environment (default: WARNING)
+other_level_str = os.getenv("RAGPON_OTHER_LOG_LEVEL", "WARNING").upper()
+other_level = getattr(logging, other_level_str, logging.WARNING)
+
+# Set app-specific logger level from environment (default: INFO)
+app_level_str = os.getenv("RAGPON_APP_LOG_LEVEL", "INFO").upper()
+app_level = getattr(logging, app_level_str, logging.INFO)
+
+# Remove existing handlers to reconfigure logging
+for h in logging.root.handlers[:]:
+    logging.root.removeHandler(h)
+
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=other_level,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+
+# Apply handler to all loggers under 'ragpon.apps.streamlit'
+logger = logging.getLogger("ragpon.apps.streamlit")
+logger.setLevel(app_level)
+logger.propagate = False  # prevent double logging
+
+# Create and add handler
+handler = logging.StreamHandler()
+handler.setLevel(app_level)  # ← DEBUG出すならDEBUG、INFOにしたければINFO
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 # If you create a session with this name in the Streamlit app, a debug mode is activated.
 DEBUG_SESSION_TRIGGER = "__DEBUG_MODE__"
@@ -1428,7 +1451,9 @@ def render_user_chat_input(
             # 2a) Build the short array of recent non-deleted messages
             last_msgs = last_n_non_deleted(messages, num_of_prev_msg_with_llm)
             messages_to_send = [
-                {"role": m.role, "content": m.content} for m in last_msgs
+                {"role": m.role, "content": m.content}
+                for m in last_msgs
+                if m.role in {"user", "assistant"}
             ]
 
             # 2b) Compute the next round_id
@@ -1461,6 +1486,10 @@ def render_user_chat_input(
             logger.info(
                 f"[render_user_chat_input] Sending query to FastAPI: "
                 f"user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}, rag_mode={rag_mode}, reranker={use_reranker}"
+            )
+            logger.debug(
+                f"[render_user_chat_input] Sending query to FastAPI: "
+                f"user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}, rag_mode={rag_mode}, reranker={use_reranker}, messages_to_send={messages_to_send}"
             )
 
             # 3) Post to FastAPI (streaming)
