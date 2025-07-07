@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1547,9 +1548,10 @@ def render_user_chat_input(
 
                     buf += chunk
 
-                    logger.debug(
-                        f"[render_user_chat_input] Stream chunk [{stream_chunk_index}] for user_id={user_id}: {chunk[:300] + ('...[truncated]' if len(chunk) > 300 else '')}"
-                    )
+                    # logging chunk is not recommended. So many records!
+                    # logger.debug(
+                    #     f"[render_user_chat_input] Stream chunk [{stream_chunk_index}] for user_id={user_id}: {chunk[:300] + ('...[truncated]' if len(chunk) > 300 else '')}"
+                    # )
 
                     while "\n\n" in buf:
                         event, buf = buf.split("\n\n", 1)
@@ -1663,10 +1665,18 @@ def render_user_chat_input(
 #################################
 
 
-def main() -> None:
+def main(user_id: str) -> None:
     """
-    Main Streamlit application for demonstrating multi-session RAG+LLM
-    with an ability to delete (is_deleted) a round via a trash button.
+    Launches the main Streamlit interface for the multi-session RAG+LLM application.
+
+    This function initializes UI components and session state, renders chat history,
+    and handles user interaction including session creation, editing, and feedback.
+    The `user_id` must be authenticated beforehand, either via SAML or a development override.
+
+    Args:
+        user_id (str): Unique identifier of the authenticated user.
+            In production, this is obtained from a SAML cookie.
+            In development, this may be passed via an environment variable.
     """
 
     # -- Header CSS: title, hide menu, shift content down
@@ -1725,7 +1735,8 @@ def main() -> None:
     if "current_session" not in st.session_state:
         st.session_state["current_session"] = None
     if "user_id" not in st.session_state:
-        st.session_state["user_id"] = "test_user5"  # Mock user
+        st.session_state["user_id"] = user_id
+        logger.info(f"[Main] user_id={user_id} has logged in to the app.")
     if "show_edit_form" not in st.session_state:
         st.session_state["show_edit_form"] = False
     if "session_histories" not in st.session_state:
@@ -1733,7 +1744,6 @@ def main() -> None:
     if "show_create_form" not in st.session_state:
         st.session_state["show_create_form"] = False
 
-    user_id: str = st.session_state["user_id"]
     app_name: str = "search_regulations"
     server_url: str = "http://ragpon-fastapi:8006"  # fixed server URL
     num_of_prev_msg_with_llm: int = (
@@ -1813,4 +1823,22 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    use_saml = os.getenv("USE_SAML", "true").lower() == "true"
+
+    if use_saml:
+        if (
+            "session_token" not in st.context.cookies
+            or "session_data" not in st.context.cookies
+        ):
+            from ragpon.apps.streamlit.common.common_saml import login
+
+            login()
+        else:
+            attribute_json = json.loads(
+                urllib.parse.unquote(st.context.cookies["session_data"])
+            )
+            user_id = attribute_json["employeeNumber"][0]
+            main(user_id)
+    else:
+        user_id = os.getenv("DEV_USER_ID", "test_user5")
+        main(user_id)
