@@ -4,10 +4,11 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from json import dumps
 from pathlib import Path
-from typing import Any, AsyncGenerator, Generator, Literal, NoReturn, cast
+from typing import Any, AsyncGenerator, Callable, Generator, Literal, NoReturn, cast
 from uuid import UUID
 
 from fastapi import Body, FastAPI, HTTPException, Request, status
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
 from psycopg2 import errors
+from psycopg2.errors import UniqueViolation
 from psycopg2.pool import SimpleConnectionPool
 
 from ragpon import (
@@ -617,7 +619,7 @@ async def generate_session_title_async(
         raise ValueError("OpenAI response missing expected content") from exc
 
 
-def stream_chat_completion(
+def stream_and_persist_chat_response(
     *,
     user_id: str,
     session_id: str,
@@ -643,7 +645,6 @@ def stream_chat_completion(
     and accumulates the entire assistant response locally. After the final chunk
     is yielded, it performs a database insertion for user/system/assistant
     messages, including relevant metadata.
-    It also attempts to generate a session title if it's the first round.
 
     Args:
         user_id (str): The ID of the user initiating the query.
@@ -670,28 +671,19 @@ def stream_chat_completion(
         Exception: If streaming fails or DB insertion fails, a generic exception is raised,
             and a fallback "[error]" message is streamed instead.
     """
-    accumulated_content = ""  # Will hold the entire assistant response
+
     rerank_model = None  # If you want to pass something else, do so
     logger.info(
-        f"[stream_chat_completion] Start: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        f"[stream_and_persist_chat_response] Start: user_id={user_id}, session_id={session_id}, round_id={round_id}"
     )
 
-    if rag_mode == "No RAG":
-        openai_messages = [
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT_NO_RAG,
-            }
-        ]
-    else:
-        openai_messages = [
-            {
-                "role": "system",
-                "content": (SYSTEM_PROMPT_WITH_CONTEXT),
-            },
-            {"role": "user", "content": retrieved_contexts_str},
-        ]
-    openai_messages.extend(messages)
+    openai_messages = build_openai_messages(
+        rag_mode=rag_mode,
+        retrieved_contexts_str=retrieved_contexts_str,
+        messages=messages,
+        system_prompt_no_rag=SYSTEM_PROMPT_NO_RAG,
+        system_prompt_with_context=SYSTEM_PROMPT_WITH_CONTEXT,
+    )
 
     try:
         response_stream = call_llm_sync_with_handling(
@@ -705,39 +697,25 @@ def stream_chat_completion(
             model_type=model_type,
         )
 
+        # accumulate_llm_response
+        assistant_parts: list[str] = []
         for content_chunk in cast(Generator[str, None, None], response_stream):
-            accumulated_content += content_chunk
-            yield f"data: {json.dumps({'data': content_chunk}, ensure_ascii=False)}\n\n"
+            assistant_parts.append(content_chunk)
+            yield format_sse_chunk({"data": content_chunk})
 
-        context_rows = parse_context_string_to_structured(
-            content=retrieved_contexts_str, user_id=user_id, session_id=session_id
+        assistant_response = "".join(assistant_parts)
+
+        yield from yield_context_info(
+            user_id=user_id,
+            session_id=session_id,
+            retrieved_contexts_str=retrieved_contexts_str,
+            assistant_response=assistant_response,
         )
 
-        # Extract referenced RAG ranks from assistant content
-        referenced_ranks = extract_referenced_rag_ranks(
-            text=accumulated_content, user_id=user_id, session_id=session_id
-        )
+        yield format_sse_chunk(data={"data": "[DONE]"})
 
-        # Filter *and* preserve the order in which ranks were referenced
-        rank_order: dict[int, int] = {r: i for i, r in enumerate(referenced_ranks)}
-        filtered_context_rows = sorted(
-            (row for row in context_rows if row["rag_rank"] in rank_order),
-            key=lambda r: rank_order[r["rag_rank"]],
-        )
-
-        logger.debug(
-            f"[stream_chat_completion] Referenced RAG ranks for user_id={user_id}, session_id={session_id}: {referenced_ranks}"
-        )
-        logger.debug(
-            f"[stream_chat_completion] Filtered context rows for user_id={user_id}, session_id={session_id}: {len(filtered_context_rows)} items"
-        )
-
-        yield f"data: {json.dumps({'system_context_rows': filtered_context_rows}, ensure_ascii=False)}\n\n"
-
-        yield f"data: {json.dumps({'data': '[DONE]'}, ensure_ascii=False)}\n\n"
-
-        user_query = next(
-            (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
+        user_query = extract_latest_user_message(
+            messages_list=messages, user_id=user_id, session_id=session_id
         )
 
         insert_three_records(
@@ -750,7 +728,7 @@ def stream_chat_completion(
             assistant_msg_id=assistant_msg_id,
             user_query=user_query,
             retrieved_contexts_str=retrieved_contexts_str,
-            total_stream_content=accumulated_content,
+            total_stream_content=assistant_response,
             llm_model=model_name,
             rerank_model=rerank_model,
             rag_mode=rag_mode,
@@ -758,59 +736,15 @@ def stream_chat_completion(
             use_reranker=use_reranker,
         )
 
-        if round_id == 0:
-            try:
-                with get_database_client(DB_TYPE, db_pool) as db:
-                    db.execute(
-                        "SELECT session_name FROM sessions WHERE session_id = %s",
-                        (session_id,),
-                    )
-                    result = db.fetchone()
-                    if result is None:
-                        logger.warning(
-                            f"[stream_chat_completion] Session ID not found: user_id={user_id}, session_id={session_id}"
-                        )
-                        return
-                    elif result[0] == "Untitled Session":
-                        try:
-                            new_title = generate_session_title(
-                                query=user_query,
-                                user_id=user_id,
-                                session_id=session_id,
-                                client=client,
-                                model_name=model_name,
-                                model_type=model_type,
-                            )
-                            db.execute(
-                                """
-                                UPDATE sessions SET session_name = %s, updated_at = %s, updated_by = %s
-                                WHERE session_id = %s
-                                """,
-                                (
-                                    new_title,
-                                    datetime.now(timezone.utc),
-                                    user_id,
-                                    session_id,
-                                ),
-                            )
-                        except Exception:
-                            logger.warning(
-                                f"[stream_chat_completion] Failed to generate session title: user_id={user_id}, session_id={session_id}"
-                            )
-            except Exception:
-                logger.exception(
-                    f"[stream_chat_completion] Failed to update session title: user_id={user_id}, session_id={session_id}"
-                )
-
         logger.info(
-            f"[stream_chat_completion] Done streaming: user_id={user_id}, session_id={session_id}, round_id={round_id}, total_chars={len(accumulated_content)}"
+            f"[stream_and_persist_chat_response] Done streaming: user_id={user_id}, session_id={session_id}, round_id={round_id}, total_chars={len(assistant_response)}"
         )
 
     except Exception:
         logger.exception(
-            f"[stream_chat_completion] Error: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+            f"[stream_and_persist_chat_response] Error: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
-        yield f"data: {json.dumps({'error': 'Internal server error occurred'}, ensure_ascii=False)}\n\n"
+        yield format_sse_chunk(data={"error": "Internal server error occurred"})
 
 
 def build_context_string(
@@ -1552,6 +1486,454 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
         raise HTTPException(status_code=500, detail="Failed to patch feedback")
 
 
+# === handle_query() support functions ===
+@dataclass(slots=True)
+class QueryRequest:
+    """Validated payload passed through the handle_query pipeline."""
+
+    user_msg_id: str
+    system_msg_id: str
+    assistant_msg_id: str
+    round_id: int
+    messages: list[dict]
+    rag_mode: str
+    use_reranker: bool
+
+
+def _parse_request(data: dict, user_id: str, session_id: str) -> QueryRequest:
+    """Parse and validate the incoming request body.
+
+    The function normalizes the raw JSON payload into a strongly typed
+    ``QueryRequest`` instance. It performs basic type coercion (e.g.,
+    converting IDs to ``str`` and ``round_id`` to ``int``) and ensures
+    that the ``messages`` field is a list. Any malformed or missing
+    field triggers an :class:`fastapi.HTTPException` with status code 400,
+    allowing the caller to surface a clear client-side error.
+
+    Args:
+        data (dict): The JSON-decoded request body sent by the client.
+        user_id (str): The ID of the requesting user; used for contextual
+            logging only.
+        session_id (str): The chat session ID; used for contextual logging
+            only.
+
+    Returns:
+        QueryRequest: A validated, normalized data object ready for the
+        downstream chat-handling pipeline.
+
+    Raises:
+        HTTPException: If required fields are absent, have the wrong type,
+        or fail coercion (e.g., non-integer ``round_id`` or non-list
+        ``messages``).
+    """
+    try:
+        return QueryRequest(
+            user_msg_id=str(data["user_msg_id"]),
+            system_msg_id=str(data["system_msg_id"]),
+            assistant_msg_id=str(data["assistant_msg_id"]),
+            round_id=int(data["round_id"]),
+            messages=list(data["messages"]),
+            rag_mode=str(data.get("rag_mode", "RAG (Optimized Query)")),
+            use_reranker=bool(data.get("use_reranker", False)),
+        )
+    except (KeyError, ValueError, TypeError) as exc:
+        logger.exception(
+            "[_parse_request] Failed to parse query request for user_id={user_id}, session_id={session_id}"
+        )
+        raise HTTPException(status_code=400, detail="Invalid query payload") from exc
+
+
+def _build_retrieval_queries(
+    *, req: QueryRequest, user_query: str, user_id: str, session_id: str
+) -> list[str]:
+    """Return optimized search queries or a one-element fallback."""
+    if req.rag_mode != "RAG (Optimized Query)":
+        return [user_query]
+    try:
+        return generate_queries_from_history(
+            user_id=user_id,
+            session_id=session_id,
+            messages_list=req.messages,
+            system_instructions=OPTIMIZED_QUERY_INSTRUCTION,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"[_build_retrieval_queries] Fallback to user query for user_id={user_id}, session_id={session_id}, round_id={req.round_id}: {exc}"
+        )
+        return [user_query]
+
+
+def parse_query_payload(data: dict) -> tuple[str, str, str, int, list[dict], str, bool]:
+    """
+    Parses query payload dictionary into individual fields.
+
+    Args:
+        data (dict): Parsed JSON dictionary from the request body.
+
+    Returns:
+        tuple: user_msg_id, system_msg_id, assistant_msg_id, round_id, messages_list, rag_mode, use_reranker
+
+    Raises:
+        HTTPException: If required fields are missing or malformed.
+    """
+    try:
+        user_msg_id = data.get("user_msg_id", "")
+        system_msg_id = data.get("system_msg_id", "")
+        assistant_msg_id = data.get("assistant_msg_id", "")
+        round_id = int(data.get("round_id", 0))
+        messages_list = data.get("messages", [])
+        rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
+        use_reranker = bool(data.get("use_reranker", False))
+    except Exception as e:
+        logger.exception("[parse_query_payload] Malformed query request.")
+        raise HTTPException(status_code=400, detail="Malformed query fields")
+
+    return (
+        user_msg_id,
+        system_msg_id,
+        assistant_msg_id,
+        round_id,
+        messages_list,
+        rag_mode,
+        use_reranker,
+    )
+
+
+def extract_latest_user_message(
+    messages_list: list[dict], user_id: str, session_id: str
+) -> str:
+    """
+    Extracts the most recent user message content from a list of message dictionaries.
+
+    Args:
+        messages_list (list[dict]): List of chat messages with 'role' and 'content' fields.
+        user_id (str): ID of the user (for logging purposes).
+        session_id (str): Session ID (for logging purposes).
+
+    Returns:
+        str: The latest message content from the user.
+
+    Raises:
+        HTTPException: If no user message is found in the list.
+            Returns HTTP 400 (Bad Request), as this indicates a client-side input error.
+    """
+    for msg in reversed(messages_list):
+        if msg.get("role") == "user":
+            return msg.get("content", "")
+    logger.warning(
+        f"[extract_latest_user_message] No user message found for user_id={user_id}, session_id={session_id}"
+    )
+    raise HTTPException(status_code=400, detail="No user message found in request.")
+
+
+def insert_user_placeholder(
+    db_type: str,
+    pool: Any,
+    user_id: str,
+    session_id: str,
+    round_id: int,
+    user_query: str,
+) -> None:
+    """
+    Inserts a temporary user message into the database with is_deleted=True.
+
+    Args:
+        db_type (str): Type of the database ("postgres").
+        pool (Any): Connection pool instance.
+        user_id (str): User ID.
+        session_id (str): Session ID.
+        round_id (int): Round identifier.
+        user_query (str): Content of the user message.
+
+    Raises:
+        HTTPException: If a unique constraint violation occurs or the database fails.
+    """
+    created_at = datetime.now(timezone.utc)
+
+    try:
+        with get_database_client(db_type, pool) as db:
+            db.execute(
+                """
+                INSERT INTO messages (
+                    user_id, session_id, round_id, message_type, content,
+                    is_deleted, created_at
+                ) VALUES (%s, %s, %s, 'user', %s, TRUE, %s)
+                """,
+                (user_id, session_id, round_id, user_query, created_at),
+            )
+
+    except UniqueViolation:
+        logger.warning(
+            f"[insert_user_placeholder] Duplicate round_id detected for user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
+        raise HTTPException(status_code=409, detail="Duplicate round_id.")
+    except Exception:
+        logger.exception(
+            f"[insert_user_placeholder] Database error for user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
+        raise HTTPException(
+            status_code=500, detail="Database error during user message insert."
+        )
+
+
+def build_openai_messages(
+    rag_mode: str,
+    retrieved_contexts_str: str,
+    messages: list[dict],
+    system_prompt_no_rag: str,
+    system_prompt_with_context: str,
+) -> list[dict]:
+    """
+    Constructs the message list for OpenAI API based on rag_mode.
+
+    Args:
+        rag_mode (str): RAG mode, either "No RAG" or others.
+        retrieved_contexts_str (str): Context string for RAG.
+        messages (list[dict]): Base chat messages.
+        system_prompt_no_rag (str): System prompt for non-RAG mode.
+        system_prompt_with_context (str): System prompt for RAG mode.
+
+    Returns:
+        list[dict]: The complete list of messages to send to the LLM.
+    """
+    system_prompt = (
+        system_prompt_no_rag if rag_mode == "No RAG" else system_prompt_with_context
+    )
+    pre_messages = (
+        [{"role": "system", "content": system_prompt}]
+        if rag_mode == "No RAG"
+        else [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": retrieved_contexts_str},
+        ]
+    )
+    return pre_messages + messages
+
+
+def format_sse_chunk(data: dict) -> str:
+    """Formats a dictionary as a Server-Sent Event (SSE) chunk."""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def yield_context_info(
+    user_id: str,
+    session_id: str,
+    retrieved_contexts_str: str,
+    assistant_response: str,
+) -> Generator[str, None, None]:
+    """Yields structured context info based on referenced ranks from assistant output."""
+    context_rows = parse_context_string_to_structured(
+        content=retrieved_contexts_str, user_id=user_id, session_id=session_id
+    )
+    # Extract referenced RAG ranks from assistant content
+    referenced_ranks = extract_referenced_rag_ranks(
+        text=assistant_response, user_id=user_id, session_id=session_id
+    )
+    # Filter *and* preserve the order in which ranks were referenced
+    rank_order = {r: i for i, r in enumerate(referenced_ranks)}
+    filtered_rows = sorted(
+        (r for r in context_rows if r["rag_rank"] in rank_order),
+        key=lambda r: rank_order[r["rag_rank"]],
+    )
+    logger.debug(
+        f"[yield_context_info] Referenced RAG ranks for user_id={user_id}, session_id={session_id}: {referenced_ranks}"
+    )
+    logger.debug(
+        f"[yield_context_info] Filtered context rows for user_id={user_id}, session_id={session_id}: {len(filtered_rows)} items"
+    )
+    yield format_sse_chunk({"system_context_rows": filtered_rows})
+
+
+def maybe_generate_session_title(
+    *,
+    user_id: str,
+    session_id: str,
+    round_id: int,
+    user_query: str,
+    client: OpenAI | AzureOpenAI,
+    model_name: str,
+    model_type: Literal["openai", "azure"],
+    db_type: str,
+    db_pool: Any,
+) -> None:
+    """
+    Attempts to generate a session title for the initial round of a session.
+
+    If the session title is still the default ("Untitled Session") and it's round 0,
+    this function calls an LLM to generate a better session title and updates the DB.
+
+    Args:
+        user_id (str): The ID of the user.
+        session_id (str): The ID of the session.
+        round_id (int): The round number.
+        user_query (str): The user's input used for generating the title.
+        client (OpenAI | AzureOpenAI): The LLM client.
+        model_name (str): The name of the model.
+        model_type (Literal["openai", "azure"]): The type of model.
+        db_type (str): The database type identifier.
+        db_pool (Any): The database connection pool.
+    """
+    if round_id != 0:
+        return
+
+    try:
+        with get_database_client(db_type, db_pool) as db:
+            db.execute(
+                "SELECT session_name FROM sessions WHERE session_id = %s", (session_id,)
+            )
+            result = db.fetchone()
+            if not result:
+                logger.warning(
+                    f"[maybe_generate_session_title] Session not found: user_id={user_id}, session_id={session_id}"
+                )
+                return
+            elif result[0] != "Untitled Session":
+                return
+
+            try:
+                new_title = generate_session_title(
+                    query=user_query,
+                    user_id=user_id,
+                    session_id=session_id,
+                    client=client,
+                    model_name=model_name,
+                    model_type=model_type,
+                )
+                db.execute(
+                    """
+                    UPDATE sessions SET session_name = %s, updated_at = %s, updated_by = %s
+                    WHERE session_id = %s
+                    """,
+                    (new_title, datetime.now(timezone.utc), user_id, session_id),
+                )
+            except Exception:
+                logger.warning(
+                    f"[maybe_generate_session_title] Failed to generate session title: user_id={user_id}, session_id={session_id}"
+                )
+    except Exception:
+        logger.exception(
+            f"[maybe_generate_session_title] Failed to update session title: user_id={user_id}, session_id={session_id}"
+        )
+
+
+def _search_repositories(
+    *,
+    queries: list[str],
+    chroma_repo: ChromaDBRepository | None,
+    bm25_repo: BM25Repository | None,
+    embedder: Callable[[str], list[float]],
+    top_k_chroma: int,
+    top_k_bm25: int,
+    user_id: str,
+    session_id: str,
+    round_id: int,
+) -> dict[str, list[Document]]:
+    """Search ChromaDB and/or BM25 and merge results.
+
+    Args:
+        queries: Already-optimised search strings.
+        chroma_repo: Initialised ChromaDB repository, or ``None`` to skip.
+        bm25_repo: Initialised BM25 repository, or ``None`` to skip.
+        embedder: Callable that converts a query to embeddings (for ChromaDB).
+        top_k_chroma: Maximum number of ChromaDB neighbours **per call**.
+            The helper divides this by ``len(queries)`` and enforces
+            ``>= 1`` so at least one result is requested per query.
+        top_k_bm25: Same as ``top_k_chroma`` but for the BM25 repository.
+        user_id: User ID for contextual logging only.
+        session_id: Session ID for contextual logging only.
+        round_id: Round number for contextual logging only.
+
+    Returns:
+        ``{"chroma": [...], "bm25": [...]}`` — each list may be empty.
+    """
+    results: dict[str, list[Document]] = {"chroma": [], "bm25": []}
+    for q in queries:
+        if chroma_repo:
+            try:
+                results["chroma"] += chroma_repo.search(
+                    q,
+                    top_k=top_k_chroma // len(queries),
+                    query_embeddings=embedder(q),
+                )
+            except Exception:
+                logger.exception(
+                    f"[search] Chroma failure "
+                    f"(user_id={user_id}, session_id={session_id}, round_id={round_id})"
+                )
+        if bm25_repo:
+            try:
+                results["bm25"] += bm25_repo.search(q, top_k=top_k_bm25 // len(queries))
+            except Exception:
+                logger.exception(
+                    f"[search] BM25 failure "
+                    f"(user_id={user_id}, session_id={session_id}, round_id={round_id})"
+                )
+    return results
+
+
+def _enhance_results(
+    *,
+    search_results: dict[str, list[Document]],
+    chroma_repo: ChromaDBRepository | None,
+    num_before: int,
+    num_after: int,
+    user_id: str,
+    session_id: str,
+) -> dict[str, list[Document]]:
+    """Expand each hit by surrounding context lines / chunks.
+
+    The helper delegates to ``chroma_repo.enhance`` for both Chroma and
+    BM25 results (the latter are passed straight through the same API).
+
+    Args:
+        search_results: Output from the retrieval step —
+            ``{"chroma": [...], "bm25": [...]}``.
+        chroma_repo: Initialised ChromaDB repository or ``None`` to skip.
+        num_before: Number of neighbouring chunks *before* each hit.
+        num_after:  Number of neighbouring chunks *after* each hit.
+        user_id: User ID for contextual logging only.
+        session_id: Session ID for contextual logging only.
+
+    Returns:
+        dict[str, list[Document]]: Enhanced results using the same keys as
+        *search_results*. Lists may be empty if a repository is disabled,
+        empty, or the enhancement call fails.
+
+    Notes:
+        All exceptions thrown by the repository are caught and logged; the
+        function never raises.
+    """
+    enhanced: dict[str, list[Document]] = {}
+
+    if search_results["chroma"] and chroma_repo:
+        try:
+            enhanced["chroma"] = chroma_repo.enhance(
+                search_results["chroma"],
+                num_before=DEFAULT_ENHANCE_BEFORE,
+                num_after=DEFAULT_ENHANCE_AFTER,
+            )
+        except Exception:
+            logger.exception(
+                f"[enhance] Chroma enhancement failed:"
+                f"user_id={user_id}, session_id={session_id}"
+            )
+
+    if search_results["bm25"] and chroma_repo:
+        try:
+            enhanced["bm25"] = chroma_repo.enhance(
+                search_results["bm25"],
+                num_before=DEFAULT_ENHANCE_BEFORE,
+                num_after=DEFAULT_ENHANCE_AFTER,
+            )
+        except Exception:
+            logger.exception(
+                f"[enhance] BM25 enhancement failed "
+                f"(user_id={user_id}, session_id={session_id})"
+            )
+
+    return enhanced
+
+
 @app.post("/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries")
 async def handle_query(
     user_id: str, app_name: str, session_id: str, request: Request
@@ -1581,219 +1963,123 @@ async def handle_query(
         HTTPException: On JSON parsing error, missing user message, search/enhancement failure,
         or unexpected internal server error.
     """
-    try:
-        data = await request.json()
-    except Exception:
-        logger.exception(
-            f"[handle_query] Failed to parse query request for user_id={user_id}, session_id={session_id}"
-        )
-        raise HTTPException(status_code=400, detail="Invalid query payload")
 
-    # Extract fields after successful parsing
-    user_msg_id = data.get("user_msg_id", "")
-    system_msg_id = data.get("system_msg_id", "")
-    assistant_msg_id = data.get("assistant_msg_id", "")
-    round_id = data.get("round_id", 0)
-    messages_list = data.get("messages", [])  # an array of {role, content}
-    rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
-    use_reranker = data.get("use_reranker", False)
+    req: QueryRequest = _parse_request(
+        data=await request.json(), user_id=user_id, session_id=session_id
+    )
+    user_query: str = extract_latest_user_message(req.messages, user_id, session_id)
 
-    user_query = ""
-    for msg in reversed(messages_list):
-        if msg.get("role") == "user":
-            user_query = msg["content"]
-            break
+    logger.info(
+        f"[handle_query] ⇢ user_id={user_id}, session_id={session_id}, "
+        f"round_id={req.round_id}"
+    )
 
-    if not user_query:
-        logger.warning(
-            f"[handle_query] No user message found in messages_list for user_id={user_id}, session_id={session_id}"
-        )
-        raise HTTPException(
-            status_code=500, detail="No user message found in request. Cannot proceed."
-        )
+    maybe_generate_session_title(
+        user_id=user_id,
+        session_id=session_id,
+        round_id=req.round_id,
+        user_query=user_query,
+        client=client,
+        model_name=MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID,
+        model_type=OPENAI_TYPE,
+        db_type=DB_TYPE,
+        db_pool=db_pool,
+    )
 
-    if rag_mode == "No RAG":
-        retrieved_contexts_str = ""
-        try:
-            return StreamingResponse(
-                stream_chat_completion(
-                    user_id=user_id,
-                    session_id=session_id,
-                    app_name=app_name,
-                    round_id=round_id,
-                    user_msg_id=user_msg_id,
-                    system_msg_id=system_msg_id,
-                    assistant_msg_id=assistant_msg_id,
-                    messages=messages_list,
-                    retrieved_contexts_str=retrieved_contexts_str,
-                    rag_mode=rag_mode,
-                    client=client,
-                    model_name=MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID,
-                    model_type=OPENAI_TYPE,
-                    optimized_queries=None,
-                    use_reranker=use_reranker,
-                ),
-                media_type="text/event-stream",
-            )
-        except Exception:
-            logger.exception(
-                f"[handle_query] Streaming failed for No RAG Mode: user_id={user_id}, session_id={session_id}, round_id={round_id}"
-            )
-            raise HTTPException(status_code=500, detail="Internal server error.")
+    if req.rag_mode == "No RAG":
 
-    if rag_mode == "RAG (Optimized Query)":
-        # Example usage of generate_queries_from_history, if needed:
-        instructions = OPTIMIZED_QUERY_INSTRUCTION
-
-        try:
-            optimized_queries = generate_queries_from_history(
+        return StreamingResponse(
+            stream_and_persist_chat_response(
                 user_id=user_id,
                 session_id=session_id,
-                messages_list=messages_list,
-                system_instructions=instructions,
-            )
-            logger.info(
-                f"[handle_query] Optimized queries from LLM for user_id={user_id}, session_id={session_id}, round_id={round_id}"
-            )
-            logger.debug(
-                f"[handle_query] Optimized queries from LLM for user_id={user_id}, session_id={session_id}, round_id={round_id}: {optimized_queries}"
-            )
-        except ValueError as exc:
-            logger.warning(
-                f"[handle_query] Failed to generate optimized queries, fallback to user query: user_id={user_id}, session_id={session_id}, round_id={round_id}, error={exc}"
-            )
-            optimized_queries = [user_query]
-        except Exception as exc:
-            logger.warning(
-                f"[handle_query] Unexpected Error while generating optimized queries, fallback to user query: user_id={user_id}, session_id={session_id}, round_id={round_id}, error={exc}"
-            )
-            optimized_queries = [user_query]
-    else:
-        # RAG (Standard) or fallback mode
-        optimized_queries = [user_query]
+                app_name=app_name,
+                round_id=req.round_id,
+                user_msg_id=req.user_msg_id,
+                system_msg_id=req.system_msg_id,
+                assistant_msg_id=req.assistant_msg_id,
+                messages=req.messages,
+                retrieved_contexts_str="",
+                rag_mode=req.rag_mode,
+                client=client,
+                model_name=MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID,
+                model_type=OPENAI_TYPE,
+                optimized_queries=None,
+                use_reranker=req.use_reranker,
+            ),
+            media_type="text/event-stream",
+        )
 
-    search_results = {
-        "chroma": [],
-        "bm25": [],
-    }
+    queries: list[str] = _build_retrieval_queries(
+        req=req, user_query=user_query, user_id=user_id, session_id=session_id
+    )
 
-    for query in optimized_queries:
-        top_k_for_chroma = DEFAULT_TOP_K_CHROMA // (len(optimized_queries))
-        top_k_for_bm25 = DEFAULT_TOP_K_BM25 // (len(optimized_queries))
-        enhance_num_before = DEFAULT_ENHANCE_BEFORE
-        enhance_num_after = DEFAULT_ENHANCE_AFTER
+    search_results = _search_repositories(
+        queries=queries,
+        chroma_repo=chroma_repo if use_chromadb else None,
+        bm25_repo=bm25_repo if use_bm25 else None,
+        embedder=embedder,
+        top_k_chroma=DEFAULT_TOP_K_CHROMA,
+        top_k_bm25=DEFAULT_TOP_K_BM25,
+        user_id=user_id,
+        session_id=session_id,
+        round_id=req.round_id,
+    )
 
-        if use_chromadb and chroma_repo:
-            try:
-                embedded_query = embedder(query)
-                logger.info(
-                    f"[handle_query] Searching in ChromaDB for user_id={user_id}, session_id={session_id}"
-                )
-                logger.debug(
-                    f"[handle_query] Searching in ChromaDB for user_id={user_id}, session_id={session_id}, query={query}"
-                )
-                partial_chroma = chroma_repo.search(
-                    query, top_k=top_k_for_chroma, query_embeddings=embedded_query
-                )
-                search_results["chroma"].extend(partial_chroma)
-            except Exception as e:
-                logger.exception(
-                    f"[handle_query] ChromaDB search failed for query='{query}': user_id={user_id}, session_id={session_id}"
-                )
-
-        if use_bm25 and bm25_repo:
-            try:
-                logger.info(
-                    f"[handle_query] Searching in BM25 for user_id={user_id}, session_id={session_id}"
-                )
-                logger.debug(
-                    f"[handle_query] Searching in BM25 for user_id={user_id}, session_id={session_id}, query={query}"
-                )
-                partial_bm25 = bm25_repo.search(query, top_k=top_k_for_bm25)
-                search_results["bm25"].extend(partial_bm25)
-            except Exception as e:
-                logger.exception(
-                    f"[handle_query] BM25 search failed for query='{query}': user_id={user_id}, session_id={session_id}"
-                )
-
-    if not search_results["chroma"] and not search_results["bm25"]:
+    if not (search_results["chroma"] or search_results["bm25"]):
         logger.error(
             f"[handle_query] No search results found from either ChromaDB or BM25: user_id={user_id}, session_id={session_id}"
         )
         raise HTTPException(
-            status_code=500,
-            detail="No documents were retrieved from either ChromaDB or BM25 search.",
+            500, "No documents were retrieved from either ChromaDB or BM25."
         )
 
-    # TODO: add Try/Except for each search to handle individual failures
-    enhanced_results = {}
-    if use_chromadb and chroma_repo:
-        try:
-            enhanced_results["chroma"] = chroma_repo.enhance(
-                search_results["chroma"],
-                num_before=enhance_num_before,
-                num_after=enhance_num_after,
-            )
-        except Exception:
-            logger.exception(
-                f"[handle_query] ChromaDB enhancement failed: user_id={user_id}, session_id={session_id}"
-            )
+    enhanced = _enhance_results(
+        search_results=search_results,
+        chroma_repo=chroma_repo,
+        num_before=DEFAULT_ENHANCE_BEFORE,
+        num_after=DEFAULT_ENHANCE_AFTER,
+        user_id=user_id,
+        session_id=session_id,
+    )
 
-    if use_bm25 and chroma_repo:
-        try:
-            enhanced_results["bm25"] = chroma_repo.enhance(
-                search_results["bm25"],
-                num_before=enhance_num_before,
-                num_after=enhance_num_after,
-            )
-        except Exception:
-            logger.exception(
-                f"[handle_query] BM25 enhancement failed: user_id={user_id}, session_id={session_id}"
-            )
-
-    if not enhanced_results.get("chroma") and not enhanced_results.get("bm25"):
+    if not (enhanced.get("chroma") or enhanced.get("bm25")):
         logger.error(
             f"[handle_query] No enhanced results available from either ChromaDB or BM25: user_id={user_id}, session_id={session_id}"
         )
         raise HTTPException(
-            status_code=500,
+            500,
             detail="Document retrieval succeeded, but context enhancement failed for both ChromaDB and BM25.",
         )
 
     # please write rerank process
-    if use_reranker:
+    if req.use_reranker:
         pass
 
-    retrieved_contexts_str = build_context_string(
-        enhanced_results,
+    ctx_str: str = build_context_string(
+        enhanced,
         use_chromadb=use_chromadb,
         use_bm25=use_bm25,
         user_id=user_id,
         session_id=session_id,
     )
-    try:
-        return StreamingResponse(
-            stream_chat_completion(
-                user_id=user_id,
-                session_id=session_id,
-                app_name=app_name,
-                round_id=round_id,
-                user_msg_id=user_msg_id,
-                system_msg_id=system_msg_id,
-                assistant_msg_id=assistant_msg_id,
-                messages=messages_list,
-                retrieved_contexts_str=retrieved_contexts_str,
-                rag_mode=rag_mode,
-                client=client,
-                model_name=MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID,
-                model_type=OPENAI_TYPE,
-                optimized_queries=optimized_queries,
-                use_reranker=use_reranker,
-            ),
-            media_type="text/event-stream",
-        )
-    except Exception:
-        logger.exception(
-            f"[handle_query] Streaming failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
-        )
-        raise HTTPException(status_code=500, detail="Internal server error.")
+
+    return StreamingResponse(
+        stream_and_persist_chat_response(
+            user_id=user_id,
+            session_id=session_id,
+            app_name=app_name,
+            round_id=req.round_id,
+            user_msg_id=req.user_msg_id,
+            system_msg_id=req.system_msg_id,
+            assistant_msg_id=req.assistant_msg_id,
+            messages=req.messages,
+            retrieved_contexts_str=ctx_str,
+            rag_mode=req.rag_mode,
+            client=client,
+            model_name=MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID,
+            model_type=OPENAI_TYPE,
+            optimized_queries=queries,
+            use_reranker=req.use_reranker,
+        ),
+        media_type="text/event-stream",
+    )
