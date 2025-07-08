@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import islice
-from typing import Final
+from typing import Any, Final
 
 import requests
 import streamlit as st
@@ -318,38 +318,95 @@ def put_session_info(
     response.raise_for_status()
 
 
-def patch_session_info(
+def update_session_info_with_check(
     server_url: str,
     user_id: str,
+    app_name: str,
     session_id: str,
-    session_name: str,
-    is_private_session: bool,
-    is_deleted: bool = False,
+    before_name: str,
+    before_is_private: bool,
+    before_is_deleted: bool,
+    after_name: str,
+    after_is_private: bool,
+    after_is_deleted: bool,
 ) -> None:
     """
-    Sends a PATCH request to update session info in the backend.
+    Sends a session update request to the FastAPI server with before/after values for pessimistic locking.
 
     Args:
-        server_url (str): The URL of the backend server.
-        user_id (str): The user ID.
-        session_id (str): The session ID to be updated.
-        session_name (str): The new session name.
-        is_private_session (bool): The new is_private_session value.
-        is_deleted (bool): Whether the session is being marked as deleted.
+        server_url (str): The base URL of the FastAPI backend.
+        user_id (str): The ID of the user performing the update.
+        app_name (str): The name of the application the session belongs to.
+        session_id (str): The ID of the session to update.
+        before_name (str): The expected name of the session before the update.
+        before_is_private (bool): The expected privacy status before the update.
+        before_is_deleted (bool): The expected deletion status before the update.
+        after_name (str): The new name for the session.
+        after_is_private (bool): The new privacy setting.
+        after_is_deleted (bool): The new deletion flag.
 
     Raises:
-        requests.exceptions.RequestException: If the request fails.
+        requests.HTTPError: If the request fails with a non-200 response.
     """
-    endpoint = f"{server_url}/users/{user_id}/sessions/{session_id}"
+    url = f"{server_url}/users/{user_id}/apps/{app_name}/sessions/{session_id}/update_with_check"
+
     payload = {
-        "session_name": session_name,
-        "is_private_session": is_private_session,
-        "is_deleted": is_deleted,
+        "before_session_name": before_name,
+        "before_is_private_session": before_is_private,
+        "before_is_deleted": before_is_deleted,
+        "after_session_name": after_name,
+        "after_is_private_session": after_is_private,
+        "after_is_deleted": after_is_deleted,
     }
 
-    # Perform a real PATCH request
-    response = requests.patch(endpoint, json=payload)
-    response.raise_for_status()  # Raise an error if the request was unsuccessful
+    response = requests.patch(url, json=payload)
+    if not response.ok:
+        response.raise_for_status()
+
+
+def post_create_session_with_limit(
+    server_url: str,
+    user_id: str,
+    app_name: str,
+    new_session_id: str,
+    session_name: str,
+    is_private: bool,
+    known_session_ids: list[str],
+    delete_target_session_id: str | None = None,
+) -> str:
+    """
+    Calls the new session creation API with session count checks and consistency validation.
+
+    Args:
+        server_url (str): Backend URL
+        user_id (str): User ID
+        app_name (str): Application name
+        new_session_id (str): New session UUID
+        session_name (str): Session name
+        is_private (bool): Whether session is private
+        known_session_ids (list[str]): List of session UUIDs (non-deleted)
+        delete_target_session_id (str | None): ID of session to delete if needed
+
+    Returns:
+        str: The created session_id
+    """
+    endpoint = (
+        f"{server_url}/users/{user_id}/apps/{app_name}/sessions/create_with_limit"
+    )
+    payload = {
+        "new_session_data": {
+            "session_id": new_session_id,
+            "session_name": session_name,
+            "is_private_session": is_private,
+        },
+        "known_session_ids": known_session_ids,
+    }
+    if delete_target_session_id:
+        payload["delete_target_session_id"] = delete_target_session_id
+
+    response = requests.post(endpoint, json=payload)
+    response.raise_for_status()
+    return response.json()["session_id"]
 
 
 def delete_round(
@@ -663,10 +720,9 @@ def render_create_session_form(
         )
 
         try:
-            # Auto-delete oldest sessions until under limit
             logger.info(
-                f"[render_create_session_form] Deleting Session before creating new session: "
-                f"user_id={user_id}, name='{data['name']}', private={data['is_private']}"
+                f"[render_create_session_form] Creating session via API: "
+                f"user_id={user_id}, private={data['is_private']}"
             )
 
             # --- Developer test hooks ---
@@ -684,118 +740,91 @@ def render_create_session_form(
                     "[DevTest] Simulated unexpected exception during session creation"
                 )
 
-            logger.debug(
-                f"[render_create_session_form] Session count before deletion: {len(st.session_state['session_ids'])}"
-            )
+            new_session_id = str(uuid.uuid4())
 
-            while len(st.session_state["session_ids"]) >= MAX_SESSION_COUNT:
-                oldest_session = min(
+            known_ids = [s.session_id for s in st.session_state["session_ids"]]
+
+            delete_target_id = None
+            if len(known_ids) >= MAX_SESSION_COUNT:
+                oldest = min(
                     st.session_state["session_ids"], key=lambda s: s.last_touched_at
                 )
+                delete_target_id = oldest.session_id
 
-                logger.debug(
-                    f"[render_create_session_form] Attempting to delete oldest session: user_id={user_id}, session_id={oldest_session.session_id}"
-                )
-
-                patch_session_info(
-                    server_url=server_url,
-                    user_id=user_id,
-                    session_id=oldest_session.session_id,
-                    session_name=oldest_session.session_name,
-                    is_private_session=oldest_session.is_private_session,
-                    is_deleted=True,
-                )
-                st.session_state["session_ids"] = [
-                    s
-                    for s in st.session_state["session_ids"]
-                    if s.session_id != oldest_session.session_id
-                ]
-                logger.info(
-                    f"[render_create_session_form] Auto-deleted session: user_id={user_id}, session_id={oldest_session.session_id}"
-                )
-
-        except requests.exceptions.RequestException as exc:
-            logger.exception(
-                f"[render_create_session_form] Failed to delete session '{data['name']}' for user_id={user_id}"
-            )
-            st.session_state["error_message"] = (
-                "Failed to delete the oldest session."
-                "Please try again later or manually delete old sessions."
-            )
-            st.session_state["is_ui_locked"] = False
-            st.session_state["ui_lock_reason"] = ""
-            st.rerun()
-
-        except Exception:
-            logger.exception(
-                f"[render_create_session_form] Unexpected error during session deletion for user_id={user_id}"
-            )
-            st.session_state["error_message"] = (
-                "An unexpected error occurred during session deletion."
-                "Please try again later or manually delete old sessions."
-            )
-            st.session_state["is_ui_locked"] = False
-            st.session_state["ui_lock_reason"] = ""
-            st.rerun()
-
-        try:
-            logger.info(
-                f"[render_create_session_form] Session creation started: "
-                f"user_id={user_id}, name='{data['name']}', private={data['is_private']}"
-            )
-            new_session_id: str = str(uuid.uuid4())
-
-            # --- Developer test hooks ---
-            # Optional simulated delay
-            if dev_cfg.simulate_delay_seconds > 0:
-                time.sleep(dev_cfg.simulate_delay_seconds)
-
-            # Optional simulated backend failure
-            if dev_cfg.simulate_backend_failure:
-                raise requests.exceptions.RequestException("Simulated backend failure")
-
-            # Optional simulated unexpected exception
-            if dev_cfg.simulate_unexpected_exception:
-                raise RuntimeError(
-                    "[DevTest] Simulated unexpected exception during session creation"
-                )
-
-            put_session_info(
+            _ = post_create_session_with_limit(
                 server_url=server_url,
                 user_id=user_id,
                 app_name=app_name,
-                session_id=new_session_id,
+                new_session_id=new_session_id,
                 session_name=data["name"],
-                is_private_session=data["is_private"],
+                is_private=data["is_private"],
+                known_session_ids=known_ids,
+                delete_target_session_id=delete_target_id,
             )
-            # Update session list and current session
+
             new_session = SessionData(
                 session_id=new_session_id,
                 session_name=data["name"],
                 is_private_session=data["is_private"],
-                last_touched_at=datetime.now(timezone.utc),
+                last_touched_at=datetime.now(timezone.utc),  # UI上の一時的な最新時刻
             )
-            st.session_state["session_ids"].append(new_session)
+
+            st.session_state["session_ids"] = [
+                s
+                for s in st.session_state["session_ids"]
+                if s.session_id != delete_target_id
+            ] + [new_session]
             st.session_state["current_session"] = new_session
-            st.session_state["show_create_form"] = False
 
             logger.info(
                 f"[render_create_session_form] Session created successfully: "
-                f"id={new_session_id}, session_name='{data['name']}' for user_id={user_id}"
+                f"user_id={user_id}, session_id={new_session_id}"
             )
+
+        except requests.exceptions.HTTPError as http_err:
+            status_code = http_err.response.status_code
+            detail = http_err.response.json().get("detail", str(http_err))
+
+            if status_code == 500:
+                logger.error(
+                    f"[render_create_session_form] Server error for user_id={user_id}: {detail}"
+                )
+                st.session_state["error_message"] = (
+                    "⚠️ Internal server error occurred.\n\n"
+                    "This session may have been partially created. "
+                    "Please refresh the screen. If the issue persists, contact the administrator."
+                )
+
+            elif status_code == 409:
+                logger.warning(
+                    f"[render_create_session_form] Conflict error for user_id={user_id}: {detail}"
+                )
+                st.session_state["error_message"] = (
+                    "⚠️ Session state mismatch detected.\n\n"
+                    "Please refresh the page and try creating the session again."
+                )
+            else:
+                logger.exception(
+                    f"[render_create_session_form] Unexpected HTTP error for user_id={user_id}"
+                )
+                st.session_state["error_message"] = (
+                    f"Unexpected HTTP error: {status_code}"
+                )
 
         except requests.exceptions.RequestException as exc:
             logger.exception(
-                f"[render_create_session_form] Failed to create session '{data['name']}' for user_id={user_id}, session_id={new_session_id}"
+                f"[render_create_session_form] API request failed for user_id={user_id}"
             )
-            st.session_state["error_message"] = f"Failed to create a new session: {exc}"
+            st.session_state["error_message"] = (
+                f"Session creation failed. Please try again later."
+            )
 
         except Exception:
             logger.exception(
-                f"[render_create_session_form] Unexpected error during session creation for user_id={user_id}, session_id={new_session_id}"
+                f"[render_create_session_form] Unexpected error for user_id={user_id}"
             )
             st.session_state["error_message"] = (
-                "An unexpected error occurred during session creation."
+                "Unexpected error occurred during session creation."
             )
 
         finally:
@@ -844,14 +873,17 @@ def render_session_list(
                     )
 
                 # Register the session on the FastAPI side
-                put_session_info(
+                _ = post_create_session_with_limit(
                     server_url=server_url,
                     user_id=user_id,
                     app_name=app_name,
-                    session_id=new_session_id,
+                    new_session_id=new_session_id,
                     session_name=default_session_name,
-                    is_private_session=is_private,
+                    is_private=is_private,
+                    known_session_ids=[],
+                    delete_target_session_id=None,
                 )
+
             except requests.exceptions.RequestException as exc:
                 st.sidebar.error(f"Failed to register default session to server: {exc}")
                 st.stop()
@@ -938,7 +970,9 @@ def render_session_list(
     return selected_session_data
 
 
-def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -> None:
+def render_edit_session_form(
+    user_id: str, app_name: str, server_url: str, disabled_ui: bool
+) -> None:
     """Display the edit/delete form for the currently selected session.
 
     Args:
@@ -971,6 +1005,7 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
 
             current_name: str = current_session.session_name
             current_is_private: bool = current_session.is_private_session
+            current_is_deleted: bool = False
 
             edited_session_name: str = st.text_input(
                 "📛 Session Name",
@@ -1001,8 +1036,12 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
                     st.session_state["pending_edit_action"] = {
                         "delete": delete_this_session,
                         "session_id": current_session.session_id,
-                        "new_name": edited_session_name,
-                        "new_privacy": edited_is_private,
+                        "before_name": current_name,
+                        "before_private": current_is_private,
+                        "before_deleted": current_is_deleted,
+                        "after_name": edited_session_name,
+                        "after_private": edited_is_private,
+                        "after_deleted": delete_this_session,
                     }
                     st.session_state["show_edit_form"] = False
                     st.rerun()
@@ -1022,8 +1061,8 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
             logger.info(
                 f"[render_edit_session_form] Processing session update request: "
                 f"user_id={user_id}, action={'DELETE' if action['delete'] else 'UPDATE'}, "
-                f"session_id={action['session_id']}, new_name='{action['new_name']}', "
-                f"private={action['new_privacy']}"
+                f"session_id={action['session_id']}, len(after_name)='{len(action['after_name'])}', "
+                f"private={action['after_private']}"
             )
 
             # --- Developer test hooks ---
@@ -1044,60 +1083,79 @@ def render_edit_session_form(user_id: str, server_url: str, disabled_ui: bool) -
                     "[DevTest] Simulated unexpected exception during session modification"
                 )
 
-            if action["delete"]:
-                patch_session_info(
-                    server_url=server_url,
-                    user_id=user_id,
-                    session_id=action["session_id"],
-                    session_name=action["new_name"],
-                    is_private_session=action["new_privacy"],
-                    is_deleted=True,
-                )
-                logger.info(
-                    f"[render_edit_session_form] Successfully deleted session: "
-                    f"user_id={user_id}, session_id={action['session_id']}"
-                )
+            update_session_info_with_check(
+                server_url=server_url,
+                user_id=user_id,
+                app_name=app_name,
+                session_id=action["session_id"],
+                before_name=action["before_name"],
+                before_is_private=action["before_private"],
+                before_is_deleted=action["before_deleted"],
+                after_name=action["after_name"],
+                after_is_private=action["after_private"],
+                after_is_deleted=action["after_deleted"],
+            )
+
+            logger.info(
+                f"[render_edit_session_form] Session '{action['session_id']}' updated successfully for user_id={user_id}, session_id={action['session_id']}, deletion={action['delete']}"
+            )
+
+            for s in st.session_state["session_ids"]:
+                if s.session_id == action["session_id"]:
+                    s.session_name = action["after_name"]
+                    s.is_private_session = action["after_private"]
+                    # s.is_deleted = action["after_deleted"]
+                    break
+
+            if action["after_deleted"]:
                 st.session_state["session_ids"] = [
                     s
                     for s in st.session_state["session_ids"]
                     if s.session_id != action["session_id"]
                 ]
+
                 if (
-                    st.session_state["current_session"].session_id
+                    st.session_state["current_session"]
+                    and st.session_state["current_session"].session_id
                     == action["session_id"]
                 ):
                     st.session_state["current_session"] = None
+
+        except requests.HTTPError as http_err:
+            status = http_err.response.status_code
+            if status == 404:
+                # HTTPException (404): Session does not exist or is already deleted.
+                logger.warning(
+                    f"[render_edit_session_form] user_id={user_id} - Session not found (deleted or missing): session_id={action['session_id']}"
+                )
+                st.session_state["error_message"] = (
+                    "This session does not exist or has already been deleted. "
+                    "Please refresh the page (F5) to update your session list."
+                )
+            elif status == 409:
+                # HTTPException (409): Session state conflict.
+                logger.warning(
+                    f"[render_edit_session_form] user_id={user_id} - Session conflict detected for session_id={action['session_id']}"
+                )
+                st.session_state["error_message"] = (
+                    "This session was modified by another tab. "
+                    "Please refresh the page (F5) to update your session list."
+                )
             else:
-                patch_session_info(
-                    server_url=server_url,
-                    user_id=user_id,
-                    session_id=action["session_id"],
-                    session_name=action["new_name"],
-                    is_private_session=action["new_privacy"],
-                    is_deleted=False,
+                # HTTPException (500): Unexpected server error.
+                logger.error(
+                    f"[render_edit_session_form] user_id={user_id} - Server error ({status}) while modifying session_id={action['session_id']}"
                 )
-                logger.info(
-                    f"[render_edit_session_form] Session '{action['session_id']}' updated successfully "
-                    f"with name='{action['new_name']}', private={action['new_privacy']}, user_id={user_id}."
+                st.session_state["error_message"] = (
+                    f"Server error occurred. Please try again later."
                 )
-                for s in st.session_state["session_ids"]:
-                    if s.session_id == action["session_id"]:
-                        s.session_name = action["new_name"]
-                        s.is_private_session = action["new_privacy"]
-                        break
-        except requests.RequestException:
-            logger.exception(
-                f"[render_edit_session_form] Failed to modify session '{action['session_id']}' for user_id={user_id}."
-            )
-            st.session_state["error_message"] = (
-                f"Failed to modify session: {action['session_id']}"
-            )
+
         except Exception as e:
             logger.exception(
                 f"[render_edit_session_form] Unexpected error during session modification for session '{action['session_id']}', user_id={user_id}"
             )
             st.session_state["error_message"] = (
-                f"Unexpected error occurred while modifying session: {e}"
+                f"Unexpected error occurred while modifying session"
             )
         finally:
             st.session_state["show_edit_form"] = False
@@ -1665,7 +1723,7 @@ def render_user_chat_input(
 #################################
 
 
-def main(user_id: str) -> None:
+def main(user_id: str, employee_class_id: str) -> None:
     """
     Launches the main Streamlit interface for the multi-session RAG+LLM application.
 
@@ -1677,7 +1735,14 @@ def main(user_id: str) -> None:
         user_id (str): Unique identifier of the authenticated user.
             In production, this is obtained from a SAML cookie.
             In development, this may be passed via an environment variable.
+        employee_class_id (str): The employee class ID of the user, used for access control.
     """
+
+    # --- Access control check ---
+    allowed_ids = {"70", "80", "99"}
+    if employee_class_id not in allowed_ids:
+        st.error("アクセス権限がありません。担当者にご確認ください。")
+        st.stop()
 
     # -- Header CSS: title, hide menu, shift content down
     st.markdown(
@@ -1782,7 +1847,10 @@ def main(user_id: str) -> None:
 
     # Step 5: Sidebar edit/delete form
     render_edit_session_form(
-        user_id=user_id, server_url=server_url, disabled_ui=disabled_ui
+        user_id=user_id,
+        app_name=app_name,
+        server_url=server_url,
+        disabled_ui=disabled_ui,
     )
 
     # Step 6: Display conversation messages
@@ -1838,7 +1906,9 @@ if __name__ == "__main__":
                 urllib.parse.unquote(st.context.cookies["session_data"])
             )
             user_id = attribute_json["employeeNumber"][0]
-            main(user_id)
+            employee_class_id = attribute_json["employee_class_id"][0]
+            main(user_id, employee_class_id)
     else:
         user_id = os.getenv("DEV_USER_ID", "test_user5")
-        main(user_id)
+        employee_class_id = os.getenv("DEV_EMPLOYEE_CLASS_ID", "test_user5")
+        main(user_id, employee_class_id)

@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 from json import dumps
 from pathlib import Path
 from typing import Any, AsyncGenerator, Generator, Literal, NoReturn, cast
+from uuid import UUID
 
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
@@ -27,11 +28,14 @@ from ragpon import (
 )
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.apps.chat_domain import (
+    CreateSessionWithLimitRequest,
     DeleteRoundPayload,
     Message,
     PatchFeedbackPayload,
     SessionCreate,
+    SessionData,
     SessionUpdate,
+    SessionUpdateWithCheckRequest,
 )
 from ragpon.apps.fastapi.db.db_session import get_database_client
 from ragpon.apps.fastapi.openai.client_init import (
@@ -1169,51 +1173,109 @@ async def list_session_queries(
         )
 
 
-@app.put("/users/{user_id}/apps/{app_name}/sessions/{session_id}")
-async def create_session(
+@app.post(
+    "/users/{user_id}/apps/{app_name}/sessions/create_with_limit",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_session_with_limit(
     user_id: str,
     app_name: str,
-    session_id: str,
-    session_data: SessionCreate = Body(...),
+    payload: CreateSessionWithLimitRequest,
 ):
-    """
-    Creates a new session record in the sessions table.
-
-    This endpoint is typically used to register a new chat session
-    for a specific user and application. The session ID is provided
-    by the client, not auto-generated.
-
-    Args:
-        user_id (str): ID of the user creating the session.
-        app_name (str): Name of the application context.
-        session_id (str): Unique identifier for the session (UUID format).
-        session_data (SessionCreate): JSON body containing:
-            - session_name (str): Human-readable title of the session.
-            - is_private_session (bool): Whether the session is private.
-            - is_deleted (bool): Logical deletion flag.
-
-    Returns:
-        dict: A JSON object indicating success or failure. On success:
-            {
-                "status": "ok",
-                "detail": "Session created successfully."
-            }
-
-    Raises:
-        HTTPException:
-            - 409: If a session with the same ID already exists.
-            - 500: If a database error occurs during insertion.
-    """
-    logger.info(
-        f"[create_session] Creating session: user_id={user_id}, app_name={app_name}, session_id={session_id}, "
-        f"session_name='{session_data.session_name}', "
-        f"is_private_session={session_data.is_private_session}, "
-        f"is_deleted={session_data.is_deleted}"
-    )
-
     try:
-        now = datetime.now(timezone.utc)
         with get_database_client(DB_TYPE, db_pool) as db:
+            # BEGIN TRANSACTION
+            db.execute(
+                """
+                SELECT session_id, session_name, is_private_session, created_at
+                FROM sessions
+                WHERE user_id = %s AND app_name = %s AND is_deleted = FALSE
+                FOR UPDATE NOWAIT;
+                """,
+                (user_id, app_name),
+            )
+
+            session_rows = db.fetchall()
+
+            # Step 2: Compute last_touched_at using messages
+            session_infos = []
+            for row in session_rows:
+                session_id, session_name, is_private, created_at = row
+                db.execute(
+                    """
+                    SELECT MAX(created_at)
+                    FROM messages
+                    WHERE user_id = %s AND session_id = %s
+                      AND message_type = 'user'
+                      AND is_deleted = FALSE
+                    """,
+                    (user_id, session_id),
+                )
+                last_user_query_at = db.fetchone()[0]
+                last_touched_at = last_user_query_at or created_at
+                session_infos.append(
+                    {
+                        "session_id": session_id,
+                        "last_touched_at": last_touched_at,
+                    }
+                )
+
+            try:
+                known_ids_as_uuid = sorted(UUID(k) for k in payload.known_session_ids)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400, detail="Invalid UUID in known_session_ids."
+                )
+
+            current_ids = sorted(s["session_id"] for s in session_infos)
+
+            if set(current_ids) != set(known_ids_as_uuid):
+                logger.error(f"{set(current_ids)=}")
+                logger.error(f"{set(known_ids_as_uuid)=}")
+
+                raise HTTPException(
+                    status_code=409,
+                    detail="Known session IDs do not match server-side session state.",
+                )
+
+            new_session_id = payload.new_session_data.session_id
+            new_session_name = payload.new_session_data.session_name
+            is_private = payload.new_session_data.is_private_session
+            now = datetime.now(timezone.utc)
+
+            if len(current_ids) > 10:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Too many non-deleted sessions. Server state invalid.",
+                )
+            elif len(current_ids) == 10:
+
+                try:
+                    delete_target_uuid = UUID(payload.delete_target_session_id)
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400, detail="Invalid delete_target_session_id"
+                    )
+
+                oldest = min(session_infos, key=lambda s: s["last_touched_at"])
+                if delete_target_uuid != oldest["session_id"]:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Provided delete_target_session_id is not the oldest session.",
+                    )
+
+                db.execute(
+                    """
+                    UPDATE sessions
+                    SET is_deleted = true,
+                        updated_at = %s,
+                        updated_by = %s,
+                        deleted_by = %s
+                    WHERE user_id = %s AND session_id = %s;
+                    """,
+                    (now, user_id, user_id, user_id, oldest["session_id"]),
+                )
+
             db.execute(
                 """
                 INSERT INTO sessions (
@@ -1228,69 +1290,95 @@ async def create_session(
                 """,
                 (
                     user_id,
-                    session_id,
+                    new_session_id,
                     app_name,
-                    session_data.session_name,
-                    session_data.is_private_session,
+                    new_session_name,
+                    is_private,
                     now,
                     user_id,
-                    now,
-                    user_id,
-                    session_data.is_deleted,
-                    user_id,
+                    None,
+                    None,
+                    False,
+                    None,
                 ),
             )
 
-        logger.info(
-            f"[create_session] Session successfully created: user_id={user_id}, session_id={session_id}"
-        )
-        return {"status": "ok", "detail": "Session created successfully."}
+            return {
+                "message": "Session created successfully",
+                "session_id": new_session_id,
+            }
 
-    except errors.UniqueViolation:
-        logger.warning(
-            f"[create_session] Session already exists: user_id={user_id}, session_id={session_id}"
-        )
-        raise HTTPException(status_code=409, detail="Session already exists.")
+    except HTTPException:
+        raise
 
     except Exception:
-        logger.exception(
-            f"[create_session] Failed to create session: user_id={user_id}, session_id={session_id}"
-        )
-        raise HTTPException(status_code=500, detail="Internal server error.")
+        logger.exception("[create_session_with_limit] Unexpected server error")
+        raise HTTPException(status_code=500, detail="Unexpected server error")
 
 
-@app.patch("/users/{user_id}/sessions/{session_id}")
-async def patch_session_info(
+@app.patch(
+    "/users/{user_id}/apps/{app_name}/sessions/{session_id}/update_with_check",
+    status_code=status.HTTP_200_OK,
+)
+def update_session_with_check(
     user_id: str,
+    app_name: str,
     session_id: str,
-    update_data: SessionUpdate = Body(...),
+    payload: SessionUpdateWithCheckRequest,
 ):
     """
-    Updates session information in the sessions table.
+    Updates a session only if the current database values match the client's expected values.
+
+    This endpoint uses pessimistic locking to prevent concurrent modifications.
 
     Args:
-        user_id (str): The user ID associated with the session.
-        session_id (str): The UUID of the session to be updated.
-        update_data (SessionUpdate): Fields to update (name, flags, etc.).
+        user_id (str): The user ID.
+        app_name (str): The application name.
+        session_id (str): The session ID to update.
+        payload (SessionUpdateWithCheckRequest): The new and old session values.
 
     Returns:
-        JSONResponse: Success response message.
+        dict: Confirmation message with session ID.
 
     Raises:
-        HTTPException:
-            - 404: If no session matched the given user_id and session_id.
-            - 500: If a database error occurs during update.
+        HTTPException (404): If the session does not exist or is already deleted.
+        HTTPException (409): If the session's current state does not match the client-side state.
+        HTTPException (500): If an unexpected server error occurs during processing.
     """
-    logger.info(
-        f"[patch_session_info] PATCH request: user_id={user_id}, session_id={session_id}, "
-        f"session_name='{update_data.session_name}', "
-        f"is_private_session={update_data.is_private_session}, "
-        f"is_deleted={update_data.is_deleted}"
-    )
-
     try:
-        now = datetime.now(timezone.utc)
         with get_database_client(DB_TYPE, db_pool) as db:
+            db.execute(
+                """
+                SELECT session_name, is_private_session, is_deleted
+                FROM sessions
+                WHERE user_id = %s AND app_name = %s AND session_id = %s AND is_deleted = FALSE
+                FOR UPDATE NOWAIT;
+                """,
+                (user_id, app_name, session_id),
+            )
+            row = db.fetchone()
+            if row is None:
+                logger.warning(
+                    "[update_session_with_check] Session not found for user_id={user_id}, session_id={session_id}."
+                )
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            current_name, current_private, current_is_deleted = row
+
+            if (
+                payload.before_session_name != current_name
+                or payload.before_is_private_session != current_private
+                or payload.before_is_deleted != current_is_deleted  # almost nonsense
+            ):
+                logger.warning(
+                    "[update_session_with_check] Session conflict detected for user_id={user_id}, session_id={session_id}."
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="Session was modified by another client. Please reload.",
+                )
+
+            now = datetime.now(timezone.utc)
             db.execute(
                 """
                 UPDATE sessions
@@ -1299,41 +1387,29 @@ async def patch_session_info(
                     is_deleted = %s,
                     updated_at = %s,
                     updated_by = %s
-                WHERE user_id = %s
-                  AND session_id = %s
+                WHERE user_id = %s AND app_name = %s AND session_id = %s
                 """,
                 (
-                    update_data.session_name,
-                    update_data.is_private_session,
-                    update_data.is_deleted,
+                    payload.after_session_name,
+                    payload.after_is_private_session,
+                    payload.after_is_deleted,
                     now,
                     user_id,
                     user_id,
+                    app_name,
                     session_id,
                 ),
             )
-            if db.rowcount == 0:
-                logger.warning(
-                    f"[patch_session_info] Session not found: user_id={user_id}, session_id={session_id}"
-                )
-                raise HTTPException(status_code=404, detail="Session not found")
 
-        logger.info(
-            f"[patch_session_info] Session updated: user_id={user_id}, session_id={session_id}, name={update_data.session_name}"
-        )
-        return JSONResponse({"status": "ok", "detail": "Session updated successfully."})
+            return {"message": "Session updated successfully", "session_id": session_id}
 
-    except HTTPException as e:
-        logger.warning(
-            f"[patch_session_info] Client error while updating session: user_id={user_id}, session_id={session_id}, "
-            f"{e.status_code} - {e.detail}"
-        )
+    except HTTPException:
         raise
     except Exception:
         logger.exception(
-            f"[patch_session_info] Unexpected error while updating session: user_id={user_id}, session_id={session_id}"
+            "[update_session_with_check] Unexpected error for user_id={user_id}, session_id={session_id}"
         )
-        raise HTTPException(status_code=500, detail="Failed to update session.")
+        raise HTTPException(status_code=500, detail="Unexpected server error")
 
 
 @app.delete("/sessions/{session_id}/rounds/{round_id}")

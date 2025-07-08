@@ -145,6 +145,7 @@
             -e RAGPON_APP_LOG_LEVEL=DEBUG `
             -e USE_SAML=false `
             -e DEV_USER_ID=test_user5 `
+            -e DEV_EMPLOYEE_CLASS_ID=70 `
             -p 8005:8005 `
             ragpon-streamlit `
             bash -c "streamlit run ragpon/apps/streamlit/streamlit_app.py --server.port 8005 --server.address 0.0.0.0"
@@ -165,6 +166,7 @@
             -e RAGPON_APP_LOG_LEVEL=DEBUG \
             -e USE_SAML=false \
             -e DEV_USER_ID=test_user5 \
+            -e DEV_EMPLOYEE_CLASS_ID=70 \
             -p 8005:8005 \
             ragpon-streamlit \
             bash -c "\

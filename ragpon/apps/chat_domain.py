@@ -122,6 +122,79 @@ class SessionUpdate(BaseModel):
     )
 
 
+class NewSessionData(BaseModel):
+    """
+    Represents a new session to be created, including session ID, name, and privacy status.
+
+    Attributes:
+        session_id (str): UUID generated client-side to uniquely identify the session.
+        session_name (str): Name of the session.
+        is_private_session (bool): Whether the session is private.
+    """
+
+    session_id: str = Field(..., description="UUID for the new session.")
+    session_name: str = Field(
+        ..., max_length=30, description="The name of the new session (up to 30 chars)."
+    )
+    is_private_session: bool = Field(..., description="Whether the session is private.")
+
+
+class CreateSessionWithLimitRequest(BaseModel):
+    """
+    Request schema for creating a session with session count limit and consistency check.
+
+    Attributes:
+        new_session_data (NewSessionData): Information of the new session to create.
+        known_session_ids (list[str]): Client-side known non-deleted session IDs.
+        delete_target_session_id (Optional[str]): Session ID to delete if over limit.
+    """
+
+    new_session_data: NewSessionData = Field(..., description="New session details.")
+    known_session_ids: list[str] = Field(
+        ..., description="List of non-deleted session IDs the client is aware of."
+    )
+    delete_target_session_id: str | None = Field(
+        None, description="Session ID to delete when session count is at max (10)."
+    )
+
+
+class SessionUpdateWithCheckRequest(BaseModel):
+    """
+    Request schema for updating a session with optimistic locking.
+
+    This schema ensures that the session is only updated if the current database state
+    matches the `before_` values provided by the client. Used to prevent overwriting changes
+    made from other tabs or users.
+
+    Attributes:
+        before_session_name (str): The session name as known by the client before editing.
+        before_is_private_session (bool): The session's privacy flag before editing.
+        before_is_deleted (bool): Whether the session was marked as deleted before editing.
+        after_session_name (str): The new name to update the session to.
+        after_is_private_session (bool): The new privacy flag to update the session to.
+        after_is_deleted (bool): Whether the session should be marked as deleted after editing.
+    """
+
+    before_session_name: str = Field(
+        ..., max_length=30, description="Session name before editing."
+    )
+    before_is_private_session: bool = Field(
+        ..., description="Privacy status before editing."
+    )
+    before_is_deleted: bool = Field(
+        ..., description="Deletion status before editing."
+    )
+    after_session_name: str = Field(
+        ..., max_length=30, description="New session name to apply."
+    )
+    after_is_private_session: bool = Field(
+        ..., description="New privacy status to apply."
+    )
+    after_is_deleted: bool = Field(
+        ..., description="New deletion status to apply."
+    )
+
+
 class DeleteRoundPayload(BaseModel):
     is_deleted: bool = Field(
         True, description="Whether the round is marked as deleted."
