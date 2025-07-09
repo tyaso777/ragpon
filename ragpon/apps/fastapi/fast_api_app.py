@@ -82,6 +82,9 @@ MAX_CHUNK_LOG_LEN = 300
 DB_TYPE = "postgres"
 MAX_TOP_K = 30
 
+# Factor to compensate for collisions when multiple queries are searched.
+OVER_FETCH_FACTOR: int = 2
+
 SYSTEM_PROMPT_NO_RAG = "You are a helpful assistant. Please answer in Japanese."
 
 SYSTEM_PROMPT_WITH_CONTEXT = (
@@ -1855,6 +1858,49 @@ def maybe_generate_session_title(
         )
 
 
+def _deduplicate_by_doc_id(docs: list[Document]) -> list[Document]:
+    """Remove duplicates keeping the smallest semantic-distance one.
+
+    Args:
+        docs: List of retrieved ``Document`` objects.
+
+    Returns:
+        list[Document]: Deduplicated list.
+    """
+    unique: dict[str, Document] = {}
+    for doc in docs:
+        doc_id: str = doc.base_document.doc_id
+        dist: float = doc.base_document.distance
+        logger.debug(
+            "dedup candidate doc_id=%s distance=%.4f",  # no f-string here
+            doc_id,
+            dist,
+        )
+        # keep the closer (smaller distance) hit if we have seen this id already
+        if (prev := unique.get(doc_id)) is None or dist < prev.base_document.distance:
+            unique[doc_id] = doc
+    return list(unique.values())
+
+
+def _dedup_sort_trim(
+    docs: list[Document],
+    *,
+    top_k: int,
+) -> list[Document]:
+    """Return up to ``top_k`` documents, unique and sorted by distance.
+
+    Args:
+        docs: Raw hits (may contain duplicates).
+        top_k: Maximum unique items to return.
+
+    Returns:
+        Deduplicated and sorted list (len ≤ top_k).
+    """
+    uniques: list[Document] = _deduplicate_by_doc_id(docs)
+    uniques.sort(key=lambda d: d.base_document.distance)
+    return uniques[:top_k]
+
+
 def _search_repositories(
     *,
     queries: list[str],
@@ -1863,6 +1909,7 @@ def _search_repositories(
     embedder: Callable[[str], list[float]],
     top_k_chroma: int,
     top_k_bm25: int,
+    over_fetch_factor: int,
     user_id: str,
     session_id: str,
     round_id: int,
@@ -1878,6 +1925,7 @@ def _search_repositories(
             The helper divides this by ``len(queries)`` and enforces
             ``>= 1`` so at least one result is requested per query.
         top_k_bm25: Same as ``top_k_chroma`` but for the BM25 repository.
+        over_fetch_factor: Raw-hit multiplier to compensate for duplicates.
         user_id: User ID for contextual logging only.
         session_id: Session ID for contextual logging only.
         round_id: Round number for contextual logging only.
@@ -1886,27 +1934,61 @@ def _search_repositories(
         ``{"chroma": [...], "bm25": [...]}`` — each list may be empty.
     """
     results: dict[str, list[Document]] = {"chroma": [], "bm25": []}
+    per_query_k_chroma = max(1, top_k_chroma * over_fetch_factor // len(queries))
+    per_query_k_bm25 = max(1, top_k_bm25 * over_fetch_factor // len(queries))
+
     for q in queries:
         if chroma_repo:
             try:
                 results["chroma"] += chroma_repo.search(
                     q,
-                    top_k=top_k_chroma // len(queries),
+                    top_k=per_query_k_chroma,
                     query_embeddings=embedder(q),
                 )
             except Exception:
                 logger.exception(
-                    f"[search] Chroma failure "
-                    f"(user_id={user_id}, session_id={session_id}, round_id={round_id})"
+                    f"[_search_repositories] Chroma failure: "
+                    f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
                 )
         if bm25_repo:
             try:
-                results["bm25"] += bm25_repo.search(q, top_k=top_k_bm25 // len(queries))
+                results["bm25"] += bm25_repo.search(q, top_k=per_query_k_bm25)
             except Exception:
                 logger.exception(
-                    f"[search] BM25 failure "
-                    f"(user_id={user_id}, session_id={session_id}, round_id={round_id})"
+                    f"[_search_repositories] BM25 failure:"
+                    f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
                 )
+
+    len_chroma_before: int = len(results["chroma"])
+    results["chroma"] = _dedup_sort_trim(results["chroma"], top_k=top_k_chroma)
+    len_bm25_before: int = len(results["bm25"])
+    results["bm25"] = _dedup_sort_trim(results["bm25"], top_k=top_k_bm25)
+
+    # ─── just for logging ─────────────────────────────────────────────────────
+    chroma_dupes: int = len_chroma_before - len(results["chroma"])
+    if chroma_dupes:
+        logger.debug(
+            f"[_search_repositories] Chroma duplicates removed: {chroma_dupes} "
+            f"(user_id={user_id}, session_id={session_id}, round_id={round_id})"
+        )
+
+    bm25_dupes: int = len_bm25_before - len(results["bm25"])
+    if bm25_dupes:
+        logger.debug(
+            f"[_search_repositories] BM25 duplicates removed: {bm25_dupes} "
+            f"(user_id={user_id}, session_id={session_id}, round_id={round_id})"
+        )
+
+    logger.debug(
+        "[_search_repositories] Final unique counts — Chroma: %d, BM25: %d "
+        "(user_id=%s, session_id=%s, round_id=%d)",
+        len(results["chroma"]),
+        len(results["bm25"]),
+        user_id,
+        session_id,
+        round_id,
+    )
+
     return results
 
 
@@ -2069,6 +2151,7 @@ async def handle_query(
         embedder=embedder,
         top_k_chroma=DEFAULT_TOP_K_CHROMA,
         top_k_bm25=DEFAULT_TOP_K_BM25,
+        over_fetch_factor=OVER_FETCH_FACTOR,
         user_id=user_id,
         session_id=session_id,
         round_id=req.round_id,
