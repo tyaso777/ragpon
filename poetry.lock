@@ -4051,6 +4051,24 @@ dev = ["pre-commit", "tox"]
 testing = ["pytest", "pytest-benchmark"]
 
 [[package]]
+name = "podman-compose"
+version = "1.4.0"
+description = "A script to run docker-compose.yml using podman"
+optional = false
+python-versions = "*"
+files = [
+    {file = "podman_compose-1.4.0-py2.py3-none-any.whl", hash = "sha256:a930eb61fbd17dc0e28a43e922a69c9fc911747799d21cb7a7a8aa261d0f2906"},
+    {file = "podman_compose-1.4.0.tar.gz", hash = "sha256:c2d63410ef56af481d62c7264cf0653e1d0fefefdcee89c858a916f0f2e5f51f"},
+]
+
+[package.dependencies]
+python-dotenv = "*"
+pyyaml = "*"
+
+[package.extras]
+devel = ["coverage", "parameterized", "pre-commit", "ruff"]
+
+[[package]]
 name = "posthog"
 version = "3.5.0"
 description = "Integrate PostHog into any python application."
@@ -7385,4 +7403,4 @@ test = ["big-O", "importlib-resources", "jaraco.functools", "jaraco.itertools", 
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "8143b6b40ea5b83113a8ffdbca00fdddce9931d45216f10ce062cab9336e770b"
+content-hash = "90a6d4fc4247f5e44399a73d29e8c53aa6f231c663e3443524af989ddaa68404"

@@ -51,6 +51,7 @@ pylint = "^3.3.3"
 sphinx-autobuild = "^2024.10.3"
 sphinx-rtd-theme = "^3.0.2"
 graphviz = "^0.20.3"
+podman-compose = "^1.4.0"
 
 [build-system]
 requires = ["poetry-core"]
