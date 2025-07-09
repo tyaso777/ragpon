@@ -38,5 +38,7 @@ CREATE TABLE IF NOT EXISTS messages (
     feedback TEXT,
     feedback_at TIMESTAMP,
     feedback_reason TEXT,
-    rag_mode TEXT
+    rag_mode TEXT,
+    CONSTRAINT uq_messages_round_role
+      UNIQUE (user_id, session_id, round_id, message_type)
 );

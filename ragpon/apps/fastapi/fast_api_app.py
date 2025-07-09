@@ -243,138 +243,224 @@ except (ValueError, TypeError) as exc:
     raise RuntimeError("Invalid retrieval configuration values") from exc
 
 
-def insert_three_records(
+def insert_placeholder_user_message(
+    *,
+    db_type: str,
+    pool: SimpleConnectionPool,
+    user_msg_id: str,
     user_id: str,
     session_id: str,
     app_name: str,
     round_id: int,
-    user_msg_id: str,
-    system_msg_id: str,
-    assistant_msg_id: str,
-    user_query: str,
-    retrieved_contexts_str: str,
-    total_stream_content: str,
-    llm_model: str,
-    rerank_model: str | None,
-    rag_mode: str,
-    optimized_queries: list[str] | None = None,
-    use_reranker: bool = False,
 ) -> None:
-    """
-    Inserts three message records (user, system, assistant) into the messages table
-    using explicit UUIDs and a single atomic transaction.
+    """Insert a *placeholder* user-message row (``is_deleted=True``).
 
-    This function stores a single conversational round composed of:
-    - The user's input (`user_query`)
-    - The retrieved knowledge base context (`retrieved_contexts_str`) as a system message
-    - The assistant's final response (`total_stream_content`)
-
-    If `optimized_queries` are provided, they are appended to the system message with
-    a "--- Optimized Queries ---" separator for visibility and downstream auditing.
-
-    This function ensures all three messages are inserted into the database within a
-    single transaction. If any part of the insertion fails, the entire transaction
-    is rolled back to maintain data consistency.
+    This pre-registration guarantees that only one tab can claim a given
+    ``(user_id, session_id, round_id, 'user')`` slot:
 
     Args:
-        user_id: user id.
-        session_id: UUID of the session.
-        app_name: Application name.
-        round_id (int): The round number.
-        user_msg_id: UUID for the user message.
-        system_msg_id: UUID for the system message.
-        assistant_msg_id: UUID for the assistant message.
-        user_query: User input text.
-        retrieved_contexts_str: Context text retrieved from a knowledge base.
-        total_stream_content: Assistant's response content.
-        llm_model: Name of the LLM used (optional).
-        rerank_model: Name of the reranker used (optional).
-        rag_mode: Retrieval-Augmented Generation mode (optional).
-        optimized_queries (list[str] | None, optional): A list of optimized queries.
-        use_reranker: Whether reranking was used.
+        db_type: Database type identifier (e.g., ``"postgres"``).
+        pool: Psycopg2 connection pool.
+        user_msg_id: UUID for the user message row.
+        user_id: Authenticated user ID.
+        session_id: Parent chat-session UUID.
+        app_name: Application name for telemetry.
+        round_id: Incremental round number inside the session.
 
     Raises:
-        ValueError: if connection is not provided.
+        HTTPException:
+            * ``409 CONFLICT`` – another tab already inserted the same
+              *placeholder* row.
+            * ``500 INTERNAL SERVER ERROR`` – unexpected DB failure.
     """
     created_at = datetime.now(timezone.utc)
 
-    system_content = retrieved_contexts_str
+    try:
+        with get_database_client(db_type, pool) as db:
+            db.execute(
+                """
+                INSERT INTO messages (
+                    id, round_id, user_id, session_id, app_name,
+                    content, message_type,
+                    created_at, created_by, is_deleted
+                )
+                VALUES (%s, %s, %s, %s, %s,
+                        '', 'user',
+                        %s, %s, TRUE)
+                """,
+                (
+                    user_msg_id,
+                    round_id,
+                    user_id,
+                    session_id,
+                    app_name,
+                    created_at,
+                    user_id,  # created_by
+                ),
+            )
+        logger.debug(
+            "[insert_placeholder_user_message] Placeholder inserted: "
+            f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
+    except UniqueViolation:
+        logger.error(
+            "[insert_placeholder_user_message] Duplicate placeholder detected: "
+            f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
+        # Abort downstream processing for this request.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Another session is already processing this round_id. "
+                "Please retry or wait for the existing response."
+            ),
+        ) from None
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "[insert_placeholder_user_message] Database error while inserting placeholder for "
+            f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to pre-register user message.",
+        ) from exc
+
+
+def finalize_user_round(
+    *,
+    db_type: str,
+    pool: SimpleConnectionPool,
+    user_msg_id: str,
+    system_msg_id: str,
+    assistant_msg_id: str,
+    round_id: int,
+    user_id: str,
+    session_id: str,
+    app_name: str,
+    user_query: str,
+    system_content: str,
+    assistant_content: str,
+    llm_model: str,
+    rag_mode: str,
+    rerank_model: str | None,
+    use_reranker: bool,
+    optimized_queries: list[str] | None,
+) -> None:
+    """Complete a chat round in a single transaction.
+
+    Steps:
+        1. UPDATE the placeholder *user* row (un-delete & fill metadata).
+        2. INSERT the *system* and *assistant* rows.
+
+    Args:
+        db_type: Identifier of the target DB backend (e.g., ``"postgres"``).
+        pool: Psycopg2 connection pool.
+        user_msg_id: UUID of the placeholder user-message row.
+        system_msg_id: UUID for the system row to insert.
+        assistant_msg_id: UUID for the assistant row to insert.
+        round_id: Sequential round number inside this chat session.
+        user_id: Authenticated user ID.
+        session_id: Parent session UUID.
+        app_name: Application name (for multi-app deployments).
+        user_query: Final user prompt text.
+        system_content: RAG context string (before query optimisation block).
+        assistant_content: Full LLM answer (already accumulated).
+        llm_model: Model identifier used for this response.
+        rag_mode: Retrieval mode label (e.g., ``"hybrid"``).
+        rerank_model: Optional reranker model identifier.
+        use_reranker: ``True`` if a reranker was applied.
+        optimized_queries: Optional list of query-rewrite strings.
+
+    Raises:
+        psycopg2.DatabaseError: Unhandled DB errors bubble up; the caller
+            should map these to HTTP 500.
+    """
+    created_at = datetime.now(timezone.utc)
+
+    system_content_full: str = system_content
     if optimized_queries:
-        system_content += "\n\n--- Optimized Queries ---\n" + "\n".join(
+        system_content_full += "\n\n--- Optimized Queries ---\n" + "\n".join(
             optimized_queries
         )
 
-    # Each record represents a message to insert with fixed schema mapping
-    created_by_system = "system"
-    created_by_assistant = "assistant"
-    records = [
-        {
-            "id": user_msg_id,
-            "message_type": "user",
-            "content": user_query,
-            "created_by": user_id,
-        },
-        {
-            "id": system_msg_id,
-            "message_type": "system",
-            "content": system_content,
-            "created_by": created_by_system,
-        },
-        {
-            "id": assistant_msg_id,
-            "message_type": "assistant",
-            "content": total_stream_content,
-            "created_by": created_by_assistant,
-        },
-    ]
-    try:
-        with get_database_client(DB_TYPE, db_pool) as db:
-            for record in records:
-                db.execute(
-                    """
-                    INSERT INTO messages (
-                        id, round_id, user_id, session_id, app_name,
-                        content, message_type,
-                        created_at, created_by,
-                        is_deleted,
-                        llm_model, use_reranker, rerank_model,
-                        rag_mode
-                    ) VALUES (
-                        %s, %s, %s, %s, %s,
-                        %s, %s,
-                        %s, %s,
-                        %s,
-                        %s, %s, %s,
-                        %s
-                    )
-                    """,
-                    (
-                        record["id"],
-                        round_id,
-                        user_id,
-                        session_id,
-                        app_name,
-                        record["content"],
-                        record["message_type"],
-                        created_at,
-                        record["created_by"],
-                        False,
-                        llm_model,
-                        use_reranker,
-                        rerank_model,
-                        rag_mode,
-                    ),
-                )
-
-        logger.info(
-            f"[insert_three_records] Inserted round successfully: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+    with get_database_client(db_type, pool) as db:
+        # STEP-A: revive + fill user row
+        db.execute(
+            """
+            UPDATE messages
+            SET
+                is_deleted   = FALSE,
+                content      = %s,
+                updated_at   = %s,
+                llm_model    = %s,
+                use_reranker = %s,
+                rerank_model = %s,
+                rag_mode     = %s
+            WHERE id = %s
+            """,
+            (
+                user_query,
+                created_at,
+                llm_model,
+                use_reranker,
+                rerank_model,
+                rag_mode,
+                user_msg_id,
+            ),
         )
 
-    except Exception:
-        logger.exception(
-            f"[insert_three_records] insert_three_records failed: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        # STEP-B: insert system & assistant rows
+        db.execute(
+            """
+            INSERT INTO messages (
+                id, round_id, user_id, session_id, app_name,
+                content, message_type,
+                created_at, created_by,
+                is_deleted,
+                llm_model, use_reranker, rerank_model,
+                rag_mode
+            )
+            VALUES
+                (%s, %s, %s, %s, %s,
+                 %s, 'system',
+                 %s, 'system',
+                 FALSE,
+                 %s, %s, %s,
+                 %s),
+                (%s, %s, %s, %s, %s,
+                 %s, 'assistant',
+                 %s, 'assistant',
+                 FALSE,
+                 %s, %s, %s,
+                 %s)
+            """,
+            (
+                # system row
+                system_msg_id,
+                round_id,
+                user_id,
+                session_id,
+                app_name,
+                system_content_full,
+                created_at,
+                llm_model,
+                use_reranker,
+                rerank_model,
+                rag_mode,
+                # assistant row
+                assistant_msg_id,
+                round_id,
+                user_id,
+                session_id,
+                app_name,
+                assistant_content,
+                created_at,
+                llm_model,
+                use_reranker,
+                rerank_model,
+                rag_mode,
+            ),
         )
-        raise
 
 
 def generate_queries_from_history(
@@ -637,39 +723,40 @@ def stream_and_persist_chat_response(
     optimized_queries: list[str] | None = None,
     use_reranker: bool = False,
 ) -> Generator[str, None, None]:
-    """
-    Generates a streaming response for the user's query by calling the LLM, then
-    inserts three records into a database once the streaming completes.
+    """Stream an LLM reply and persist chat messages.
 
-    This function yields chunks of text to the client via Server-Sent Events (SSE)
-    and accumulates the entire assistant response locally. After the final chunk
-    is yielded, it performs a database insertion for user/system/assistant
-    messages, including relevant metadata.
+    Workflow:
+        1. Calls the LLM in streaming mode and yields SSE chunks to the client.
+        2. Accumulates the full assistant response locally.
+        3. After streaming completes, finalises the placeholder *user* row
+           created earlier and inserts the *system* and *assistant* rows,
+           including metadata (model name, RAG mode, etc.).
 
     Args:
-        user_id (str): The ID of the user initiating the query.
-        session_id (str): The ID of the chat session.
-        app_name (str): The name of the calling application.
-        round_id (int): The round number of the current interaction.
-        user_msg_id (str): The UUID for the user's message.
-        system_msg_id (str): The UUID for the system message.
-        assistant_msg_id (str): The UUID for the assistant's message.
-        messages (list[dict]): The list of chat messages for the prompt.
-            [ { "role": "user"/"assistant"/"system", "content": "..." }, ... ]
-        retrieved_contexts_str (str): The optional context string to inject (e.g., from RAG).
-        rag_mode (str): The retrieval-augmented generation mode ("No RAG", etc.).
-        client (OpenAI | AzureOpenAI): OpenAI or Azure client.
-        model_name (str): The model name or deployment ID.
-        model_type (Literal["openai", "azure"]): Indicates which backend is being used.
-        optimized_queries (list[str] | None, optional): Optimized queries used for context retrieval.
-        use_reranker (bool, optional): Whether a reranker was applied during retrieval.
+        user_id: Authenticated user ID.
+        session_id: Chat-session UUID.
+        app_name: Name of the calling application.
+        round_id: Sequential round number inside the session.
+        user_msg_id: UUID for the placeholder *user* message row.
+        system_msg_id: UUID for the new *system* message row.
+        assistant_msg_id: UUID for the new *assistant* message row.
+        messages: Prompt messages already sent in this round
+            (each as ``{"role": "...", "content": "..."}``).
+        retrieved_contexts_str: Optional RAG context to prepend.
+        rag_mode: Retrieval-augmented generation mode (e.g., ``"No RAG"``).
+        client: OpenAI or Azure client instance.
+        model_name: Model (or deployment) name.
+        model_type: Backend type, ``"openai"`` or ``"azure"``.
+        optimized_queries: Re-written queries produced during retrieval.
+        use_reranker: ``True`` if a reranker was applied.
 
     Yields:
-        str: A text chunk in Server-Sent Events format (e.g., "data: ...\\n\\n").
+        str: Raw SSE text chunks (``"data: …\\n\\n"``).
 
     Raises:
-        Exception: If streaming fails or DB insertion fails, a generic exception is raised,
-            and a fallback "[error]" message is streamed instead.
+        Exception: Any unexpected error during streaming or DB persistence.
+            A fallback ``"data: {\"error\": …}\\n\\n"`` chunk is yielded
+            before the exception propagates.
     """
 
     rerank_model = None  # If you want to pass something else, do so
@@ -712,29 +799,31 @@ def stream_and_persist_chat_response(
             assistant_response=assistant_response,
         )
 
-        yield format_sse_chunk(data={"data": "[DONE]"})
-
         user_query = extract_latest_user_message(
             messages_list=messages, user_id=user_id, session_id=session_id
         )
 
-        insert_three_records(
-            user_id=user_id,
-            session_id=session_id,
-            app_name=app_name,
-            round_id=round_id,
+        finalize_user_round(
+            db_type=DB_TYPE,
+            pool=db_pool,
             user_msg_id=user_msg_id,
             system_msg_id=system_msg_id,
             assistant_msg_id=assistant_msg_id,
+            round_id=round_id,
+            user_id=user_id,
+            session_id=session_id,
+            app_name=app_name,
             user_query=user_query,
-            retrieved_contexts_str=retrieved_contexts_str,
-            total_stream_content=assistant_response,
+            system_content=retrieved_contexts_str,
+            assistant_content=assistant_response,
             llm_model=model_name,
-            rerank_model=rerank_model,
             rag_mode=rag_mode,
-            optimized_queries=optimized_queries,
+            rerank_model=rerank_model,
             use_reranker=use_reranker,
+            optimized_queries=optimized_queries,
         )
+
+        yield format_sse_chunk(data={"data": "[DONE]"})
 
         logger.info(
             f"[stream_and_persist_chat_response] Done streaming: user_id={user_id}, session_id={session_id}, round_id={round_id}, total_chars={len(assistant_response)}"
@@ -1626,56 +1715,6 @@ def extract_latest_user_message(
     raise HTTPException(status_code=400, detail="No user message found in request.")
 
 
-def insert_user_placeholder(
-    db_type: str,
-    pool: Any,
-    user_id: str,
-    session_id: str,
-    round_id: int,
-    user_query: str,
-) -> None:
-    """
-    Inserts a temporary user message into the database with is_deleted=True.
-
-    Args:
-        db_type (str): Type of the database ("postgres").
-        pool (Any): Connection pool instance.
-        user_id (str): User ID.
-        session_id (str): Session ID.
-        round_id (int): Round identifier.
-        user_query (str): Content of the user message.
-
-    Raises:
-        HTTPException: If a unique constraint violation occurs or the database fails.
-    """
-    created_at = datetime.now(timezone.utc)
-
-    try:
-        with get_database_client(db_type, pool) as db:
-            db.execute(
-                """
-                INSERT INTO messages (
-                    user_id, session_id, round_id, message_type, content,
-                    is_deleted, created_at
-                ) VALUES (%s, %s, %s, 'user', %s, TRUE, %s)
-                """,
-                (user_id, session_id, round_id, user_query, created_at),
-            )
-
-    except UniqueViolation:
-        logger.warning(
-            f"[insert_user_placeholder] Duplicate round_id detected for user_id={user_id}, session_id={session_id}, round_id={round_id}"
-        )
-        raise HTTPException(status_code=409, detail="Duplicate round_id.")
-    except Exception:
-        logger.exception(
-            f"[insert_user_placeholder] Database error for user_id={user_id}, session_id={session_id}, round_id={round_id}"
-        )
-        raise HTTPException(
-            status_code=500, detail="Database error during user message insert."
-        )
-
-
 def build_openai_messages(
     rag_mode: str,
     retrieved_contexts_str: str,
@@ -1972,6 +2011,16 @@ async def handle_query(
     logger.info(
         f"[handle_query] ⇢ user_id={user_id}, session_id={session_id}, "
         f"round_id={req.round_id}"
+    )
+
+    insert_placeholder_user_message(
+        db_type=DB_TYPE,
+        pool=db_pool,
+        user_msg_id=req.user_msg_id,
+        user_id=user_id,
+        session_id=session_id,
+        app_name=app_name,
+        round_id=req.round_id,
     )
 
     maybe_generate_session_title(

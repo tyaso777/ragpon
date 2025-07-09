@@ -100,6 +100,20 @@ def last_n_non_deleted(messages: list[Message], n: int) -> list[Message]:
     return newest_non_deleted
 
 
+def _last_confirmed_round_id(msgs: list[Message]) -> int:
+    """Return the greatest round_id.
+
+    Args:
+        msgs: In-memory list of ``Message`` objects currently shown in the UI.
+
+    Returns:
+        The highest ``round_id`` found in the list of messages.
+        Returns **-1** if no messages exist yet.
+    """
+    rids = [m.round_id for m in msgs]
+    return max(rids) if rids else -1
+
+
 #################################
 # API Calls
 #################################
@@ -240,10 +254,14 @@ def post_query_to_fastapi(
         use_reranker (bool): Whether to use the reranker.
 
     Returns:
-        requests.Response: A streaming Response object from the server.
+        requests.Response: A *streaming* Response object.
+            • The caller must check ``response.status_code`` (it can be
+              2xx *or* 4xx/5xx).
+            • For 409 Conflict, the UI shows “Press F5 to refresh”.
 
     Raises:
-        requests.RequestException: If the HTTP request fails.
+        requests.RequestException: Network-level errors (connection,
+            DNS, timeout).  HTTP error codes are **not** raised here.
     """
     endpoint = (
         f"{server_url}/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries"
@@ -272,7 +290,6 @@ def post_query_to_fastapi(
 
     try:
         response = requests.post(endpoint, json=payload, stream=True)
-        response.raise_for_status()
         logger.info(
             f"[post_query_to_fastapi] POST succeeded for user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
@@ -1516,11 +1533,10 @@ def render_user_chat_input(
             ]
 
             # 2b) Compute the next round_id
-            if len(messages) > 0:
-                last_round_id = max(m.round_id for m in messages)
-                new_round_id: int = last_round_id + 1
-            else:
-                new_round_id: int = 0
+            #     Next round_id is “last confirmed + 1”.
+            #     This prevents gaps caused by failed duplicates.
+            last_round_id: int = _last_confirmed_round_id(messages)
+            new_round_id: int = last_round_id + 1
 
             # 2c) Generate UUIDs for user/system/assistant messages
             user_msg_id = str(uuid.uuid4())
@@ -1571,6 +1587,25 @@ def render_user_chat_input(
                     rag_mode=rag_mode,
                     use_reranker=use_reranker,
                 )
+
+                # ✨  Handle non-200 status codes early
+                if response.status_code == 409:
+                    # Another tab beat us; advise user to refresh
+                    refresh_msg = (
+                        "⚠️ This chat session was updated in another tab or window.\n\n"
+                        "Press **F5** (or click the browser refresh button) to load "
+                        "the latest messages, then try again."
+                    )
+                    logger.exception(
+                        "[render_user_chat_input] FastAPI returned 409 Conflict — "
+                        f"session is stale. user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}"
+                    )
+                    st.error(refresh_msg)
+                    st.stop()
+
+                # Raise for any other HTTP error (4xx/5xx)
+                response.raise_for_status()
+
             except requests.exceptions.RequestException as e:
                 logger.exception(
                     f"[render_user_chat_input] Failed to post query to FastAPI for user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}"
@@ -1638,6 +1673,11 @@ def render_user_chat_input(
                                 )
                             elif "system_context_rows" in payload:
                                 system_context_rows = payload["system_context_rows"]
+                            elif "error" in payload:
+                                st.session_state["chat_error_message"] = "⚠️ " + str(
+                                    payload["error"]
+                                )
+                                return
                         except json.JSONDecodeError:
                             logger.warning(
                                 f"[render_user_chat_input] Invalid JSON in chunk for user_id={user_id}: {json_str}"
