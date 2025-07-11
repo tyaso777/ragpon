@@ -13,7 +13,7 @@ import requests
 import streamlit as st
 
 from ragpon._utils.logging_helper import get_library_logger
-from ragpon.apps.chat_domain import Message, SessionData
+from ragpon.apps.chat_domain import Message, RagModeEnum, SessionData
 
 
 @dataclass
@@ -36,6 +36,16 @@ ROLE_ORDER: Final[dict[str, int]] = {
     "system": 2,
 }
 
+RAG_MODE_OPTIONS: list[str] = RagModeEnum.list()
+
+DEFAULT_MESSAGE_LIMIT: int = 10  # initial + increment size
+MAX_MESSAGE_LIMIT: int = 100  # client-side sliding window cap
+# NOTE: Must be **≥ Streamlit-side MAX_MESSAGE_LIMIT (100)** so the server
+#       never rejects a limit value the client may legally send.
+
+MAX_CHAT_INPUT_LENGTH: int = (
+    1000  # Prevent overly long queries from breaking the system
+)
 
 # Set root logger level from environment (default: WARNING)
 other_level_str = os.getenv("RAGPON_OTHER_LOG_LEVEL", "WARNING").upper()
@@ -186,40 +196,50 @@ def fetch_session_ids(
 
 
 def fetch_session_history(
-    server_url: str, user_id: str, app_name: str, session_id: str
-) -> list[Message]:
-    """
-    Fetches the conversation history for a given session from FastAPI.
+    server_url: str,
+    user_id: str,
+    app_name: str,
+    session_id: str,
+    limit: int = DEFAULT_MESSAGE_LIMIT,
+) -> tuple[list[Message], bool]:
+    """Fetch a slice of chat history from FastAPI.
 
     Args:
-        server_url (str): The URL of the backend server (e.g. "http://localhost:8006").
-        user_id (str): The ID of the user who owns the session.
-        app_name (str): The name of the application.
-        session_id (str): The unique identifier of the session.
+        server_url: Base URL of the backend (e.g. ``"http://localhost:8006"``).
+        user_id: ID of the signed-in user.
+        app_name: Name of the application.
+        session_id: Session UUID whose history is requested.
+        limit: Max number of newest rounds to retrieve.
+        timeout: HTTP timeout in seconds.
 
     Returns:
-        list[Message]: A list of Message objects representing the conversation history.
+        tuple[list[Message], bool]: Parsed messages (oldest → newest) and the
+        ``has_more`` flag.
+
+    Raises:
+        requests.HTTPError: If the server responds with a non-2xx status.
+        requests.RequestException: For network-level errors and timeouts.
+        ValueError: If the JSON payload is malformed.
+
     """
     endpoint = (
-        f"{server_url}/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries"
+        f"{server_url}/users/{user_id}/apps/{app_name}/sessions/"
+        f"{session_id}/queries?limit={limit}"
     )
+
     response = requests.get(endpoint)
     response.raise_for_status()
-    data = response.json()  # This should be a list of dicts
 
-    # Convert each dict to your local Message domain model
-    messages: list[Message] = []
-    for item in data:
-        msg = Message(
-            role=item["role"],
-            content=item["content"],
-            id=item["id"],
-            round_id=item["round_id"],
-            is_deleted=item["is_deleted"],
-        )
-        messages.append(msg)
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid JSON returned from {endpoint} for user_id={user_id}, session_id={session_id}: {exc}"
+        ) from exc
 
-    return messages
+    messages: list[Message] = [Message(**m) for m in payload["messages"]]
+    has_more: bool = bool(payload["has_more"])
+    return messages, has_more
 
 
 def post_query_to_fastapi(
@@ -232,7 +252,7 @@ def post_query_to_fastapi(
     system_msg_id: str,
     assistant_msg_id: str,
     round_id: int,
-    rag_mode: str,
+    rag_mode: RagModeEnum,
     use_reranker: bool,
 ) -> requests.Response:
     """
@@ -248,9 +268,7 @@ def post_query_to_fastapi(
         system_msg_id (str): The UUID for the system message.
         assistant_msg_id (str): The UUID for the assistant's message.
         round_id (int): The round number computed on the client side.
-        rag_mode (str): How to use RAG. One of:
-            "RAG (Optimized Query)", "RAG (Standard)", or "No RAG".
-            Defaults to "RAG (Optimized Query)".
+        rag_mode (RagModeEnum): Retrieval mode to apply. See :class:`RagModeEnum` for options.
         use_reranker (bool): Whether to use the reranker.
 
     Returns:
@@ -274,7 +292,7 @@ def post_query_to_fastapi(
         "system_msg_id": system_msg_id,
         "assistant_msg_id": assistant_msg_id,
         "round_id": round_id,
-        "rag_mode": rag_mode,
+        "rag_mode": rag_mode.value,
         "use_reranker": use_reranker,
     }
 
@@ -938,12 +956,14 @@ def render_session_list(
             current_idx = idx
             break
     # 3) Render radio with explicit index
+
     # 3-1) Sort sessions newest-first
-    sorted_sessions: list[SessionData] = sorted(
-        st.session_state["session_ids"],
-        key=lambda x: x.last_touched_at,
-        reverse=True,
-    )
+    # sorted_sessions: list[SessionData] = sorted(
+    #     st.session_state["session_ids"],
+    #     key=lambda x: x.last_touched_at,
+    #     reverse=True,
+    # )
+
     # 3-2) Determine default index to match current_session
     current_idx: int = 0
     current_session = st.session_state["current_session"]
@@ -976,14 +996,15 @@ def render_session_list(
 
     # If we haven't loaded this session before, fetch from the server
     if selected_session_id not in st.session_state["session_histories"]:
-        st.session_state["session_histories"][selected_session_id] = (
-            fetch_session_history(
-                server_url=server_url,
-                user_id=user_id,
-                app_name=app_name,
-                session_id=selected_session_id,
-            )
+        msgs, has_more = fetch_session_history(
+            server_url=server_url,
+            user_id=user_id,
+            app_name=app_name,
+            session_id=selected_session_id,
+            limit=DEFAULT_MESSAGE_LIMIT,
         )
+        st.session_state["session_histories"][selected_session_id] = msgs
+        st.session_state["server_has_more"][selected_session_id] = has_more
     return selected_session_data
 
 
@@ -1181,6 +1202,206 @@ def render_edit_session_form(
             st.rerun()
 
 
+# def render_load_more_button(
+#     *,
+#     session_id: str,
+#     server_url: str,
+#     user_id: str,
+#     app_name: str,
+#     messages: list[Message],
+# ) -> None:
+#     """Render the “Load 10 more” button and handle its click.
+
+#     Args:
+#         session_id: UUID of the session currently displayed.
+#         server_url: Base URL of the FastAPI backend.
+#         user_id: ID of the signed-in user.
+#         app_name: Name of the application (passed through to the backend).
+#         messages: Cached conversation for the session (oldest → newest).
+
+#     Side Effects:
+#         * Locks the UI while a fetch is in progress.
+#         * Updates ``st.session_state["session_histories"][session_id]`` on success.
+#         * Stores a user-visible error in ``st.session_state["chat_error_message"]``
+#           on failure.
+#         * Always triggers ``st.rerun()`` to refresh the UI.
+#     """
+#     current_len: int = len(messages)
+#     server_has_more: bool = st.session_state["server_has_more"].get(session_id, True)
+#     if current_len >= MAX_MESSAGE_LIMIT or not server_has_more:
+#         return
+
+#     new_limit: int = min(current_len + DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT)
+
+#     def _load_more() -> None:
+#         """Click-handler: fetch older rounds, update cache, unlock UI."""
+#         st.session_state["is_ui_locked"] = True
+#         st.session_state["ui_lock_reason"] = "Loading older rounds…"
+
+#         try:
+#             new_msgs, has_more = fetch_session_history(
+#                 server_url=server_url,
+#                 user_id=user_id,
+#                 app_name=app_name,
+#                 session_id=session_id,
+#                 limit=new_limit,
+#             )
+#             st.session_state["session_histories"][session_id] = new_msgs
+#             st.session_state["server_has_more"][session_id] = has_more
+#             logger.info(
+#                 "[render_load_more_button] Loaded +%d rounds (limit=%d) for "
+#                 "session_id=%s, user_id=%s",
+#                 DEFAULT_MESSAGE_LIMIT,
+#                 new_limit,
+#                 session_id,
+#                 user_id,
+#             )
+
+#         except requests.HTTPError as http_err:
+#             status: int = http_err.response.status_code
+#             logger.warning(
+#                 "[render_load_more_button] HTTP %d while loading "
+#                 "session_id=%s, user_id=%s",
+#                 status,
+#                 session_id,
+#                 user_id,
+#             )
+#             st.session_state["chat_error_message"] = (
+#                 f"Failed to load older messages (HTTP {status}). Please try again."
+#             )
+
+#         except requests.RequestException as req_err:
+#             logger.error(
+#                 "[render_load_more_button] Network error: %s "
+#                 "(session_id=%s, user_id=%s)",
+#                 req_err,
+#                 session_id,
+#                 user_id,
+#             )
+#             st.session_state["chat_error_message"] = (
+#                 "Network error while contacting the server. Please retry."
+#             )
+
+#         except Exception as exc:  # noqa: BLE001
+#             logger.exception(
+#                 "[render_load_more_button] Unexpected error while loading "
+#                 "session_id=%s, user_id=%s",
+#                 session_id,
+#                 user_id,
+#             )
+#             st.session_state["chat_error_message"] = (
+#                 "Unexpected error occurred while loading older messages."
+#             )
+
+#         finally:
+#             st.session_state["is_ui_locked"] = False
+#             st.session_state["ui_lock_reason"] = ""
+#             # st.rerun()
+
+#     st.button(
+#         "追加で10件表示",
+#         disabled=False,
+#         on_click=_load_more,
+#         help="Show 10 older rounds",
+#     )
+
+
+def render_load_more_button(
+    *,
+    session_id: str,
+    server_url: str,
+    user_id: str,
+    app_name: str,
+    messages: list[Message],
+    disabled_ui: bool,
+) -> None:
+    """Render the “Load 10 more” button and handle its click.
+
+    Args:
+        session_id: UUID of the session currently displayed.
+        server_url: Base URL of the FastAPI backend.
+        user_id: ID of the signed-in user.
+        app_name: Name of the application (passed through to the backend).
+        messages: Cached conversation for the session (oldest → newest).
+        disabled_ui (bool): If ``True``, disables the button (UI lock is active).
+
+    Side Effects:
+        * Locks the UI while a fetch is in progress.
+        * Updates ``st.session_state["session_histories"][session_id]`` on success.
+        * Stores a user-visible error in ``st.session_state["chat_error_message"]``
+          on failure.
+        * Always triggers ``st.rerun()`` to refresh the UI.
+    """
+    current_rounds: int = len({m.round_id for m in messages})
+    server_has_more = st.session_state["server_has_more"].get(session_id, True)
+    if current_rounds >= MAX_MESSAGE_LIMIT or not server_has_more:
+        return
+
+    new_limit = min(current_rounds + DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT)
+
+    # def _request_load_more() -> None:
+    #     """Just mark that we need more rounds; real work is done outside."""
+    #     st.session_state["pending_load_more"] = {
+    #         "session_id": session_id,
+    #         "limit": new_limit,
+    #     }
+
+    # st.button(
+    #     "追加で10件表示",
+    #     disabled=False,
+    #     on_click=_request_load_more,
+    #     help="Show 10 older rounds",
+    # )
+
+    if st.button("追加で10件表示", key="load_more_button", disabled=disabled_ui):
+        st.session_state["is_ui_locked"] = True
+        st.session_state["ui_lock_reason"] = "Loading older rounds..."
+        st.session_state["pending_load_more"] = {
+            "session_id": session_id,
+            "limit": new_limit,
+        }
+        st.rerun()
+
+    if pending := st.session_state.pop("pending_load_more", None):
+        sid: str = pending["session_id"]
+        limit: int = pending["limit"]
+
+        # Optional: show spinner during fetch
+        with st.spinner("Loading older rounds…"):
+            try:
+                new_msgs, has_more = fetch_session_history(
+                    server_url=server_url,
+                    user_id=user_id,
+                    app_name=app_name,
+                    session_id=sid,
+                    limit=limit,
+                )
+                st.session_state["session_histories"][sid] = new_msgs
+                st.session_state["server_has_more"][sid] = has_more
+                logger.info(
+                    "[load_more] Loaded history up to limit=%d (has_more=%s) "
+                    "for session_id=%s, user_id=%s",
+                    limit,
+                    has_more,
+                    sid,
+                    user_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "[load_more] Failed to load more rounds: session_id=%s, user_id=%s",
+                    sid,
+                    user_id,
+                )
+                st.session_state["chat_error_message"] = (
+                    "Failed to load older messages. Please try again."
+                )
+            finally:
+                # Always rerun so that UI (button disable, new messages) updates
+                st.session_state["is_ui_locked"] = False
+                st.session_state["ui_lock_reason"] = ""
+                st.rerun()
+
+
 def render_chat_messages(
     messages: list[Message],
     server_url: str,
@@ -1215,6 +1436,8 @@ def render_chat_messages(
 
     for msg in messages:
         if msg.is_deleted:
+            if msg.role == "user":
+                st.caption("🗑️ This message has been deleted.")
             continue
 
         if msg.role in {"user", "assistant"}:
@@ -1478,13 +1701,15 @@ def render_user_chat_input(
 
     # 1) Let user pick the RAG usage mode.
     st.sidebar.write("## 🔍RAG Mode")
-    rag_mode: str = st.sidebar.radio(
+
+    rag_mode_label: str = st.sidebar.radio(
         "Choose RAG mode:",
-        options=["RAG (Optimized Query)", "RAG (Standard)", "No RAG"],
-        index=0,  # default to the first option
+        options=RAG_MODE_OPTIONS,
+        index=0,
         key="rag_mode_radio",
         disabled=disabled_ui,
     )
+    rag_mode: RagModeEnum = RagModeEnum(rag_mode_label)
 
     st.sidebar.write("## 🔀Use Reranker")
     use_reranker: bool = st.sidebar.radio(
@@ -1497,7 +1722,12 @@ def render_user_chat_input(
     )
 
     # 2) Provide a chat input box for the user to type their query.
-    user_input: str = st.chat_input("Type your query here...", disabled=disabled_ui)
+    user_input: str = st.chat_input(
+        "Type your query here...",
+        disabled=disabled_ui,
+        max_chars=MAX_CHAT_INPUT_LENGTH,
+        key="user_chat_input",
+    )
 
     if user_input:
         st.session_state["is_ui_locked"] = True
@@ -1846,6 +2076,8 @@ def main(user_id: str, employee_class_id: str) -> None:
         st.session_state["show_edit_form"] = False
     if "session_histories" not in st.session_state:
         st.session_state["session_histories"] = {}  # { session_id: [messages], ... }
+    if "server_has_more" not in st.session_state:
+        st.session_state["server_has_more"] = {}
     if "show_create_form" not in st.session_state:
         st.session_state["show_create_form"] = False
 
@@ -1905,6 +2137,15 @@ def main(user_id: str, employee_class_id: str) -> None:
             m.round_id,
             ROLE_ORDER.get(m.role, 99),  # unknown roles sink to the end
         )
+    )
+
+    render_load_more_button(
+        session_id=session_id_for_display,
+        server_url=server_url,
+        user_id=user_id,
+        app_name=app_name,
+        messages=messages,
+        disabled_ui=disabled_ui,
     )
 
     render_chat_messages(

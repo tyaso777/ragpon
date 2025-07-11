@@ -14,6 +14,47 @@ class RoleEnum(str, Enum):
     SYSTEM = "system"
 
 
+class RagModeEnum(str, Enum):
+    """Enumerates Retrieval-Augmented Generation (RAG) operation modes.
+
+    The enum values are used consistently across the Streamlit UI and
+    FastAPI backend so that **one canonical string** identifies a mode
+    everywhere (HTTP payloads, database, logs, etc.).
+
+    Attributes
+    ----------
+    OPTIMIZED :
+        _“RAG (Optimized Query)”_ – Performs an additional query-
+        optimization step (e.g. rewriting or expansion) **before**
+        retrieving documents.
+    STANDARD :
+        _“RAG (Standard)”_ – Retrieves documents with the original user
+        query, without optimization.
+    NO_RAG :
+        _“No RAG”_ – Skips retrieval entirely; the LLM receives the raw
+        user prompt only.
+    """
+
+    OPTIMIZED = "RAG (Optimized Query)"
+    STANDARD = "RAG (Standard)"
+    NO_RAG = "No RAG"
+
+    @classmethod
+    def list(cls) -> list[str]:
+        """Return RAG-mode labels in declaration order.
+
+        This thin wrapper exists mainly for UI widgets (e.g. a Streamlit
+        ``st.radio``) that accept ``list[str]`` but not Enum members.
+
+        Returns
+        -------
+        list[str]
+            The human-readable enum *values*, preserving the order
+            defined in the class.
+        """
+        return [m.value for m in cls]
+
+
 class SessionData(BaseModel):
     """
     Represents session information, including an ID, name, and privacy setting.
@@ -74,6 +115,50 @@ class Message(BaseModel):
                 "id": "6c72abf7-d494-4f7b-a383-40f5d3233726",
                 "round_id": 0,
                 "is_deleted": False,
+            }
+        }
+
+
+class MessageListResponse(BaseModel):
+    """
+    Represents a paginated slice of chat history returned by FastAPI.
+
+    Attributes:
+        messages (list[Message]): Chronologically ordered chat messages
+            (oldest → newest by ``round_id``).
+        has_more (bool): Indicates that older rounds still exist on the server
+            and can be fetched with a larger ``limit`` value.
+    """
+
+    messages: list[Message] = Field(
+        ...,
+        description="Chronological list of chat messages (oldest→newest).",
+    )
+    has_more: bool = Field(
+        ...,
+        description="True if additional (older) rounds can be requested.",
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Hello!",
+                        "id": "2c347f85-1bd1-46e7-950a-a7b05d4442a3",
+                        "round_id": 42,
+                        "is_deleted": False,
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Hi — how can I help you?",
+                        "id": "6e82af89-77b4-4972-965b-3466d4fc5303",
+                        "round_id": 42,
+                        "is_deleted": False,
+                    },
+                ],
+                "has_more": True,
             }
         }
 
@@ -181,18 +266,14 @@ class SessionUpdateWithCheckRequest(BaseModel):
     before_is_private_session: bool = Field(
         ..., description="Privacy status before editing."
     )
-    before_is_deleted: bool = Field(
-        ..., description="Deletion status before editing."
-    )
+    before_is_deleted: bool = Field(..., description="Deletion status before editing.")
     after_session_name: str = Field(
         ..., max_length=30, description="New session name to apply."
     )
     after_is_private_session: bool = Field(
         ..., description="New privacy status to apply."
     )
-    after_is_deleted: bool = Field(
-        ..., description="New deletion status to apply."
-    )
+    after_is_deleted: bool = Field(..., description="New deletion status to apply.")
 
 
 class DeleteRoundPayload(BaseModel):

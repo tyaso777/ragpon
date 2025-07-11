@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, Generator, Literal, NoReturn, cast
 from uuid import UUID
 
-from fastapi import Body, FastAPI, HTTPException, Request, status
+from fastapi import Body, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
@@ -33,7 +33,9 @@ from ragpon.apps.chat_domain import (
     CreateSessionWithLimitRequest,
     DeleteRoundPayload,
     Message,
+    MessageListResponse,
     PatchFeedbackPayload,
+    RagModeEnum,
     SessionCreate,
     SessionData,
     SessionUpdate,
@@ -81,6 +83,13 @@ app = FastAPI()
 MAX_CHUNK_LOG_LEN = 300
 DB_TYPE = "postgres"
 MAX_TOP_K = 30
+MAX_OPTIMIZED_QUERIES = 3  # "split the request into **1 to 3 queries**" is written in OPTIMIZED_QUERY_INSTRUCTION
+
+DEFAULT_MESSAGE_LIMIT: int = 10  # initial fetch size
+
+MAX_MESSAGE_LIMIT: int = 1000  # hard-cap to avoid accidental huge queries
+# NOTE: Must be **≥ Streamlit-side MAX_MESSAGE_LIMIT (100)** so the server
+#       never rejects a limit value the client may legally send.
 
 # Factor to compensate for collisions when multiple queries are searched.
 OVER_FETCH_FACTOR: int = 2
@@ -107,7 +116,7 @@ Currently, only vector search is used (not BM25+), so it is essential that your 
 
 Please focus on generating queries that will help answer the **final user question** in the conversation. You may refer to the context of the entire conversation to understand the user's intent, but your output should support answering the final question directly and concretely.
 
-If needed, split the request into multiple queries. You must respond **only** with strictly valid JSON, containing an array of objects, each with a single 'query' key. No extra text or explanation is allowed. For example:
+If needed, split the request into **1 to 3 queries**. You must respond **only** with strictly valid JSON, containing an array of objects, each with a single 'query' key. No extra text or explanation is allowed. For example:
 [
     {"query": "Example query 1"},
     {"query": "Example query 2"}
@@ -344,7 +353,7 @@ def finalize_user_round(
     system_content: str,
     assistant_content: str,
     llm_model: str,
-    rag_mode: str,
+    rag_mode: RagModeEnum,
     rerank_model: str | None,
     use_reranker: bool,
     optimized_queries: list[str] | None,
@@ -369,7 +378,7 @@ def finalize_user_round(
         system_content: RAG context string (before query optimisation block).
         assistant_content: Full LLM answer (already accumulated).
         llm_model: Model identifier used for this response.
-        rag_mode: Retrieval mode label (e.g., ``"hybrid"``).
+        rag_mode : Retrieval mode applied; see :class:`RagModeEnum`.
         rerank_model: Optional reranker model identifier.
         use_reranker: ``True`` if a reranker was applied.
         optimized_queries: Optional list of query-rewrite strings.
@@ -407,7 +416,7 @@ def finalize_user_round(
                 llm_model,
                 use_reranker,
                 rerank_model,
-                rag_mode,
+                rag_mode.value,
                 user_msg_id,
             ),
         )
@@ -449,7 +458,7 @@ def finalize_user_round(
                 llm_model,
                 use_reranker,
                 rerank_model,
-                rag_mode,
+                rag_mode.value,
                 # assistant row
                 assistant_msg_id,
                 round_id,
@@ -461,7 +470,7 @@ def finalize_user_round(
                 llm_model,
                 use_reranker,
                 rerank_model,
-                rag_mode,
+                rag_mode.value,
             ),
         )
 
@@ -570,6 +579,9 @@ def generate_queries_from_history(
             )
             raise ValueError(f"Missing 'query' key at index {i} in: {item}")
         queries.append(item["query"])
+
+    # Limit the number of optimized queries to avoid overload or abuse
+    queries = queries[:MAX_OPTIMIZED_QUERIES]
 
     return queries
 
@@ -719,7 +731,7 @@ def stream_and_persist_chat_response(
     assistant_msg_id: str,
     messages: list[dict],
     retrieved_contexts_str: str,
-    rag_mode: str,
+    rag_mode: RagModeEnum,
     client: OpenAI | AzureOpenAI,
     model_name: str,
     model_type: Literal["openai", "azure"],
@@ -746,7 +758,7 @@ def stream_and_persist_chat_response(
         messages: Prompt messages already sent in this round
             (each as ``{"role": "...", "content": "..."}``).
         retrieved_contexts_str: Optional RAG context to prepend.
-        rag_mode: Retrieval-augmented generation mode (e.g., ``"No RAG"``).
+        rag_mode: Retrieval mode applied; see :class:`RagModeEnum`.
         client: OpenAI or Azure client instance.
         model_name: Model (or deployment) name.
         model_type: Backend type, ``"openai"`` or ``"azure"``.
@@ -1082,11 +1094,19 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
 
 @app.get(
     "/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries",
-    response_model=list[Message],
+    response_model=MessageListResponse,
 )
 async def list_session_queries(
-    user_id: str, app_name: str, session_id: str
-) -> list[Message]:
+    user_id: str,
+    app_name: str,
+    session_id: str,
+    limit: int = Query(
+        DEFAULT_MESSAGE_LIMIT,
+        ge=1,
+        le=MAX_MESSAGE_LIMIT,
+        description="Maximum number of messages (newest-first) to return.",
+    ),
+) -> MessageListResponse:
     """
     Retrieve user, assistant, and system messages for a specific session.
     If system message is present, its content will be updated to structured
@@ -1096,9 +1116,15 @@ async def list_session_queries(
         user_id: ID of the user.
         app_name: Name of the application.
         session_id: Target session UUID.
+        limit: Max number of rows to return (defaults to DEFAULT_MESSAGE_LIMIT).
 
     Returns:
-        Messages in the session, structured and ordered by round_id.
+        MessageListResponse: An envelope with a chronological list of messages
+        and a flag indicating whether older rounds remain on the server.
+
+    Returns:
+    MessageListResponse: Up to *limit* newest **rounds** of chat history
+    (each round can contain multiple Message objects).
 
     Raises:
         HTTPException: If the query fails due to database issues or unexpected errors.
@@ -1109,19 +1135,28 @@ async def list_session_queries(
 
     try:
         with get_database_client(DB_TYPE, db_pool) as db:
+            # DENSE_RANK() assigns 1 to the latest round, 2 to the next, …;
+            # filtering rk ≤ limit keeps exactly limit rounds.
+            extra_limit: int = limit + 1
             db.execute(
                 """
                 SELECT id, round_id, message_type, content, is_deleted
-                FROM messages
-                WHERE user_id = %s
-                  AND app_name = %s
-                  AND session_id = %s
-                  AND message_type IN ('user', 'assistant', 'system')
+                FROM (
+                    SELECT  *,
+                            DENSE_RANK() OVER (ORDER BY round_id DESC) AS rk
+                    FROM    messages
+                    WHERE   user_id      = %s
+                    AND   app_name     = %s
+                    AND   session_id   = %s
+                    AND   message_type IN ('user', 'assistant', 'system')
+                ) ranked
+                WHERE rk <= %s               -- keep only the newest *limit* rounds
                 ORDER BY round_id ASC
                 """,
-                (user_id, app_name, session_id),
+                (user_id, app_name, session_id, extra_limit),
             )
-            rows = db.fetchall()
+
+            rows: list[tuple] = db.fetchall()
 
         # Build intermediate structure by round_id
         round_raws: dict[int, dict[str, object]] = {}
@@ -1182,12 +1217,27 @@ async def list_session_queries(
                     system_msg["content"] = "[]"
                 results.append(Message(**system_msg))
 
+        unique_rounds: list[int] = sorted({m.round_id for m in results})
+        has_more: bool = len(unique_rounds) > limit
+        if has_more:
+            # Keep only the newest *limit* round_ids
+            keep_rounds: set[int] = set(unique_rounds[-limit:])
+            results = [m for m in results if m.round_id in keep_rounds]
+
+        unique_rounds: int = len({m.round_id for m in results})  # distinct rounds
+
         logger.info(
-            f"[list_session_queries] Retrieved {len(results)} messages "
-            f"for user_id={user_id}, session_id={session_id}"
+            "[list_session_queries] limit_rounds=%d → returned %d rounds (%d messages) "
+            "(has_more=%s, user_id=%s, session_id=%s)",
+            limit,
+            unique_rounds,
+            len(results),
+            has_more,
+            user_id,
+            session_id,
         )
 
-        return results
+        return MessageListResponse(messages=results, has_more=has_more)
 
     except Exception:
         logger.exception(
@@ -1588,7 +1638,7 @@ class QueryRequest:
     assistant_msg_id: str
     round_id: int
     messages: list[dict]
-    rag_mode: str
+    rag_mode: RagModeEnum
     use_reranker: bool
 
 
@@ -1625,7 +1675,7 @@ def _parse_request(data: dict, user_id: str, session_id: str) -> QueryRequest:
             assistant_msg_id=str(data["assistant_msg_id"]),
             round_id=int(data["round_id"]),
             messages=list(data["messages"]),
-            rag_mode=str(data.get("rag_mode", "RAG (Optimized Query)")),
+            rag_mode=RagModeEnum(data.get("rag_mode", RagModeEnum.OPTIMIZED.value)),
             use_reranker=bool(data.get("use_reranker", False)),
         )
     except (KeyError, ValueError, TypeError) as exc:
@@ -1638,57 +1688,107 @@ def _parse_request(data: dict, user_id: str, session_id: str) -> QueryRequest:
 def _build_retrieval_queries(
     *, req: QueryRequest, user_query: str, user_id: str, session_id: str
 ) -> list[str]:
-    """Return optimized search queries or a one-element fallback."""
-    if req.rag_mode != "RAG (Optimized Query)":
+    """Return optimised search queries, or fall back to the raw user query.
+
+    Parameters
+    ----------
+    req :
+        Parsed :class:`QueryRequest` carrying ``rag_mode`` and message
+        history.
+    user_query :
+        Latest user prompt.
+    user_id :
+        Authenticated user ID.
+    session_id :
+        Chat-session UUID.
+
+    Returns
+    -------
+    list[str]
+        • If ``rag_mode`` is **not** :pyattr:`RagModeEnum.OPTIMIZED`,
+          returns ``[user_query]``.
+        • Otherwise, returns the list produced by
+          :func:`generate_queries_from_history`, or the fallback on
+          failure.
+    """
+    if req.rag_mode is not RagModeEnum.OPTIMIZED:
+        logger.info(
+            "[_build_retrieval_queries] Non-optimised path: "
+            "user_id=%s, session_id=%s, round_id=%s, user_query_len=%d",
+            user_id,
+            session_id,
+            req.round_id,
+            len(user_query),
+        )
         return [user_query]
     try:
-        return generate_queries_from_history(
+        queries: list[str] = generate_queries_from_history(
             user_id=user_id,
             session_id=session_id,
             messages_list=req.messages,
             system_instructions=OPTIMIZED_QUERY_INSTRUCTION,
         )
+
+        logger.debug(
+            "[_build_retrieval_queries] Optimised path: "
+            "user_id=%s, session_id=%s, round_id=%s, "
+            "user_query_len=%d chars → %d queries (%s)",
+            user_id,
+            session_id,
+            req.round_id,
+            len(user_query),
+            len(queries),
+            ", ".join(f"len={len(q)} chars" for q in queries),
+        )
+        return queries
+
     except Exception as exc:
         logger.warning(
-            f"[_build_retrieval_queries] Fallback to user query for user_id={user_id}, session_id={session_id}, round_id={req.round_id}: {exc}"
+            "[_build_retrieval_queries] Fallback to user query: "
+            "user_id=%s, session_id=%s, round_id=%s, user_query_len=%d, error=%s",
+            user_id,
+            session_id,
+            req.round_id,
+            len(user_query),
+            exc,
         )
         return [user_query]
 
 
-def parse_query_payload(data: dict) -> tuple[str, str, str, int, list[dict], str, bool]:
-    """
-    Parses query payload dictionary into individual fields.
+# def parse_query_payload(data: dict) -> tuple[str, str, str, int, list[dict], str, bool]:
+#     """
+#     Parses query payload dictionary into individual fields.
 
-    Args:
-        data (dict): Parsed JSON dictionary from the request body.
+#     Args:
+#         data (dict): Parsed JSON dictionary from the request body.
 
-    Returns:
-        tuple: user_msg_id, system_msg_id, assistant_msg_id, round_id, messages_list, rag_mode, use_reranker
+#     Returns:
+#         tuple: user_msg_id, system_msg_id, assistant_msg_id, round_id, messages_list, rag_mode, use_reranker
 
-    Raises:
-        HTTPException: If required fields are missing or malformed.
-    """
-    try:
-        user_msg_id = data.get("user_msg_id", "")
-        system_msg_id = data.get("system_msg_id", "")
-        assistant_msg_id = data.get("assistant_msg_id", "")
-        round_id = int(data.get("round_id", 0))
-        messages_list = data.get("messages", [])
-        rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
-        use_reranker = bool(data.get("use_reranker", False))
-    except Exception as e:
-        logger.exception("[parse_query_payload] Malformed query request.")
-        raise HTTPException(status_code=400, detail="Malformed query fields")
+#     Raises:
+#         HTTPException: If required fields are missing or malformed.
+#     """
+#     try:
+#         user_msg_id = data.get("user_msg_id", "")
+#         system_msg_id = data.get("system_msg_id", "")
+#         assistant_msg_id = data.get("assistant_msg_id", "")
+#         round_id = int(data.get("round_id", 0))
+#         messages_list = data.get("messages", [])
+#         rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
+#         use_reranker = bool(data.get("use_reranker", False))
+#     except Exception as e:
+#         logger.exception("[parse_query_payload] Malformed query request.")
+#         raise HTTPException(status_code=400, detail="Malformed query fields")
 
-    return (
-        user_msg_id,
-        system_msg_id,
-        assistant_msg_id,
-        round_id,
-        messages_list,
-        rag_mode,
-        use_reranker,
-    )
+#     return (
+#         user_msg_id,
+#         system_msg_id,
+#         assistant_msg_id,
+#         round_id,
+#         messages_list,
+#         rag_mode,
+#         use_reranker,
+#     )
 
 
 def extract_latest_user_message(
@@ -1719,7 +1819,7 @@ def extract_latest_user_message(
 
 
 def build_openai_messages(
-    rag_mode: str,
+    rag_mode: RagModeEnum,
     retrieved_contexts_str: str,
     messages: list[dict],
     system_prompt_no_rag: str,
@@ -1729,7 +1829,7 @@ def build_openai_messages(
     Constructs the message list for OpenAI API based on rag_mode.
 
     Args:
-        rag_mode (str): RAG mode, either "No RAG" or others.
+        rag_mode (RagModeEnum): Retrieval strategy to apply.  See :class:`RagModeEnum`.
         retrieved_contexts_str (str): Context string for RAG.
         messages (list[dict]): Base chat messages.
         system_prompt_no_rag (str): System prompt for non-RAG mode.
@@ -1739,11 +1839,13 @@ def build_openai_messages(
         list[dict]: The complete list of messages to send to the LLM.
     """
     system_prompt = (
-        system_prompt_no_rag if rag_mode == "No RAG" else system_prompt_with_context
+        system_prompt_no_rag
+        if rag_mode is RagModeEnum.NO_RAG
+        else system_prompt_with_context
     )
     pre_messages = (
         [{"role": "system", "content": system_prompt}]
-        if rag_mode == "No RAG"
+        if rag_mode is RagModeEnum.NO_RAG
         else [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": retrieved_contexts_str},
@@ -2117,7 +2219,14 @@ async def handle_query(
         db_pool=db_pool,
     )
 
-    if req.rag_mode == "No RAG":
+    if req.rag_mode is RagModeEnum.NO_RAG:
+        logger.info(
+            "[handle_query] Streaming in NO_RAG mode: "
+            "user_id=%s, session_id=%s, round_id=%s",
+            user_id,
+            session_id,
+            req.round_id,
+        )
 
         return StreamingResponse(
             stream_and_persist_chat_response(
