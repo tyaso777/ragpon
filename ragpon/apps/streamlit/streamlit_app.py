@@ -16,6 +16,135 @@ from ragpon._utils.logging_helper import get_library_logger
 from ragpon.apps.chat_domain import Message, RagModeEnum, SessionData
 
 
+@dataclass(frozen=True)
+class Labels:
+    # Session creation
+    CREATE_SESSION: str = "🆕 新しいセッションを作成"
+    SESSION_NAME: str = "📛 セッション名"
+    IS_PRIVATE: str = "🙈 非公開セッションですか？"
+    SUBMIT: str = "作成"
+    CANCEL: str = "キャンセル"
+    # Session management
+    EDIT_SESSION: str = "✏️ セッションを編集する"
+    DELETE_SESSION: str = "🗑️ このセッションを削除する"
+    UPDATE: str = "更新"
+    # confirmation messages for session and round deletion
+    CONFIRM_DELETION: str = "⚠️ 本当に削除しますか？"
+    YES_DELETE: str = "✅ はい、削除します"
+    NO_CANCEL: str = "❌ キャンセルします"
+    # Sidebar sections
+    SESSION_LIST: str = "## 👉セッション一覧"
+    SELECT_SESSION: str = "セッションを選択してください："
+    RAG_MODE_SECTION: str = "## 🔍社内情報の検索方法の設定"
+    CHOOSE_RAG_MODE: str = "検索方法を選択してください："
+    RERANKER_SECTION: str = "## 🔀リランカーの使用"
+    CHOOSE_RERANKER: str = "リランカーを使用しますか？"
+    YES: str = "はい"
+    NO: str = "いいえ"
+    # Chat input
+    CHAT_INPUT_PLACEHOLDER: str = "ここに質問を入力してください..."
+    # Feedback
+    FEEDBACK_PROMPT: str = "📝 フィードバックを入力"
+    FEEDBACK_REASON: str = "理由（任意）"
+    SUBMIT_FEEDBACK: str = "✅ フィードバックを送信"
+    CANCEL_FEEDBACK: str = "❌ フィードバックをキャンセル"
+    FEEDBACK_GOOD: str = "😊"
+    FEEDBACK_BAD: str = "😞"
+    # Load more
+    LOAD_MORE: str = "追加で10件表示"
+    LOAD_MORE_HELP: str = "さらに古いラウンドを表示"
+    # Context display
+    VIEW_SOURCES: str = "📚 回答に使用された情報を見る"
+    NO_CONTEXT: str = "⚠️ 関連する情報が見つかりませんでした。"
+    # Deleted message
+    DELETED_MESSAGE_NOTICE: str = "🗑️ このメッセージは削除されました。"
+
+
+@dataclass(frozen=True)
+class ErrorLabels:
+    # Session operations
+    SESSION_CREATION: str = "セッションの作成に失敗しました。"
+    # Feedback
+    FEEDBACK_SUBMISSION: str = "フィードバックの送信に失敗しました。"
+    MESSAGE_DELETION: str = "メッセージの削除に失敗しました。"
+    HISTORY_LOAD: str = "過去のメッセージの読み込みに失敗しました。"
+    LLM_RESPONSE_FORMAT_ERROR: str = (
+        "アシスタントの応答が予期しない形式だったため、処理できませんでした。"
+    )
+    LLM_RESPONSE_MALFORMED: str = (
+        "アシスタントの応答が不正な形式だったため、処理できませんでした。"
+    )
+    # HTTP Errors
+    SESSION_CREATION_HTTP_500: str = (
+        "⚠️ サーバー内部エラーが発生しました。\n\n"
+        "セッションが一部作成された可能性があります。"
+        "画面を更新してください。問題が継続する場合は管理者に連絡してください。"
+    )
+    SESSION_CREATION_HTTP_409: str = (
+        "⚠️ セッション状態の不整合が検出されました。\n\n"
+        "ページを更新してからもう一度操作してください。"
+    )
+    SESSION_CREATION_HTTP_UNEXPECTED: str = (
+        "⚠️ 予期しないHTTPエラーが発生しました。\n\n"
+        "画面を更新してください。問題が継続する場合は管理者に連絡してください。"
+    )
+    SESSION_EDIT_HTTP_404: str = (
+        "このセッションは存在しないか、すでに削除されています。\n\n"
+        "セッション一覧を最新の状態にするためF5キーを押してページを更新してください。"
+    )
+    SESSION_EDIT_HTTP_409: str = (
+        "このセッションは他のタブまたはユーザーによって変更されました。\n\n"
+        "F5ボタンを押してセッション一覧を更新してから再度操作してください。"
+    )
+    SESSION_EDIT_HTTP_500: str = (
+        "セッションの変更中にサーバーエラーが発生しました。\n\n"
+        "時間をおいて再試行してください。"
+    )
+    # Parsing / System
+    NO_CONTEXT: str = "⚠️ 関連する情報が見つかりませんでした。"
+    # Generic
+    UNEXPECTED: str = "予期しないエラーが発生しました。"
+    UNEXPECTED_DURING_SESSION_CREATION: str = (
+        "セッションの作成に失敗しました。ネットワークに問題がある可能性があります。時間をおいて再試行してください。"
+    )
+    UNEXPECTED_DURING_MESSAGE_SUBMISSION: str = (
+        "メッセージの送信中に予期しないエラーが発生しました。"
+    )
+    UNEXPECTED_DURING_MESSAGE_DELETION: str = (
+        "メッセージの削除中に予期しないエラーが発生しました。"
+    )
+    UNEXPECTED_DURING_FEEDBACK_SUBMISSION: str = (
+        "フィードバック送信中に予期しないエラーが発生しました。"
+    )
+
+
+@dataclass(frozen=True)
+class WarningLabels:
+    NO_SESSION_SELECTED: str = "現在選択されているセッションがありません。"
+    SESSION_LIMIT_REACHED: str = (
+        "⚠️ セッションの上限（{max_count}）に達しました。新規セッション作成時に最も古いセッションが削除されます。"
+    )
+    NO_CONTEXT_AVAILABLE: str = "⚠️ 関連する情報が見つかりませんでした。"
+    CONFIRM_DELETION_PROMPT: str = "本当にこの応答を削除してよろしいですか？"
+
+
+@dataclass(frozen=True)
+class UiLockLabels:
+    CREATING_SESSION: str = "セッションを作成中..."
+    UPDATING_SESSION: str = "セッション情報を更新中..."
+    DELETING_SESSION: str = "セッションを削除中..."
+    DELETING_ROUND: str = "応答を削除中..."
+    SENDING_MESSAGE: str = "メッセージを送信中..."
+    LOADING_HISTORY: str = "履歴を読み込み中..."
+    SUBMITTING_FEEDBACK: str = "フィードバックを送信中..."
+
+
+LABELS = Labels()
+ERROR_LABELS = ErrorLabels()
+WARNING_LABELS = WarningLabels()
+UI_LOCK_LABELS = UiLockLabels()
+
+
 @dataclass
 class DevTestConfig:
     simulate_delay_seconds: int = 0
@@ -71,7 +200,7 @@ logger.propagate = False  # prevent double logging
 
 # Create and add handler
 handler = logging.StreamHandler()
-handler.setLevel(app_level)  # ← DEBUG出すならDEBUG、INFOにしたければINFO
+handler.setLevel(app_level)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 handler.setFormatter(formatter)
 logger.addHandler(handler)
@@ -693,29 +822,30 @@ def render_create_session_form(
     # --- Create Form ---
     if not st.session_state["show_create_form"]:
         if st.sidebar.button(
-            "🆕 Create New Session", key="open_create_button", disabled=disabled_ui
+            LABELS.CREATE_SESSION, key="open_create_button", disabled=disabled_ui
         ):
             st.session_state["show_create_form"] = True
             st.rerun()
 
     if st.session_state["show_create_form"]:
-        with st.sidebar.expander("🆕 Create New Session", expanded=True):
+        with st.sidebar.expander(LABELS.CREATE_SESSION, expanded=True):
 
             if current_session_count >= MAX_SESSION_COUNT:
                 st.warning(
-                    f"⚠️ The session limit ({MAX_SESSION_COUNT}) has been reached. "
-                    "The oldest session will be automatically deleted to create a new one."
+                    WARNING_LABELS.SESSION_LIMIT_REACHED.format(
+                        max_count=MAX_SESSION_COUNT
+                    )
                 )
 
             new_session_name: str = st.text_input(
-                "📛 Session Name",
+                LABELS.SESSION_NAME,
                 value="Untitled Session",
                 max_chars=30,
                 key="create_session_name",
                 disabled=disabled_ui,
             )
             new_session_is_private: bool = st.radio(
-                "🙈 Is Private?",
+                LABELS.IS_PRIVATE,
                 options=[True, False],
                 key="create_is_private",
                 disabled=disabled_ui,
@@ -724,10 +854,10 @@ def render_create_session_form(
             col1, col2 = st.columns(2)
             with col1:
                 if st.button(
-                    "Create", key="finalize_create_button", disabled=disabled_ui
+                    LABELS.SUBMIT, key="finalize_create_button", disabled=disabled_ui
                 ):
                     st.session_state["is_ui_locked"] = True
-                    st.session_state["ui_lock_reason"] = "Creating new session..."
+                    st.session_state["ui_lock_reason"] = UI_LOCK_LABELS.CREATING_SESSION
                     st.session_state["pending_create_session"] = {
                         "name": new_session_name,
                         "is_private": new_session_is_private,
@@ -737,7 +867,7 @@ def render_create_session_form(
 
             with col2:
                 if st.button(
-                    "Cancel", key="cancel_create_button", disabled=disabled_ui
+                    LABELS.CANCEL, key="cancel_create_button", disabled=disabled_ui
                 ):
                     for k in ("create_session_name", "create_is_private"):
                         if k in st.session_state:
@@ -825,9 +955,7 @@ def render_create_session_form(
                     f"[render_create_session_form] Server error for user_id={user_id}: {detail}"
                 )
                 st.session_state["error_message"] = (
-                    "⚠️ Internal server error occurred.\n\n"
-                    "This session may have been partially created. "
-                    "Please refresh the screen. If the issue persists, contact the administrator."
+                    ERROR_LABELS.SESSION_CREATION_HTTP_500
                 )
 
             elif status_code == 409:
@@ -835,31 +963,28 @@ def render_create_session_form(
                     f"[render_create_session_form] Conflict error for user_id={user_id}: {detail}"
                 )
                 st.session_state["error_message"] = (
-                    "⚠️ Session state mismatch detected.\n\n"
-                    "Please refresh the page and try creating the session again."
+                    ERROR_LABELS.SESSION_CREATION_HTTP_409
                 )
             else:
                 logger.exception(
                     f"[render_create_session_form] Unexpected HTTP error for user_id={user_id}"
                 )
                 st.session_state["error_message"] = (
-                    f"Unexpected HTTP error: {status_code}"
+                    f"{ERROR_LABELS.SESSION_CREATION_HTTP_UNEXPECTED}（HTTP {status_code}）"
                 )
 
         except requests.exceptions.RequestException as exc:
             logger.exception(
                 f"[render_create_session_form] API request failed for user_id={user_id}"
             )
-            st.session_state["error_message"] = (
-                f"Session creation failed. Please try again later."
-            )
+            st.session_state["error_message"] = ERROR_LABELS.SESSION_CREATION
 
         except Exception:
             logger.exception(
                 f"[render_create_session_form] Unexpected error for user_id={user_id}"
             )
             st.session_state["error_message"] = (
-                "Unexpected error occurred during session creation."
+                ERROR_LABELS.UNEXPECTED_DURING_SESSION_CREATION
             )
 
         finally:
@@ -888,7 +1013,7 @@ def render_session_list(
         SessionData: The session selected by the user in the sidebar.
     """
 
-    st.sidebar.write("## 👉Session List")
+    st.sidebar.write(LABELS.SESSION_LIST)
 
     # If no session has been chosen yet, default to the first in the list
     if st.session_state["current_session"] is None:
@@ -979,7 +1104,7 @@ def render_session_list(
 
     # 3-4) Render radio with explicit index and callback
     selected_session_data: SessionData = st.sidebar.radio(
-        "Choose a session:",
+        LABELS.SELECT_SESSION,
         options=sorted_sessions,
         index=current_idx,
         format_func=lambda x: (
@@ -1029,16 +1154,16 @@ def render_edit_session_form(
 
     if not st.session_state["show_edit_form"]:
         if st.sidebar.button(
-            "✏️ Manage Selected Session", key="open_edit_button", disabled=disabled_ui
+            LABELS.EDIT_SESSION, key="open_edit_button", disabled=disabled_ui
         ):
             st.session_state["show_edit_form"] = True
             st.rerun()
 
     if st.session_state["show_edit_form"]:
-        with st.sidebar.expander("✏️ Manage Selected Session", expanded=True):
+        with st.sidebar.expander(LABELS.EDIT_SESSION, expanded=True):
             current_session = st.session_state.get("current_session")
             if current_session is None:
-                st.warning("No session is currently selected.")
+                st.warning(WARNING_LABELS.NO_SESSION_SELECTED)
                 return
 
             current_name: str = current_session.session_name
@@ -1046,14 +1171,14 @@ def render_edit_session_form(
             current_is_deleted: bool = False
 
             edited_session_name: str = st.text_input(
-                "📛 Session Name",
+                LABELS.SESSION_NAME,
                 value=current_name,
                 max_chars=30,
                 key="edit_session_name",
                 disabled=disabled_ui,
             )
             edited_is_private: bool = st.radio(
-                "🙈 Is Private?",
+                LABELS.IS_PRIVATE,
                 options=[True, False],
                 index=0 if current_is_private else 1,
                 key="edit_is_private",
@@ -1061,16 +1186,14 @@ def render_edit_session_form(
             )
 
             delete_this_session: bool = st.checkbox(
-                "🗑️ Delete this session", key="delete_session"
+                LABELS.DELETE_SESSION, key="delete_session"
             )
 
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Update", key="update_session", disabled=disabled_ui):
+                if st.button(LABELS.UPDATE, key="update_session", disabled=disabled_ui):
                     st.session_state["is_ui_locked"] = True
-                    st.session_state["ui_lock_reason"] = (
-                        "Updating or deleting the session..."
-                    )
+                    st.session_state["ui_lock_reason"] = UI_LOCK_LABELS.UPDATING_SESSION
                     st.session_state["pending_edit_action"] = {
                         "delete": delete_this_session,
                         "session_id": current_session.session_id,
@@ -1085,7 +1208,9 @@ def render_edit_session_form(
                     st.rerun()
 
             with col2:
-                if st.button("Cancel", key="cancel_edit_button", disabled=disabled_ui):
+                if st.button(
+                    LABELS.CANCEL, key="cancel_edit_button", disabled=disabled_ui
+                ):
                     for k in ("edit_session_name", "edit_is_private", "delete_session"):
                         if k in st.session_state:
                             del st.session_state[k]
@@ -1166,19 +1291,13 @@ def render_edit_session_form(
                 logger.warning(
                     f"[render_edit_session_form] user_id={user_id} - Session not found (deleted or missing): session_id={action['session_id']}"
                 )
-                st.session_state["error_message"] = (
-                    "This session does not exist or has already been deleted. "
-                    "Please refresh the page (F5) to update your session list."
-                )
+                st.session_state["error_message"] = ERROR_LABELS.SESSION_EDIT_HTTP_404
             elif status == 409:
                 # HTTPException (409): Session state conflict.
                 logger.warning(
                     f"[render_edit_session_form] user_id={user_id} - Session conflict detected for session_id={action['session_id']}"
                 )
-                st.session_state["error_message"] = (
-                    "This session was modified by another tab. "
-                    "Please refresh the page (F5) to update your session list."
-                )
+                st.session_state["error_message"] = ERROR_LABELS.SESSION_EDIT_HTTP_409
             else:
                 # HTTPException (500): Unexpected server error.
                 logger.error(
@@ -1192,118 +1311,12 @@ def render_edit_session_form(
             logger.exception(
                 f"[render_edit_session_form] Unexpected error during session modification for session '{action['session_id']}', user_id={user_id}"
             )
-            st.session_state["error_message"] = (
-                f"Unexpected error occurred while modifying session"
-            )
+            st.session_state["error_message"] = ERROR_LABELS.SESSION_EDIT_HTTP_500
         finally:
             st.session_state["show_edit_form"] = False
             st.session_state["is_ui_locked"] = False
             st.session_state["ui_lock_reason"] = ""
             st.rerun()
-
-
-# def render_load_more_button(
-#     *,
-#     session_id: str,
-#     server_url: str,
-#     user_id: str,
-#     app_name: str,
-#     messages: list[Message],
-# ) -> None:
-#     """Render the “Load 10 more” button and handle its click.
-
-#     Args:
-#         session_id: UUID of the session currently displayed.
-#         server_url: Base URL of the FastAPI backend.
-#         user_id: ID of the signed-in user.
-#         app_name: Name of the application (passed through to the backend).
-#         messages: Cached conversation for the session (oldest → newest).
-
-#     Side Effects:
-#         * Locks the UI while a fetch is in progress.
-#         * Updates ``st.session_state["session_histories"][session_id]`` on success.
-#         * Stores a user-visible error in ``st.session_state["chat_error_message"]``
-#           on failure.
-#         * Always triggers ``st.rerun()`` to refresh the UI.
-#     """
-#     current_len: int = len(messages)
-#     server_has_more: bool = st.session_state["server_has_more"].get(session_id, True)
-#     if current_len >= MAX_MESSAGE_LIMIT or not server_has_more:
-#         return
-
-#     new_limit: int = min(current_len + DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT)
-
-#     def _load_more() -> None:
-#         """Click-handler: fetch older rounds, update cache, unlock UI."""
-#         st.session_state["is_ui_locked"] = True
-#         st.session_state["ui_lock_reason"] = "Loading older rounds…"
-
-#         try:
-#             new_msgs, has_more = fetch_session_history(
-#                 server_url=server_url,
-#                 user_id=user_id,
-#                 app_name=app_name,
-#                 session_id=session_id,
-#                 limit=new_limit,
-#             )
-#             st.session_state["session_histories"][session_id] = new_msgs
-#             st.session_state["server_has_more"][session_id] = has_more
-#             logger.info(
-#                 "[render_load_more_button] Loaded +%d rounds (limit=%d) for "
-#                 "session_id=%s, user_id=%s",
-#                 DEFAULT_MESSAGE_LIMIT,
-#                 new_limit,
-#                 session_id,
-#                 user_id,
-#             )
-
-#         except requests.HTTPError as http_err:
-#             status: int = http_err.response.status_code
-#             logger.warning(
-#                 "[render_load_more_button] HTTP %d while loading "
-#                 "session_id=%s, user_id=%s",
-#                 status,
-#                 session_id,
-#                 user_id,
-#             )
-#             st.session_state["chat_error_message"] = (
-#                 f"Failed to load older messages (HTTP {status}). Please try again."
-#             )
-
-#         except requests.RequestException as req_err:
-#             logger.error(
-#                 "[render_load_more_button] Network error: %s "
-#                 "(session_id=%s, user_id=%s)",
-#                 req_err,
-#                 session_id,
-#                 user_id,
-#             )
-#             st.session_state["chat_error_message"] = (
-#                 "Network error while contacting the server. Please retry."
-#             )
-
-#         except Exception as exc:  # noqa: BLE001
-#             logger.exception(
-#                 "[render_load_more_button] Unexpected error while loading "
-#                 "session_id=%s, user_id=%s",
-#                 session_id,
-#                 user_id,
-#             )
-#             st.session_state["chat_error_message"] = (
-#                 "Unexpected error occurred while loading older messages."
-#             )
-
-#         finally:
-#             st.session_state["is_ui_locked"] = False
-#             st.session_state["ui_lock_reason"] = ""
-#             # st.rerun()
-
-#     st.button(
-#         "追加で10件表示",
-#         disabled=False,
-#         on_click=_load_more,
-#         help="Show 10 older rounds",
-#     )
 
 
 def render_load_more_button(
@@ -1339,23 +1352,9 @@ def render_load_more_button(
 
     new_limit = min(current_rounds + DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT)
 
-    # def _request_load_more() -> None:
-    #     """Just mark that we need more rounds; real work is done outside."""
-    #     st.session_state["pending_load_more"] = {
-    #         "session_id": session_id,
-    #         "limit": new_limit,
-    #     }
-
-    # st.button(
-    #     "追加で10件表示",
-    #     disabled=False,
-    #     on_click=_request_load_more,
-    #     help="Show 10 older rounds",
-    # )
-
-    if st.button("追加で10件表示", key="load_more_button", disabled=disabled_ui):
+    if st.button(LABELS.LOAD_MORE, key="load_more_button", disabled=disabled_ui):
         st.session_state["is_ui_locked"] = True
-        st.session_state["ui_lock_reason"] = "Loading older rounds..."
+        st.session_state["ui_lock_reason"] = UI_LOCK_LABELS.LOADING_HISTORY
         st.session_state["pending_load_more"] = {
             "session_id": session_id,
             "limit": new_limit,
@@ -1392,9 +1391,7 @@ def render_load_more_button(
                     sid,
                     user_id,
                 )
-                st.session_state["chat_error_message"] = (
-                    "Failed to load older messages. Please try again."
-                )
+                st.session_state["chat_error_message"] = ERROR_LABELS.HISTORY_LOAD
             finally:
                 # Always rerun so that UI (button disable, new messages) updates
                 st.session_state["is_ui_locked"] = False
@@ -1437,7 +1434,7 @@ def render_chat_messages(
     for msg in messages:
         if msg.is_deleted:
             if msg.role == "user":
-                st.caption("🗑️ This message has been deleted.")
+                st.caption(LABELS.DELETED_MESSAGE_NOTICE)
             continue
 
         if msg.role in {"user", "assistant"}:
@@ -1447,7 +1444,7 @@ def render_chat_messages(
             try:
                 rows = json.loads(msg.content)
                 if isinstance(rows, list) and rows:
-                    with st.expander("📚 View sources used for this answer"):
+                    with st.expander(LABELS.VIEW_SOURCES):
                         for row in rows:
                             st.markdown(
                                 f"""
@@ -1459,7 +1456,7 @@ def render_chat_messages(
 """
                             )
                 else:
-                    st.caption("⚠️ No relevant context entries available.")
+                    st.caption(LABELS.NO_CONTEXT)
             except Exception as e:
                 st.warning("Failed to parse system message content.")
                 st.exception(e)
@@ -1487,26 +1484,28 @@ def render_chat_messages(
 
             # If delete was requested, show confirmation prompt
             if st.session_state.get("confirm_delete_round_id") == msg.round_id:
-                with st.expander("⚠️ Confirm Deletion", expanded=True):
-                    st.warning("Are you sure you want to delete this round?")
+                with st.expander(LABELS.CONFIRM_DELETION, expanded=True):
+                    st.warning(WARNING_LABELS.CONFIRM_DELETION_PROMPT)
                     col_confirm, col_cancel = st.columns(2)
                     with col_confirm:
                         if st.button(
-                            "✅ Yes, delete", key=f"confirm_yes_{msg.round_id}"
+                            LABELS.YES_DELETE, key=f"confirm_yes_{msg.round_id}"
                         ):
                             logger.info(
                                 f"[render_chat_messages] Confirmed deletion for round_id={msg.round_id} by user_id={user_id}"
                             )
                             st.session_state["is_ui_locked"] = True
                             st.session_state["ui_lock_reason"] = (
-                                "Deleting assistant response..."
+                                UI_LOCK_LABELS.DELETING_ROUND
                             )
                             st.session_state["pending_delete_round_id"] = msg.round_id
                             st.session_state["pending_delete_user_id"] = user_id
                             st.session_state["confirm_delete_round_id"] = None
                             st.rerun()
                     with col_cancel:
-                        if st.button("❌ Cancel", key=f"confirm_no_{msg.round_id}"):
+                        if st.button(
+                            LABELS.NO_CANCEL, key=f"confirm_no_{msg.round_id}"
+                        ):
                             st.session_state["confirm_delete_round_id"] = None
                             st.rerun()
 
@@ -1530,14 +1529,16 @@ def render_chat_messages(
 
             # Inline feedback form if active
             if st.session_state.get("feedback_form_id") == msg.id:
-                with st.expander("📝 Provide Feedback", expanded=True):
+                with st.expander(LABELS.FEEDBACK_PROMPT, expanded=True):
                     feedback_reason = st.text_area(
-                        "Reason (optional)", key="feedback_reason", disabled=disabled_ui
+                        LABELS.FEEDBACK_REASON,
+                        key="feedback_reason",
+                        disabled=disabled_ui,
                     )
                     col1, col2 = st.columns(2)
                     with col1:
                         if st.button(
-                            "✅Submit Feedback",
+                            LABELS.SUBMIT_FEEDBACK,
                             key="submit_feedback",
                             disabled=disabled_ui,
                         ):
@@ -1548,7 +1549,7 @@ def render_chat_messages(
                             )
                             st.session_state["is_ui_locked"] = True
                             st.session_state["ui_lock_reason"] = (
-                                "Submitting feedback..."
+                                UI_LOCK_LABELS.SUBMITTING_FEEDBACK
                             )
                             st.session_state["pending_feedback"] = {
                                 "llm_output_id": msg.id,
@@ -1558,7 +1559,7 @@ def render_chat_messages(
                             st.rerun()
                     with col2:
                         if st.button(
-                            "❌Cancel Feedback",
+                            LABELS.CANCEL_FEEDBACK,
                             key="cancel_feedback",
                             disabled=disabled_ui,
                         ):
@@ -1600,15 +1601,13 @@ def render_chat_messages(
             logger.warning(
                 f"[render_chat_messages] RequestException while deleting round_id={round_id} for user_id={user_id}: {e}"
             )
-            st.session_state["chat_error_message"] = (
-                "Failed to delete the message. Please try again."
-            )
+            st.session_state["chat_error_message"] = ERROR_LABELS.MESSAGE_DELETION
         except Exception:
             logger.exception(
                 f"[render_chat_messages] Unexpected error while deleting round_id={round_id} for user_id={user_id}"
             )
             st.session_state["chat_error_message"] = (
-                "An unexpected error occurred during deletion. Please contact support if the issue persists."
+                ERROR_LABELS.UNEXPECTED_DURING_MESSAGE_DELETION
             )
         finally:
             st.session_state["is_ui_locked"] = False
@@ -1648,7 +1647,8 @@ def render_chat_messages(
                 f"[render_chat_messages] RequestException while submitting feedback for message_id={pending['llm_output_id']} by user_id={user_id}"
             )
             st.session_state["chat_error_message"] = (
-                "Failed to submit feedback. Please try again."
+                ERROR_LABELS.FEEDBACK_SUBMISSION,
+                "Failed to submit feedback. Please try again.",
             )
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
@@ -1657,7 +1657,7 @@ def render_chat_messages(
                 f"[render_chat_messages] Unexpected error while submitting feedback for message_id={pending['llm_output_id']} by user_id={user_id}"
             )
             st.session_state["chat_error_message"] = (
-                "An unexpected error occurred during feedback submission."
+                ERROR_LABELS.UNEXPECTED_DURING_FEEDBACK_SUBMISSION
             )
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
@@ -1700,10 +1700,10 @@ def render_user_chat_input(
     """
 
     # 1) Let user pick the RAG usage mode.
-    st.sidebar.write("## 🔍RAG Mode")
+    st.sidebar.write(LABELS.RAG_MODE_SECTION)
 
     rag_mode_label: str = st.sidebar.radio(
-        "Choose RAG mode:",
+        LABELS.CHOOSE_RAG_MODE,
         options=RAG_MODE_OPTIONS,
         index=0,
         key="rag_mode_radio",
@@ -1711,19 +1711,20 @@ def render_user_chat_input(
     )
     rag_mode: RagModeEnum = RagModeEnum(rag_mode_label)
 
-    st.sidebar.write("## 🔀Use Reranker")
-    use_reranker: bool = st.sidebar.radio(
-        label="Choose whether to use the Reranker:",
-        options=[False],  # Only one option for now
-        format_func=lambda x: "Yes" if x else "No",
-        index=0,  # Default to "No"
-        key="use_reranker_radio",
-        disabled=disabled_ui,
-    )
+    # st.sidebar.write(LABELS["reranker_section"])
+    # use_reranker: bool = st.sidebar.radio(
+    #     label="Choose whether to use the Reranker:",
+    #     options=[False],  # Only one option for now
+    #     format_func=lambda x: "Yes" if x else "No",
+    #     index=0,  # Default to "No"
+    #     key="use_reranker_radio",
+    #     disabled=disabled_ui,
+    # )
+    use_reranker: bool = False
 
     # 2) Provide a chat input box for the user to type their query.
     user_input: str = st.chat_input(
-        "Type your query here...",
+        LABELS.CHAT_INPUT_PLACEHOLDER,
         disabled=disabled_ui,
         max_chars=MAX_CHAT_INPUT_LENGTH,
         key="user_chat_input",
@@ -1731,7 +1732,7 @@ def render_user_chat_input(
 
     if user_input:
         st.session_state["is_ui_locked"] = True
-        st.session_state["ui_lock_reason"] = "Sending message to assistant..."
+        st.session_state["ui_lock_reason"] = UI_LOCK_LABELS.SENDING_MESSAGE
         st.session_state["pending_user_input"] = user_input
         st.rerun()
 
@@ -1841,7 +1842,7 @@ def render_user_chat_input(
                     f"[render_user_chat_input] Failed to post query to FastAPI for user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}"
                 )
                 st.session_state["chat_error_message"] = (
-                    f"Sorry, something went wrong while sending your message. Please try again."
+                    ERROR_LABELS.UNEXPECTED_DURING_MESSAGE_SUBMISSION
                 )
                 return
 
@@ -1871,11 +1872,6 @@ def render_user_chat_input(
 
                     buf += chunk
 
-                    # logging chunk is not recommended. So many records!
-                    # logger.debug(
-                    #     f"[render_user_chat_input] Stream chunk [{stream_chunk_index}] for user_id={user_id}: {chunk[:300] + ('...[truncated]' if len(chunk) > 300 else '')}"
-                    # )
-
                     while "\n\n" in buf:
                         event, buf = buf.split("\n\n", 1)
                         if not event.startswith(SSE_DATA_PREFIX):
@@ -1892,7 +1888,7 @@ def render_user_chat_input(
                                         f"[render_user_chat_input] Invalid assistant response structure for user_id={user_id}: data is not string ({type(data)})"
                                     )
                                     st.session_state["chat_error_message"] = (
-                                        "The assistant response could not be processed due to unexpected format."
+                                        ERROR_LABELS.LLM_RESPONSE_FORMAT_ERROR
                                     )
                                     return
                                 if data == "[DONE]":
@@ -1913,14 +1909,14 @@ def render_user_chat_input(
                                 f"[render_user_chat_input] Invalid JSON in chunk for user_id={user_id}: {json_str}"
                             )
                             st.session_state["chat_error_message"] = (
-                                "The assistant response was malformed and could not be processed."
+                                ERROR_LABELS.LLM_RESPONSE_MALFORMED
                             )
                             return
 
             # Display system context rows outside chat message
             if isinstance(system_context_rows, list):
                 if system_context_rows:
-                    with st.expander("📚 View sources used for this answer"):
+                    with st.expander(LABELS.VIEW_SOURCES):
                         for row in system_context_rows:
                             st.markdown(
                                 f"""
@@ -1932,7 +1928,7 @@ def render_user_chat_input(
     """
                             )
                 else:
-                    st.caption("⚠️ No relevant context entries available.")
+                    st.caption(LABELS.NO_CONTEXT)
 
             # 5) Save final assistant message
             assistant_msg = Message(
@@ -1979,9 +1975,7 @@ def render_user_chat_input(
             logger.exception(
                 f"[render_user_chat_input] Unexpected error in main block for user_id={user_id}, session_id={session_id_for_display}"
             )
-            st.session_state["chat_error_message"] = (
-                "An unexpected error occurred. Please try again."
-            )
+            st.session_state["chat_error_message"] = ERROR_LABELS.UNEXPECTED
         finally:
             st.session_state["is_ui_locked"] = False
             st.session_state["ui_lock_reason"] = ""

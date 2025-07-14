@@ -1755,42 +1755,6 @@ def _build_retrieval_queries(
         return [user_query]
 
 
-# def parse_query_payload(data: dict) -> tuple[str, str, str, int, list[dict], str, bool]:
-#     """
-#     Parses query payload dictionary into individual fields.
-
-#     Args:
-#         data (dict): Parsed JSON dictionary from the request body.
-
-#     Returns:
-#         tuple: user_msg_id, system_msg_id, assistant_msg_id, round_id, messages_list, rag_mode, use_reranker
-
-#     Raises:
-#         HTTPException: If required fields are missing or malformed.
-#     """
-#     try:
-#         user_msg_id = data.get("user_msg_id", "")
-#         system_msg_id = data.get("system_msg_id", "")
-#         assistant_msg_id = data.get("assistant_msg_id", "")
-#         round_id = int(data.get("round_id", 0))
-#         messages_list = data.get("messages", [])
-#         rag_mode = data.get("rag_mode", "RAG (Optimized Query)")
-#         use_reranker = bool(data.get("use_reranker", False))
-#     except Exception as e:
-#         logger.exception("[parse_query_payload] Malformed query request.")
-#         raise HTTPException(status_code=400, detail="Malformed query fields")
-
-#     return (
-#         user_msg_id,
-#         system_msg_id,
-#         assistant_msg_id,
-#         round_id,
-#         messages_list,
-#         rag_mode,
-#         use_reranker,
-#     )
-
-
 def extract_latest_user_message(
     messages_list: list[dict], user_id: str, session_id: str
 ) -> str:
