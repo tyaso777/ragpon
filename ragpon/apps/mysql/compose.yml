@@ -1,0 +1,18 @@
+name: ragpon-mysql
+services:
+  mysql:
+    build:
+      context: ./mysql
+    env_file:
+      - ./mysql/.env
+    volumes:
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - mysql:/var/lib/mysql
+      - keyring:/var/lib/mysql-keyring:Z
+    ports:
+      - 3306:3306
+    restart: unless-stopped
+  
+volumes:
+  mysql:
+  keyring:
