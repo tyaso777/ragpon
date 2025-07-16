@@ -55,7 +55,6 @@ class Labels:
     LOAD_MORE_HELP: str = "さらに古いラウンドを表示"
     # Context display
     VIEW_SOURCES: str = "📚 回答に使用された情報を見る"
-    NO_CONTEXT: str = "⚠️ 関連する情報が見つかりませんでした。"
     # Deleted message
     DELETED_MESSAGE_NOTICE: str = "🗑️ このメッセージは削除されました。"
 
@@ -63,16 +62,16 @@ class Labels:
 @dataclass(frozen=True)
 class ErrorLabels:
     # Session operations
-    SESSION_CREATION: str = "セッションの作成に失敗しました。"
+    SESSION_CREATION: str = "⚠️ セッションの作成に失敗しました。"
     # Feedback
-    FEEDBACK_SUBMISSION: str = "フィードバックの送信に失敗しました。"
-    MESSAGE_DELETION: str = "メッセージの削除に失敗しました。"
-    HISTORY_LOAD: str = "過去のメッセージの読み込みに失敗しました。"
+    FEEDBACK_SUBMISSION: str = "⚠️ フィードバックの送信に失敗しました。"
+    MESSAGE_DELETION: str = "⚠️ メッセージの削除に失敗しました。"
+    HISTORY_LOAD: str = "⚠️ 過去のメッセージの読み込みに失敗しました。"
     LLM_RESPONSE_FORMAT_ERROR: str = (
-        "アシスタントの応答が予期しない形式だったため、処理できませんでした。"
+        "⚠️ アシスタントの応答が予期しない形式だったため、処理できませんでした。"
     )
     LLM_RESPONSE_MALFORMED: str = (
-        "アシスタントの応答が不正な形式だったため、処理できませんでした。"
+        "⚠️ アシスタントの応答が不正な形式だったため、処理できませんでした。"
     )
     # HTTP Errors
     SESSION_CREATION_HTTP_500: str = (
@@ -89,32 +88,30 @@ class ErrorLabels:
         "画面を更新してください。問題が継続する場合は管理者に連絡してください。"
     )
     SESSION_EDIT_HTTP_404: str = (
-        "このセッションは存在しないか、すでに削除されています。\n\n"
+        "⚠️ このセッションは存在しないか、すでに削除されています。\n\n"
         "セッション一覧を最新の状態にするためF5キーを押してページを更新してください。"
     )
     SESSION_EDIT_HTTP_409: str = (
-        "このセッションは他のタブまたはユーザーによって変更されました。\n\n"
-        "F5ボタンを押してセッション一覧を更新してから再度操作してください。"
+        "⚠️ このセッションは他のタブで内容が更新された可能性があります。\n\n"
+        "F5キーを押して最新の情報を取得してから再度操作してください。"
     )
     SESSION_EDIT_HTTP_500: str = (
-        "セッションの変更中にサーバーエラーが発生しました。\n\n"
+        "⚠️ セッションの変更中にサーバーエラーが発生しました。\n\n"
         "時間をおいて再試行してください。"
     )
-    # Parsing / System
-    NO_CONTEXT: str = "⚠️ 関連する情報が見つかりませんでした。"
     # Generic
-    UNEXPECTED: str = "予期しないエラーが発生しました。"
+    UNEXPECTED: str = "⚠️ 予期しないエラーが発生しました。"
     UNEXPECTED_DURING_SESSION_CREATION: str = (
-        "セッションの作成に失敗しました。ネットワークに問題がある可能性があります。時間をおいて再試行してください。"
+        "⚠️ セッションの作成に失敗しました。ネットワークに問題がある可能性があります。時間をおいて再試行してください。"
     )
     UNEXPECTED_DURING_MESSAGE_SUBMISSION: str = (
-        "メッセージの送信中に予期しないエラーが発生しました。"
+        "⚠️ メッセージの送信中に予期しないエラーが発生しました。"
     )
     UNEXPECTED_DURING_MESSAGE_DELETION: str = (
-        "メッセージの削除中に予期しないエラーが発生しました。"
+        "⚠️ メッセージの削除中に予期しないエラーが発生しました。"
     )
     UNEXPECTED_DURING_FEEDBACK_SUBMISSION: str = (
-        "フィードバック送信中に予期しないエラーが発生しました。"
+        "⚠️ フィードバック送信中に予期しないエラーが発生しました。"
     )
 
 
@@ -124,7 +121,7 @@ class WarningLabels:
     SESSION_LIMIT_REACHED: str = (
         "⚠️ セッションの上限（{max_count}）に達しました。新規セッション作成時に最も古いセッションが削除されます。"
     )
-    NO_CONTEXT_AVAILABLE: str = "⚠️ 関連する情報が見つかりませんでした。"
+    NO_CONTEXT: str = "⚠️ 関連する情報が見つかりませんでした。"
     CONFIRM_DELETION_PROMPT: str = "本当にこの応答を削除してよろしいですか？"
 
 
@@ -1456,7 +1453,7 @@ def render_chat_messages(
 """
                             )
                 else:
-                    st.caption(LABELS.NO_CONTEXT)
+                    st.caption(WARNING_LABELS.NO_CONTEXT)
             except Exception as e:
                 st.warning("Failed to parse system message content.")
                 st.exception(e)
@@ -1646,10 +1643,7 @@ def render_chat_messages(
             logger.exception(
                 f"[render_chat_messages] RequestException while submitting feedback for message_id={pending['llm_output_id']} by user_id={user_id}"
             )
-            st.session_state["chat_error_message"] = (
-                ERROR_LABELS.FEEDBACK_SUBMISSION,
-                "Failed to submit feedback. Please try again.",
-            )
+            st.session_state["chat_error_message"] = ERROR_LABELS.FEEDBACK_SUBMISSION
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
         except Exception:
@@ -1822,16 +1816,11 @@ def render_user_chat_input(
                 # ✨  Handle non-200 status codes early
                 if response.status_code == 409:
                     # Another tab beat us; advise user to refresh
-                    refresh_msg = (
-                        "⚠️ This chat session was updated in another tab or window.\n\n"
-                        "Press **F5** (or click the browser refresh button) to load "
-                        "the latest messages, then try again."
-                    )
                     logger.exception(
                         "[render_user_chat_input] FastAPI returned 409 Conflict — "
                         f"session is stale. user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}"
                     )
-                    st.error(refresh_msg)
+                    st.error(ERROR_LABELS.SESSION_EDIT_HTTP_409)
                     st.stop()
 
                 # Raise for any other HTTP error (4xx/5xx)
@@ -1928,7 +1917,7 @@ def render_user_chat_input(
     """
                             )
                 else:
-                    st.caption(LABELS.NO_CONTEXT)
+                    st.caption(WARNING_LABELS.NO_CONTEXT)
 
             # 5) Save final assistant message
             assistant_msg = Message(
