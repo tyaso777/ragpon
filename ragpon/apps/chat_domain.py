@@ -24,7 +24,7 @@ class RagModeEnum(str, Enum):
     Attributes
     ----------
     OPTIMIZED :
-        _“RAG (Optimized Query)”_ – Performs an additional query-
+        _“RAG (Pro Mode)”_ – Performs an additional query-
         optimization step (e.g. rewriting or expansion) **before**
         retrieving documents.
     STANDARD :
@@ -35,7 +35,7 @@ class RagModeEnum(str, Enum):
         user prompt only.
     """
 
-    OPTIMIZED = "RAG (Optimized Query)"
+    OPTIMIZED = "RAG (Pro Mode)"
     STANDARD = "RAG (Standard)"
     NO_RAG = "No RAG"
 

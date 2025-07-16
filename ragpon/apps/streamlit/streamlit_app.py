@@ -36,7 +36,13 @@ class Labels:
     SESSION_LIST: str = "## 👉セッション一覧"
     SELECT_SESSION: str = "セッションを選択してください："
     RAG_MODE_SECTION: str = "## 🔍社内情報の検索方法の設定"
-    CHOOSE_RAG_MODE: str = "検索方法を選択してください："
+    CHOOSE_RAG_MODE: str = "検索モードを選択してください："
+    RAG_MODE_HELP_TITLE: str = "💡 検索モードとは？"
+    RAG_MODE_HELP: str = (
+        "**Pro Mode**：AI がこれまでの会話内容をもとにクエリ（資料検索用の文章）を自動生成し、資料を検索します。検索結果をふまえてAI が回答します。\n\n"
+        "**Standard**：あなたが入力した文章をそのままクエリとして利用し、資料を検索します。検索結果をふまえて AI が回答します。\n\n"
+        "**No RAG**：資料は使わず、AI 自身の知識だけで回答します。"
+    )
     RERANKER_SECTION: str = "## 🔀リランカーの使用"
     CHOOSE_RERANKER: str = "リランカーを使用しますか？"
     YES: str = "はい"
@@ -1705,6 +1711,10 @@ def render_user_chat_input(
     )
     rag_mode: RagModeEnum = RagModeEnum(rag_mode_label)
 
+    with st.sidebar.expander(LABELS.RAG_MODE_HELP_TITLE, expanded=False):
+        st.markdown(LABELS.RAG_MODE_HELP)
+
+    # reranker option
     # st.sidebar.write(LABELS["reranker_section"])
     # use_reranker: bool = st.sidebar.radio(
     #     label="Choose whether to use the Reranker:",
