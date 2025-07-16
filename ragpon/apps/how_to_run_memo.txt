@@ -3,6 +3,10 @@
 # 1-2. replace empty streamlit/common/common_saml.py with true file.
 
 # 2. to run POSTGRES
+
+   podman rm -f postgres
+   podman volume rm postgres
+
    # For Windows Podman.
       ```powershell
          podman run -d `
