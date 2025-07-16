@@ -98,7 +98,7 @@ SYSTEM_PROMPT_NO_RAG = "You are a helpful assistant. Please answer in Japanese."
 
 SYSTEM_PROMPT_WITH_CONTEXT = (
     "You are a helpful assistant. Please answer in Japanese.\n"
-    "You MUST always cite the reference materials that support your statements using their RAG Rank.\n"
+    "If your answer is based on relevant documents, you MUST always cite the reference materials that support your statements using their RAG Rank.\n"
     "Use the format: [[RAG_RANK=number]].\n"
     "This format is REQUIRED so the system can later extract references.\n"
     "If multiple sources are used, include all relevant RAG Rank values like [[RAG_RANK=1]], [[RAG_RANK=2]].\n"
