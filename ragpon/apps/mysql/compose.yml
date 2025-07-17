@@ -6,7 +6,6 @@ services:
     env_file:
       - ./mysql/.env
     volumes:
-      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
       - mysql:/var/lib/mysql
       - keyring:/var/lib/mysql-keyring:Z
     ports:
