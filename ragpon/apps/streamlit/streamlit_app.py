@@ -2025,6 +2025,7 @@ def main(user_id: str, employee_class_id: str) -> None:
             padding: 0.75rem 1rem;
             text-align: center;
             font-family: 'Segoe UI', sans-serif;
+            white-space: nowrap;
         }
 
         /* Optional: Hide Streamlit menu button */

@@ -11,7 +11,7 @@ ENV PYTHONPATH=/app \
     ANONYMIZED_TELEMETRY=False
 
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir streamlit==1.43.1 pydantic==2.7.3 spacy==3.7.5
+    pip install --no-cache-dir streamlit==1.46.1 pydantic==2.7.3 spacy==3.7.5
 
 CMD ["streamlit", "run", "ragpon/ui/streamlit_app.py", "--server.port=8005", "--server.address=0.0.0.0"]
 
