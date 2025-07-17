@@ -18,6 +18,7 @@ from ragpon.apps.chat_domain import Message, RagModeEnum, SessionData
 
 @dataclass(frozen=True)
 class Labels:
+    APP_TITLE: str = "📘 規程・マニュアル等検索アプリ"
     # Session creation
     CREATE_SESSION: str = "🆕 新しいセッションを作成"
     SESSION_NAME: str = "📛 セッション名"
@@ -2017,7 +2018,9 @@ def main(user_id: str, employee_class_id: str) -> None:
         }
 
         header.stAppHeader:before {
-            content: "📘 規程・マニュアル等検索アプリ";
+            content: """
+        + f'"{LABELS.APP_TITLE}";'
+        + """
             display: block;
             font-size: 1.8rem;
             font-weight: 600;
