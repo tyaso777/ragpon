@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Any
 
+import mysql.connector
 import psycopg2.extensions
+from mysql.connector import errors as mysql_errors
+from mysql.connector.pooling import MySQLConnectionPool
 from psycopg2.pool import SimpleConnectionPool
 
 from ragpon._utils.logging_helper import get_library_logger
@@ -215,6 +220,163 @@ class PostgreDBSession(DatabaseSession):
         return self.cursor.rowcount
 
 
+class MySQLDBSession(DatabaseSession):
+    """MySQL implementation using mysql-connector-python.
+
+    This class wraps a MySQL connection and cursor inside a context manager
+    and automatically handles commit or rollback on exit.
+
+    Attributes:
+        pool (MySQLConnectionPool): The mysql-connector connection pool.
+    """
+
+    def __init__(self, pool: MySQLConnectionPool) -> None:
+        """Initializes the MySQLDBSession.
+
+        Args:
+            pool: mysql.connector.pooling.MySQLConnectionPool instance.
+        """
+        self.pool = pool
+        self.conn: mysql.connector.MySQLConnection | None = None
+        self.cursor: mysql.connector.cursor.MySQLCursor | None = None
+
+    def __enter__(self) -> MySQLDBSession:
+        """Acquires a connection and cursor from the pool.
+
+        Returns:
+            MySQLDBSession: The active database session.
+
+        Raises:
+            mysql.connector.Error: If a connection cannot be obtained.
+        """
+        try:
+            self.conn = self.pool.get_connection()
+            self.cursor = self.conn.cursor(buffered=True)
+            logger.debug("[MySQLDBSession] Connection acquired")
+            return self
+        except mysql_errors.Error:
+            logger.exception("[MySQLDBSession] Failed to obtain connection:")
+            raise
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        """Commits or rolls back the transaction and releases the connection.
+
+        Args:
+            exc_type: The type of exception raised (if any).
+            exc_val: The exception instance (if any).
+            exc_tb: The traceback object (if any).
+        """
+        if self.cursor:
+            self.cursor.close()
+            logger.debug("[MySQLDBSession] Cursor closed")
+
+        if self.conn is None:
+            return
+
+        try:
+            if exc_type is None:
+                self.conn.commit()
+                logger.debug("[MySQLDBSession] Transaction committed")
+            else:
+                self.conn.rollback()
+                logger.exception(
+                    "[MySQLDBSession] Transaction rolled back due to exception"
+                )
+        finally:
+            self.conn.close()
+            logger.debug("[MySQLDBSession] Connection released")
+
+    def execute(self, query: str, params: tuple[Any, ...] = ()) -> None:
+        """Execute a SQL query with optional parameters.
+
+        Args:
+            query: SQL query string.
+            params: Optional tuple of parameters.
+
+        Raises:
+            RuntimeError: If the cursor is not initialized.
+            mysql.connector.Error: If the query execution fails.
+        """
+        if self.cursor is None:
+            logger.error(
+                "[MySQLDBSession] execute() called but cursor is not initialized"
+            )
+            raise RuntimeError(
+                "[MySQLDBSession] Cursor not initialized. Use within a 'with' context."
+            )
+
+        try:
+            self.cursor.execute(query, params)
+            logger.debug(
+                "[MySQLDBSession] Executed query: %s (rowcount=%s)",
+                query.strip().splitlines()[0],
+                self.cursor.rowcount,
+            )
+        except mysql_errors.Error:
+            logger.error("[MySQLDBSession] Query failed", exc_info=True)
+            raise
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        """Fetch all rows from the last query result.
+
+        Returns:
+            list[tuple[Any, ...]]: A list of tuples representing rows.
+
+        Raises:
+            RuntimeError: If the cursor is not initialized.
+        """
+        if self.cursor is None:
+            logger.error(
+                "[MySQLDBSession] fetchall() called but cursor is not initialized"
+            )
+            raise RuntimeError(
+                "[MySQLDBSession] Cursor not initialized. Use within a 'with' context."
+            )
+        return self.cursor.fetchall()
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        """Fetch one row from the last query result.
+
+        Returns:
+            tuple[Any, ...] | None: A single result row, or None if no data.
+
+        Raises:
+            RuntimeError: If the cursor is not initialized.
+        """
+        if self.cursor is None:
+            logger.error(
+                "[MySQLDBSession] fetchone() called but cursor is not initialized"
+            )
+            raise RuntimeError(
+                "[MySQLDBSession] Cursor not initialized. Use within a 'with' context."
+            )
+        return self.cursor.fetchone()
+
+    @property
+    def rowcount(self) -> int:
+        """Get number of rows affected by the last query.
+
+        Returns:
+            int: The number of rows affected.
+
+        Raises:
+            RuntimeError: If the cursor is not initialized.
+        """
+        if self.cursor is None:
+            logger.error(
+                "[MySQLDBSession] rowcount accessed but cursor is not initialized"
+            )
+            raise RuntimeError(
+                "[MySQLDBSession] Cursor not initialized. Use within a 'with' context."
+            )
+        return self.cursor.rowcount
+
+
 def get_database_client(db_type: str, pool: Any) -> DatabaseSession:
     """
     Returns an appropriate DatabaseSession based on db_type.
@@ -229,8 +391,6 @@ def get_database_client(db_type: str, pool: Any) -> DatabaseSession:
     if db_type == "postgres":
         return PostgreDBSession(pool)
     elif db_type == "mysql":
-        raise ValueError(
-            f"[get_database_client] MySQL support is not implemented yet: db_type={db_type}"
-        )
+        return MySQLDBSession(pool)
     else:
         raise ValueError(f"[get_database_client] Unsupported database type: {db_type}")

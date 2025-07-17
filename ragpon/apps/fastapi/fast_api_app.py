@@ -13,6 +13,8 @@ from uuid import UUID
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from mysql.connector import errors as mysql_errors
+from mysql.connector.pooling import MySQLConnectionPool
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
 from psycopg2 import errors
@@ -48,6 +50,11 @@ from ragpon.apps.fastapi.openai.client_init import (
     create_async_openai_client,
     create_openai_client,
 )
+from ragpon.apps.fastapi.prompts.prompts import (
+    get_optimized_query_instruction,
+    get_system_prompt_no_rag,
+    get_system_prompt_with_context,
+)
 from ragpon.tokenizer import SudachiTokenizer
 
 # Initialize logger
@@ -81,7 +88,8 @@ logger.info(
 app = FastAPI()
 
 MAX_CHUNK_LOG_LEN = 300
-DB_TYPE = "postgres"
+# DB_TYPE = "postgres"
+DB_TYPE = "mysql"
 MAX_TOP_K = 30
 MAX_OPTIMIZED_QUERIES = 3  # "split the request into **1 to 3 queries**" is written in OPTIMIZED_QUERY_INSTRUCTION
 
@@ -94,35 +102,9 @@ MAX_MESSAGE_LIMIT: int = 1000  # hard-cap to avoid accidental huge queries
 # Factor to compensate for collisions when multiple queries are searched.
 OVER_FETCH_FACTOR: int = 2
 
-SYSTEM_PROMPT_NO_RAG = "You are a helpful assistant. Please answer in Japanese."
-
-SYSTEM_PROMPT_WITH_CONTEXT = (
-    "You are a helpful assistant. Please answer in Japanese.\n"
-    "If your answer is based on relevant documents, you MUST always cite the reference materials that support your statements using their RAG Rank.\n"
-    "Use the format: [[RAG_RANK=number]].\n"
-    "This format is REQUIRED so the system can later extract references.\n"
-    "If multiple sources are used, include all relevant RAG Rank values like [[RAG_RANK=1]], [[RAG_RANK=2]].\n"
-    "Do NOT include doc_id or semantic distance.\n"
-    "Every factual statement based on retrieved content MUST include the RAG Rank.\n"
-    "Example:\n"
-    "1. 強化されたテキストは、検索文脈を明確にするのに役立ちます [[RAG_RANK=5]]。\n"
-    "2. 様々なテキストを扱えることで柔軟なインプットを可能にしています [[RAG_RANK=8]]。\n"
-    "Be concise and accurate in your response."
-)
-
-OPTIMIZED_QUERY_INSTRUCTION = """
-Your task is to reconstruct the user's request from the conversation above so it can effectively retrieve the most relevant documents using vector search in **Japanese**. 
-Currently, only vector search is used (not BM25+), so it is essential that your reformulated queries maximize semantic relevance.
-
-Please focus on generating queries that will help answer the **final user question** in the conversation. You may refer to the context of the entire conversation to understand the user's intent, but your output should support answering the final question directly and concretely.
-
-If needed, split the request into **1 to 3 queries**. You must respond **only** with strictly valid JSON, containing an array of objects, each with a single 'query' key. No extra text or explanation is allowed. For example:
-[
-    {"query": "Example query 1"},
-    {"query": "Example query 2"}
-]
-If only one query is sufficient, you may include just one object. Ensure that each query captures the user's intent clearly and naturally, using language that enhances the effectiveness of vector-based retrieval.
-"""
+SYSTEM_PROMPT_NO_RAG = get_system_prompt_no_rag()
+SYSTEM_PROMPT_WITH_CONTEXT = get_system_prompt_with_context()
+OPTIMIZED_QUERY_INSTRUCTION = get_optimized_query_instruction()
 
 try:
     client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
@@ -134,15 +116,29 @@ except Exception:
     raise
 
 try:
-    db_pool = SimpleConnectionPool(
-        minconn=1,
-        maxconn=32,
-        host="postgres",
-        dbname="postgres",
-        user="postgres",
-        password="postgres123",
-    )
-    logger.info("[Startup] PostgreSQL connection pool initialized")
+    if DB_TYPE == "postgres":
+        db_pool = SimpleConnectionPool(
+            minconn=1,
+            maxconn=32,
+            host="postgres",
+            dbname="postgres",
+            user="postgres",
+            password="postgres123",
+        )
+        logger.info("[Startup] PostgreSQL connection pool initialized")
+    elif DB_TYPE == "mysql":
+        db_pool = MySQLConnectionPool(
+            pool_name="ragpon_pool",
+            pool_size=32,
+            host="host.containers.internal",
+            port=3306,
+            user="rw_user",
+            password="rw_password",
+            database="ragpon-mysql",
+            autocommit=False,
+            charset="utf8mb4",
+        )
+        logger.info("[Startup] MySQL connection pool initialised")
 except Exception:
     logger.exception("[Startup] Failed to initialize PostgreSQL connection pool")
     raise
@@ -1297,7 +1293,16 @@ def create_session_with_limit(
                 )
 
             try:
-                known_ids_as_uuid = sorted(UUID(k) for k in payload.known_session_ids)
+                if DB_TYPE == "postgresql":
+                    known_ids_as_uuid = sorted(
+                        UUID(k) for k in payload.known_session_ids
+                    )
+                elif DB_TYPE == "mysql":
+                    known_ids_as_uuid = sorted(k for k in payload.known_session_ids)
+                else:
+                    raise HTTPException(
+                        status_code=500, detail="Unsupported database type"
+                    )
             except ValueError:
                 raise HTTPException(
                     status_code=400, detail="Invalid UUID in known_session_ids."
