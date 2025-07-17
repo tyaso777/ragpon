@@ -44,40 +44,49 @@
 
 # 2. to run MySQL
 
-      podman volume create mysql
-      podman volume create keyring
+   podman network create ragpon_sql_net
+
+   podman rm -f ragpon-mysql
+   podman volume rm mysql keyring
+   podman volume create mysql
+   podman volume create keyring
 
    # For Windows Podman.
       ```powershell
       podman run -d `
          --name ragpon-mysql `
-         --env-file .\mysql\.env `
+         --network ragpon_sql_net `
+         --env-file .env `
          -p 3306:3306 `
-         -v mysql:/var/lib/mysql `
+         -v mysql:/var/lib/mysql:Z `
          -v keyring:/var/lib/mysql-keyring:Z `
-         -v "$PWD\mysql\init.sql:/docker-entrypoint-initdb.d/init.sql:ro" `
-         --restart unless-stopped `
-         ragpon-mysql
+         localhost/ragpon-mysql
+
+      # Check
+      podman logs ragpon-mysql
       ```
 
       or
 
       ```powershell
-         podman start postgres
+         podman start ragpon-mysql
       ```
 
    # For WSL podman.
       ```powershell
       podman run -d \
          --name ragpon-mysql \
-         --env-file ./mysql/.env \
+         --network ragpon_sql_net \
+         --env-file .env \
          -p 3306:3306 \
-         -v mysql:/var/lib/mysql \
+         -v mysql:/var/lib/mysql:Z \
          -v keyring:/var/lib/mysql-keyring:Z \
-         -v $(pwd)/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro \
-         --restart unless-stoppe \
-         ragpon-mysql
+         localhost/ragpon-mysql
+
+      # Check
+      podman logs ragpon-mysql
       ```
+
 
 # 3. to run CHROMADB
    # For Windows Podman.
