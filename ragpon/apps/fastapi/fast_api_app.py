@@ -43,6 +43,12 @@ from ragpon.apps.chat_domain import (
     SessionUpdate,
     SessionUpdateWithCheckRequest,
 )
+from ragpon.apps.fastapi.db.db_errors import (
+    DatabaseConflictError,
+    DatabaseError,
+    DatabaseQueryError,
+    DatabaseUnavailableError,
+)
 from ragpon.apps.fastapi.db.db_session import get_database_client
 from ragpon.apps.fastapi.openai.client_init import (
     call_llm_async_with_handling,
@@ -310,7 +316,7 @@ def insert_placeholder_user_message(
             "[insert_placeholder_user_message] Placeholder inserted: "
             f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
-    except UniqueViolation:
+    except DatabaseConflictError as exc:
         logger.error(
             "[insert_placeholder_user_message] Duplicate placeholder detected: "
             f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
@@ -322,8 +328,8 @@ def insert_placeholder_user_message(
                 "Another session is already processing this round_id. "
                 "Please retry or wait for the existing response."
             ),
-        ) from None
-    except Exception as exc:  # noqa: BLE001
+        ) from exc
+    except DatabaseError as exc:
         logger.exception(
             "[insert_placeholder_user_message] Database error while inserting placeholder for "
             f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
@@ -380,8 +386,7 @@ def finalize_user_round(
         optimized_queries: Optional list of query-rewrite strings.
 
     Raises:
-        psycopg2.DatabaseError: Unhandled DB errors bubble up; the caller
-            should map these to HTTP 500.
+        DatabaseError: If any database-related error occurs (e.g., connection failure, constraint violation). The caller should map these to HTTP 500.
     """
     created_at = datetime.now(timezone.utc)
 
@@ -391,84 +396,91 @@ def finalize_user_round(
             optimized_queries
         )
 
-    with get_database_client(db_type, pool) as db:
-        # STEP-A: revive + fill user row
-        db.execute(
-            """
-            UPDATE messages
-            SET
-                is_deleted   = FALSE,
-                content      = %s,
-                updated_at   = %s,
-                llm_model    = %s,
-                use_reranker = %s,
-                rerank_model = %s,
-                rag_mode     = %s
-            WHERE id = %s
-            """,
-            (
-                user_query,
-                created_at,
-                llm_model,
-                use_reranker,
-                rerank_model,
-                rag_mode.value,
-                user_msg_id,
-            ),
-        )
-
-        # STEP-B: insert system & assistant rows
-        db.execute(
-            """
-            INSERT INTO messages (
-                id, round_id, user_id, session_id, app_name,
-                content, message_type,
-                created_at, created_by,
-                is_deleted,
-                llm_model, use_reranker, rerank_model,
-                rag_mode
+    try:
+        with get_database_client(db_type, pool) as db:
+            # STEP-A: revive + fill user row
+            db.execute(
+                """
+                UPDATE messages
+                SET
+                    is_deleted   = FALSE,
+                    content      = %s,
+                    updated_at   = %s,
+                    llm_model    = %s,
+                    use_reranker = %s,
+                    rerank_model = %s,
+                    rag_mode     = %s
+                WHERE id = %s
+                """,
+                (
+                    user_query,
+                    created_at,
+                    llm_model,
+                    use_reranker,
+                    rerank_model,
+                    rag_mode.value,
+                    user_msg_id,
+                ),
             )
-            VALUES
-                (%s, %s, %s, %s, %s,
-                 %s, 'system',
-                 %s, 'system',
-                 FALSE,
-                 %s, %s, %s,
-                 %s),
-                (%s, %s, %s, %s, %s,
-                 %s, 'assistant',
-                 %s, 'assistant',
-                 FALSE,
-                 %s, %s, %s,
-                 %s)
-            """,
-            (
-                # system row
-                system_msg_id,
-                round_id,
-                user_id,
-                session_id,
-                app_name,
-                system_content_full,
-                created_at,
-                llm_model,
-                use_reranker,
-                rerank_model,
-                rag_mode.value,
-                # assistant row
-                assistant_msg_id,
-                round_id,
-                user_id,
-                session_id,
-                app_name,
-                assistant_content,
-                created_at,
-                llm_model,
-                use_reranker,
-                rerank_model,
-                rag_mode.value,
-            ),
+
+            # STEP-B: insert system & assistant rows
+            db.execute(
+                """
+                INSERT INTO messages (
+                    id, round_id, user_id, session_id, app_name,
+                    content, message_type,
+                    created_at, created_by,
+                    is_deleted,
+                    llm_model, use_reranker, rerank_model,
+                    rag_mode
+                )
+                VALUES
+                    (%s, %s, %s, %s, %s,
+                    %s, 'system',
+                    %s, 'system',
+                    FALSE,
+                    %s, %s, %s,
+                    %s),
+                    (%s, %s, %s, %s, %s,
+                    %s, 'assistant',
+                    %s, 'assistant',
+                    FALSE,
+                    %s, %s, %s,
+                    %s)
+                """,
+                (
+                    # system row
+                    system_msg_id,
+                    round_id,
+                    user_id,
+                    session_id,
+                    app_name,
+                    system_content_full,
+                    created_at,
+                    llm_model,
+                    use_reranker,
+                    rerank_model,
+                    rag_mode.value,
+                    # assistant row
+                    assistant_msg_id,
+                    round_id,
+                    user_id,
+                    session_id,
+                    app_name,
+                    assistant_content,
+                    created_at,
+                    llm_model,
+                    use_reranker,
+                    rerank_model,
+                    rag_mode.value,
+                ),
+            )
+    except DatabaseError:
+        logger.exception(
+            "[finalize_user_round] Database error during finalization: "
+            f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
+        raise
 
 
 def generate_queries_from_history(
@@ -525,8 +537,8 @@ def generate_queries_from_history(
         kwargs["model"] = DEPLOYMENT_ID
 
     # 3) Call the OpenAI ChatCompletion API
-    response = client.chat.completions.create(**kwargs)
     try:
+        response = client.chat.completions.create(**kwargs)
         raw_text = response.choices[0].message.content.strip()
         logger.info(
             f"[generate_queries_from_history] Generated queries: user_id={user_id}, session_id={session_id}"
@@ -547,13 +559,9 @@ def generate_queries_from_history(
         parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         logger.warning(
-            f"[generate_queries_from_history] Failed to parse JSON from model response: user_id={user_id}, session_id={session_id}"
+            f"[generate_queries_from_history] Failed to parse JSON from model response: user_id={user_id}, session_id={session_id}, len(raw_text)={len(raw_text)}"
         )
-        logger.debug(
-            f"Raw response from model for user_id={user_id}, session_id={session_id}: {raw_text}",
-            exc_info=True,
-        )
-        raise ValueError(f"Failed to parse JSON from model: {raw_text}") from exc
+        raise ValueError(f"Failed to parse JSON from model") from exc
 
     if not isinstance(parsed, list):
         logger.warning(
@@ -638,8 +646,7 @@ def generate_session_title(
             )
             raise ValueError("OpenAI returned empty title content")
         logger.info(
-            f"[generate_session_title] Title generated"
-            f"for user_id={user_id}, session_id={session_id}, query='{query}'"
+            f"[generate_session_title] Title generated for user_id={user_id}, session_id={session_id}, len(query)='{len(query)}'"
         )
         return content
     except (IndexError, AttributeError) as exc:
@@ -649,71 +656,71 @@ def generate_session_title(
         raise ValueError("OpenAI response missing expected content") from exc
 
 
-async def generate_session_title_async(
-    query: str,
-    user_id: str,
-    session_id: str,
-    client: AsyncOpenAI | AsyncAzureOpenAI,
-    model_name: str,
-    model_type: Literal["openai", "azure"],
-) -> str:
-    """
-    Generates a concise session title from the user's query using a language model.
+# async def generate_session_title_async(
+#     query: str,
+#     user_id: str,
+#     session_id: str,
+#     client: AsyncOpenAI | AsyncAzureOpenAI,
+#     model_name: str,
+#     model_type: Literal["openai", "azure"],
+# ) -> str:
+#     """
+#     Generates a concise session title from the user's query using a language model.
 
-    Args:
-        query (str): The user's initial query string.
-        user_id (str): The user ID for logging and traceability.
-        session_id (str): The session ID for logging and traceability.
-        client (AsyncOpenAI | AsyncAzureOpenAI): The OpenAI-compatible async client instance.
-        model_name (str): The model name (OpenAI) or deployment ID (Azure).
-        model_type (Literal["openai", "azure"]): Indicates which backend is in use.
+#     Args:
+#         query (str): The user's initial query string.
+#         user_id (str): The user ID for logging and traceability.
+#         session_id (str): The session ID for logging and traceability.
+#         client (AsyncOpenAI | AsyncAzureOpenAI): The OpenAI-compatible async client instance.
+#         model_name (str): The model name (OpenAI) or deployment ID (Azure).
+#         model_type (Literal["openai", "azure"]): Indicates which backend is in use.
 
-    Returns:
-        str: A concise session title (up to 15 characters) in Japanese.
+#     Returns:
+#         str: A concise session title (up to 15 characters) in Japanese.
 
-    Raises:
-        ValueError: If the API call fails or the response is invalid.
-    """
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are an assistant that generates concise session titles. "
-                "Based on the user's first query, provide a title of at most "
-                "15 characters in Japanese."
-            ),
-        },
-        {"role": "user", "content": query},
-    ]
+#     Raises:
+#         ValueError: If the API call fails or the response is invalid.
+#     """
+#     messages = [
+#         {
+#             "role": "system",
+#             "content": (
+#                 "You are an assistant that generates concise session titles. "
+#                 "Based on the user's first query, provide a title of at most "
+#                 "15 characters in Japanese."
+#             ),
+#         },
+#         {"role": "user", "content": query},
+#     ]
 
-    response: ChatCompletion = await call_llm_async_with_handling(
-        client=client,
-        model=model_name,
-        messages=messages,
-        user_id=user_id,
-        session_id=session_id,
-        temperature=0.0,
-        stream=False,
-        model_type=model_type,
-    )
+#     response: ChatCompletion = await call_llm_async_with_handling(
+#         client=client,
+#         model=model_name,
+#         messages=messages,
+#         user_id=user_id,
+#         session_id=session_id,
+#         temperature=0.0,
+#         stream=False,
+#         model_type=model_type,
+#     )
 
-    try:
-        content = response.choices[0].message.content.strip()
-        if not content:
-            logger.exception(
-                f"[generate_session_title_async] OpenAI returned empty title for user_id={user_id}, session_id={session_id}"
-            )
-            raise ValueError("OpenAI returned empty title content")
-        logger.info(
-            f"[generate_session_title_async] Title generated"
-            f"for user_id={user_id}, session_id={session_id}, query='{query}'"
-        )
-        return content
-    except (IndexError, AttributeError) as exc:
-        logger.exception(
-            f"[generate_session_title_async] Failed to extract title for user_id={user_id}, session_id={session_id}"
-        )
-        raise ValueError("OpenAI response missing expected content") from exc
+#     try:
+#         content = response.choices[0].message.content.strip()
+#         if not content:
+#             logger.exception(
+#                 f"[generate_session_title_async] OpenAI returned empty title for user_id={user_id}, session_id={session_id}"
+#             )
+#             raise ValueError("OpenAI returned empty title content")
+#         logger.info(
+#             f"[generate_session_title_async] Title generated"
+#             f"for user_id={user_id}, session_id={session_id}, len(query)='{len(query)}'"
+#         )
+#         return content
+#     except (IndexError, AttributeError) as exc:
+#         logger.exception(
+#             f"[generate_session_title_async] Failed to extract title for user_id={user_id}, session_id={session_id}"
+#         )
+#         raise ValueError("OpenAI response missing expected content") from exc
 
 
 def stream_and_persist_chat_response(
@@ -887,18 +894,12 @@ def build_context_string(
                 try:
                     doc_id = doc.base_document.doc_id
                     distance = doc.base_document.distance
-                    # file_path = doc.base_document.metadata.get("file_path", "unknown")
-                    # page_number = doc.base_document.metadata.get(
-                    #     "page_number", "unknown"
-                    # )
                     enhanced_text = doc.enhanced_text or ""
 
                     # Append metadata and enhanced text
                     lines.append(f"RAG Rank: {i}")
                     lines.append(f"doc_id: {doc_id}")
                     lines.append(f"semantic distance: {distance}")
-                    # lines.append(f"File: {file_path}")
-                    # lines.append(f"Page: {page_number}")
                     lines.append(f"Text: {enhanced_text}")
 
                 except Exception as e:
@@ -907,22 +908,12 @@ def build_context_string(
                         f"user_id={user_id}, session_id={session_id}"
                     )
 
-        max_len = 300
         joined_lines = "\n".join(lines)
 
-        if len(joined_lines) <= max_len * 2:
-            trimmed = joined_lines
-        else:
-            trimmed = (
-                f"{joined_lines[:max_len]}... [truncated] ...{joined_lines[-max_len:]}"
-            )
-
         logger.info(
-            f"[build_context_string] Context built: user_id={user_id}, session_id={session_id}, total_lines={len(joined_lines)}"
+            f"[build_context_string] Context built: user_id={user_id}, session_id={session_id}, total_chars={len(joined_lines)}"
         )
-        logger.debug(
-            f"[build_context_string] Context built: user_id={user_id}, session_id={session_id}, lines=\n{trimmed}"
-        )
+
         return joined_lines
 
     except Exception:
@@ -941,7 +932,8 @@ def parse_context_string_to_structured(
     Parses a previously generated context string into structured RAG entries.
 
     This function is used to reverse-engineer the structured format when only the
-    stringified context (stored in DB) is available.
+    stringified context (stored in DB) is available. If parsing fails, the function
+    logs a warning and returns any partially parsed results instead of raising an exception.
 
     Args:
         content (str): Retrieved context string in fixed textual format.
@@ -951,8 +943,6 @@ def parse_context_string_to_structured(
     Returns:
         list[dict[str, str | float | int]]: List of structured entries with rag_rank, doc_id, semantic_distance, and text.
 
-    Raises:
-        Exception: If parsing fails, returns partial results and logs errors.
     """
 
     results: list[dict[str, str | float | int]] = []
@@ -1079,13 +1069,13 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
 
         return sessions
 
-    except Exception:
+    except Exception as exc:
         logger.exception(
             f"[list_sessions] Failed to fetch sessions: user_id={user_id}, app_name={app_name}"
         )
         raise HTTPException(
             status_code=500, detail="Failed to retrieve session list from the database."
-        )
+        ) from exc
 
 
 @app.get(
@@ -1235,14 +1225,14 @@ async def list_session_queries(
 
         return MessageListResponse(messages=results, has_more=has_more)
 
-    except Exception:
+    except Exception as exc:
         logger.exception(
             f"[list_session_queries] Failed to fetch messages: user_id={user_id}, session_id={session_id}"
         )
         raise HTTPException(
             status_code=500,
             detail="Failed to retrieve session queries from the database.",
-        )
+        ) from exc
 
 
 @app.post(
@@ -1255,6 +1245,9 @@ def create_session_with_limit(
     payload: CreateSessionWithLimitRequest,
 ):
     try:
+        logger.debug(
+            f"[create_session_with_limit] Opening DB transaction for user_id={user_id}, app_name={app_name}"
+        )
         with get_database_client(DB_TYPE, db_pool) as db:
             # BEGIN TRANSACTION
             db.execute(
@@ -1304,6 +1297,9 @@ def create_session_with_limit(
                         status_code=500, detail="Unsupported database type"
                     )
             except ValueError:
+                logger.exception(
+                    f"[create_session_with_limit] Invalid UUID in known_session_ids: user_id={user_id}, app_name={app_name}"
+                )
                 raise HTTPException(
                     status_code=400, detail="Invalid UUID in known_session_ids."
                 )
@@ -1325,6 +1321,9 @@ def create_session_with_limit(
             now = datetime.now(timezone.utc)
 
             if len(current_ids) > 10:
+                logger.error(
+                    f"[create_session_with_limit] Too many non-deleted sessions: user_id={user_id}, len(current_ids)={len(current_ids)}"
+                )
                 raise HTTPException(
                     status_code=500,
                     detail="Too many non-deleted sessions. Server state invalid.",
@@ -1333,13 +1332,20 @@ def create_session_with_limit(
 
                 try:
                     delete_target_uuid = UUID(payload.delete_target_session_id)
-                except ValueError:
+                except ValueError as exc:
+                    logger.exception(
+                        f"[create_session_with_limit] Invalid delete_target_session_id: user_id={user_id}, session_id={payload.delete_target_session_id}"
+                    )
                     raise HTTPException(
                         status_code=400, detail="Invalid delete_target_session_id"
-                    )
+                    ) from exc
 
                 oldest = min(session_infos, key=lambda s: s["last_touched_at"])
                 if delete_target_uuid != oldest["session_id"]:
+                    logger.error(
+                        f"[create_session_with_limit] Mismatch in delete target: user_id={user_id}, "
+                        f"expected={oldest['session_id']}, got={delete_target_uuid}"
+                    )
                     raise HTTPException(
                         status_code=409,
                         detail="Provided delete_target_session_id is not the oldest session.",
@@ -1392,9 +1398,23 @@ def create_session_with_limit(
     except HTTPException:
         raise
 
-    except Exception:
-        logger.exception("[create_session_with_limit] Unexpected server error")
-        raise HTTPException(status_code=500, detail="Unexpected server error")
+    except DatabaseError as exc:
+        logger.exception(
+            f"[create_session_with_limit] Database error: user_id={user_id}, app_name={app_name}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create session due to a database error.",
+        ) from exc
+
+    except Exception as exc:
+        logger.exception(
+            f"[create_session_with_limit] Unexpected error: user_id={user_id}, app_name={app_name}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected server error",
+        ) from exc
 
 
 @app.patch(
@@ -1427,6 +1447,9 @@ def update_session_with_check(
         HTTPException (500): If an unexpected server error occurs during processing.
     """
     try:
+        logger.debug(
+            f"[update_session_with_check] Starting session update: user_id={user_id}, session_id={session_id}"
+        )
         with get_database_client(DB_TYPE, db_pool) as db:
             db.execute(
                 """
@@ -1440,7 +1463,7 @@ def update_session_with_check(
             row = db.fetchone()
             if row is None:
                 logger.warning(
-                    "[update_session_with_check] Session not found for user_id={user_id}, session_id={session_id}."
+                    f"[update_session_with_check] Session not found for user_id={user_id}, session_id={session_id}."
                 )
                 raise HTTPException(status_code=404, detail="Session not found")
 
@@ -1449,10 +1472,10 @@ def update_session_with_check(
             if (
                 payload.before_session_name != current_name
                 or payload.before_is_private_session != current_private
-                or payload.before_is_deleted != current_is_deleted  # almost nonsense
+                or payload.before_is_deleted != current_is_deleted
             ):
                 logger.warning(
-                    "[update_session_with_check] Session conflict detected for user_id={user_id}, session_id={session_id}."
+                    f"[update_session_with_check] Session conflict detected for user_id={user_id}, session_id={session_id}."
                 )
                 raise HTTPException(
                     status_code=409,
@@ -1486,11 +1509,18 @@ def update_session_with_check(
 
     except HTTPException:
         raise
-    except Exception:
+    except DatabaseError as exc:
+        logger.exception(
+            f"[update_session_with_check] DB error: user_id={user_id}, session_id={session_id}"
+        )
+        raise HTTPException(
+            status_code=500, detail="Failed to update session."
+        ) from exc
+    except Exception as exc:
         logger.exception(
             "[update_session_with_check] Unexpected error for user_id={user_id}, session_id={session_id}"
         )
-        raise HTTPException(status_code=500, detail="Unexpected server error")
+        raise HTTPException(status_code=500, detail="Unexpected server error") from exc
 
 
 @app.delete("/sessions/{session_id}/rounds/{round_id}")
@@ -1513,8 +1543,8 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
     """
     user_id = payload.deleted_by
 
-    logger.info(
-        f"[delete_round] DELETE round (logical): user_id={user_id}, session_id={session_id}, round_id={round_id}"
+    logger.debug(
+        f"[delete_round] Starting DB transaction to delete round (logical): user_id={user_id}, session_id={session_id}, round_id={round_id}"
     )
 
     try:
@@ -1547,7 +1577,7 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
                 )
                 raise HTTPException(status_code=404, detail="No messages to delete")
 
-        logger.info(
+        logger.debug(
             f"[delete_round] Round marked as deleted: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
         return JSONResponse({"status": "ok", "detail": "Messages logically deleted."})
@@ -1555,11 +1585,11 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
     except HTTPException:
         raise
 
-    except Exception:
+    except Exception as exc:
         logger.exception(
             f"[delete_round] Failed to logically delete round: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
-        raise HTTPException(status_code=500, detail="Failed to delete round.")
+        raise HTTPException(status_code=500, detail="Failed to delete round.") from exc
 
 
 @app.patch("/llm_outputs/{llm_output_id}")
@@ -1577,9 +1607,9 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
     Raises:
         HTTPException: 404 if the message was not found, 500 on DB failure.
     """
-    logger.info(
-        f"[patch_feedback] Attempting feedback patch: user_id={payload.user_id}, session_id={payload.session_id}, "
-        f"llm_output_id={llm_output_id}, feedback={payload.feedback}, reason={payload.reason}"
+    logger.debug(
+        f"[patch_feedback] Starting DB transaction: user_id={payload.user_id}, session_id={payload.session_id}, "
+        f"llm_output_id={llm_output_id}, feedback={payload.feedback}"
     )
 
     try:
@@ -1613,7 +1643,7 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
                 )
                 raise HTTPException(status_code=404, detail="LLM output not found")
 
-        logger.info(
+        logger.debug(
             f"[patch_feedback] Feedback successfully patched: user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
         )
 
@@ -1626,11 +1656,11 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
         )
         raise
 
-    except Exception:
+    except Exception as exc:
         logger.exception(
             f"[patch_feedback] Unexpected failure: user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
         )
-        raise HTTPException(status_code=500, detail="Failed to patch feedback")
+        raise HTTPException(status_code=500, detail="Failed to patch feedback") from exc
 
 
 # === handle_query() support functions ===
@@ -1685,7 +1715,7 @@ def _parse_request(data: dict, user_id: str, session_id: str) -> QueryRequest:
         )
     except (KeyError, ValueError, TypeError) as exc:
         logger.exception(
-            "[_parse_request] Failed to parse query request for user_id={user_id}, session_id={session_id}"
+            f"[_parse_request] Failed to parse query request for user_id={user_id}, session_id={session_id}"
         )
         raise HTTPException(status_code=400, detail="Invalid query payload") from exc
 
@@ -1693,28 +1723,26 @@ def _parse_request(data: dict, user_id: str, session_id: str) -> QueryRequest:
 def _build_retrieval_queries(
     *, req: QueryRequest, user_query: str, user_id: str, session_id: str
 ) -> list[str]:
-    """Return optimised search queries, or fall back to the raw user query.
+    """Generate optimized retrieval queries or fall back to the original user query.
 
-    Parameters
-    ----------
-    req :
-        Parsed :class:`QueryRequest` carrying ``rag_mode`` and message
-        history.
-    user_query :
-        Latest user prompt.
-    user_id :
-        Authenticated user ID.
-    session_id :
-        Chat-session UUID.
+    This function determines whether to return a single user query string or
+    generate multiple optimized queries based on the RAG mode. If the RAG mode
+    is not OPTIMIZED, it returns the original user query as a single-element list.
+    Otherwise, it attempts to generate optimized search queries from message history.
+    If optimization fails or results in an empty query list, it also falls back to
+    the original user query.
 
-    Returns
-    -------
-    list[str]
-        • If ``rag_mode`` is **not** :pyattr:`RagModeEnum.OPTIMIZED`,
-          returns ``[user_query]``.
-        • Otherwise, returns the list produced by
-          :func:`generate_queries_from_history`, or the fallback on
-          failure.
+    Args:
+        req (QueryRequest): Parsed request payload, including RAG mode and message history.
+        user_query (str): The latest user prompt to be used for document retrieval.
+        user_id (str): Authenticated user ID (used for contextual logging).
+        session_id (str): The chat session UUID (used for contextual logging).
+
+    Returns:
+        list[str]: A list of search queries to use for retrieval.
+            - If `req.rag_mode` is not OPTIMIZED, returns [user_query].
+            - If optimization succeeds, returns the generated query list.
+            - If optimization fails or results in an empty list, returns [user_query].
     """
     if req.rag_mode is not RagModeEnum.OPTIMIZED:
         logger.info(
@@ -1734,6 +1762,15 @@ def _build_retrieval_queries(
             system_instructions=OPTIMIZED_QUERY_INSTRUCTION,
         )
 
+        if not queries:
+            logger.warning(
+                "[_build_retrieval_queries] Empty queries from history: user_id=%s, session_id=%s, round_id=%s",
+                user_id,
+                session_id,
+                req.round_id,
+            )
+            return [user_query]
+
         logger.debug(
             "[_build_retrieval_queries] Optimised path: "
             "user_id=%s, session_id=%s, round_id=%s, "
@@ -1745,17 +1782,17 @@ def _build_retrieval_queries(
             len(queries),
             ", ".join(f"len={len(q)} chars" for q in queries),
         )
+
         return queries
 
     except Exception as exc:
-        logger.warning(
+        logger.exception(
             "[_build_retrieval_queries] Fallback to user query: "
-            "user_id=%s, session_id=%s, round_id=%s, user_query_len=%d, error=%s",
+            "user_id=%s, session_id=%s, round_id=%s, user_query_len=%d",
             user_id,
             session_id,
             req.round_id,
             len(user_query),
-            exc,
         )
         return [user_query]
 
@@ -1764,23 +1801,30 @@ def extract_latest_user_message(
     messages_list: list[dict], user_id: str, session_id: str
 ) -> str:
     """
-    Extracts the most recent user message content from a list of message dictionaries.
+    Extract the most recent user message content from a list of message dictionaries.
+
+    This function scans messages in reverse order to find the latest message from the user
+    (i.e., where 'role' == 'user'), and returns its content. If the content is missing,
+    empty, or the message is not found, it raises an HTTP 400 error to indicate a client issue.
 
     Args:
-        messages_list (list[dict]): List of chat messages with 'role' and 'content' fields.
-        user_id (str): ID of the user (for logging purposes).
-        session_id (str): Session ID (for logging purposes).
+        messages_list (list[dict]): List of chat messages containing 'role' and 'content' fields.
+        user_id (str): ID of the user, used for contextual logging.
+        session_id (str): Session ID, used for contextual logging.
 
     Returns:
-        str: The latest message content from the user.
+        str: The content of the most recent user message.
 
     Raises:
-        HTTPException: If no user message is found in the list.
-            Returns HTTP 400 (Bad Request), as this indicates a client-side input error.
+        HTTPException: If no valid user message is found. Returns HTTP 400 to indicate
+        a bad client request.
     """
     for msg in reversed(messages_list):
         if msg.get("role") == "user":
-            return msg.get("content", "")
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+            break
     logger.warning(
         f"[extract_latest_user_message] No user message found for user_id={user_id}, session_id={session_id}"
     )
@@ -1820,11 +1864,25 @@ def build_openai_messages(
             {"role": "user", "content": retrieved_contexts_str},
         ]
     )
-    return pre_messages + messages
+    result = pre_messages + messages
+
+    if not all("role" in m and "content" in m for m in messages):
+        logger.warning(
+            "[build_openai_messages] Some message(s) missing 'role' or 'content'"
+        )
+
+    return result
 
 
 def format_sse_chunk(data: dict) -> str:
-    """Formats a dictionary as a Server-Sent Event (SSE) chunk."""
+    """Formats a dictionary as a Server-Sent Event (SSE) chunk.
+
+    Args:
+        data (dict): Data to be sent as part of an SSE message.
+
+    Returns:
+        str: Formatted SSE string.
+    """
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
@@ -1834,27 +1892,56 @@ def yield_context_info(
     retrieved_contexts_str: str,
     assistant_response: str,
 ) -> Generator[str, None, None]:
-    """Yields structured context info based on referenced ranks from assistant output."""
-    context_rows = parse_context_string_to_structured(
-        content=retrieved_contexts_str, user_id=user_id, session_id=session_id
-    )
-    # Extract referenced RAG ranks from assistant content
-    referenced_ranks = extract_referenced_rag_ranks(
-        text=assistant_response, user_id=user_id, session_id=session_id
-    )
-    # Filter *and* preserve the order in which ranks were referenced
-    rank_order = {r: i for i, r in enumerate(referenced_ranks)}
-    filtered_rows = sorted(
-        (r for r in context_rows if r["rag_rank"] in rank_order),
-        key=lambda r: rank_order[r["rag_rank"]],
-    )
-    logger.debug(
-        f"[yield_context_info] Referenced RAG ranks for user_id={user_id}, session_id={session_id}: {referenced_ranks}"
-    )
-    logger.debug(
-        f"[yield_context_info] Filtered context rows for user_id={user_id}, session_id={session_id}: {len(filtered_rows)} items"
-    )
-    yield format_sse_chunk({"system_context_rows": filtered_rows})
+    """
+    Yield structured context rows used in the assistant response, based on referenced RAG ranks.
+
+    This function parses the retrieved context string into structured rows, then extracts
+    only those rows that are actually referenced in the assistant's output.
+
+    Args:
+        user_id (str): The user ID, used for logging.
+        session_id (str): The session ID, used for logging.
+        retrieved_contexts_str (str): Concatenated context string passed to the LLM.
+        assistant_response (str): Assistant's full response, used to extract referenced ranks.
+
+    Yields:
+        str: A Server-Sent Event (SSE) chunk containing the filtered context rows.
+    """
+    try:
+        context_rows = parse_context_string_to_structured(
+            content=retrieved_contexts_str, user_id=user_id, session_id=session_id
+        )
+        # Extract referenced RAG ranks from assistant content
+        referenced_ranks = extract_referenced_rag_ranks(
+            text=assistant_response, user_id=user_id, session_id=session_id
+        )
+        if not referenced_ranks:
+            logger.debug(
+                "[yield_context_info] No referenced RAG ranks found: user_id=%s, session_id=%s",
+                user_id,
+                session_id,
+            )
+        # Filter *and* preserve the order in which ranks were referenced
+        rank_order = {r: i for i, r in enumerate(referenced_ranks)}
+        filtered_rows = sorted(
+            (r for r in context_rows if r.get("rag_rank") in rank_order),
+            key=lambda r: rank_order[r["rag_rank"]],
+        )
+        logger.debug(
+            "[yield_context_info] user_id=%s, session_id=%s, referenced_ranks=%s, len(filtered_rows)=%d",
+            user_id,
+            session_id,
+            referenced_ranks,
+            len(filtered_rows),
+        )
+        yield format_sse_chunk({"system_context_rows": filtered_rows})
+    except Exception:
+        logger.exception(
+            "[yield_context_info] Failed to yield context info: user_id=%s, session_id=%s",
+            user_id,
+            session_id,
+        )
+        yield format_sse_chunk({"system_context_rows": []})
 
 
 def maybe_generate_session_title(
@@ -1897,10 +1984,11 @@ def maybe_generate_session_title(
             result = db.fetchone()
             if not result:
                 logger.warning(
-                    f"[maybe_generate_session_title] Session not found: user_id={user_id}, session_id={session_id}"
+                    f"[maybe_generate_session_title] Session not found: user_id={user_id}, session_id={session_id}, round_id={round_id}"
                 )
                 return
-            elif result[0] != "Untitled Session":
+
+            if result[0] != "Untitled Session":
                 return
 
             try:
@@ -1920,12 +2008,12 @@ def maybe_generate_session_title(
                     (new_title, datetime.now(timezone.utc), user_id, session_id),
                 )
             except Exception:
-                logger.warning(
-                    f"[maybe_generate_session_title] Failed to generate session title: user_id={user_id}, session_id={session_id}"
+                logger.exception(
+                    f"[maybe_generate_session_title] Failed to generate session title: user_id={user_id}, session_id={session_id}, round_id={round_id}"
                 )
     except Exception:
         logger.exception(
-            f"[maybe_generate_session_title] Failed to update session title: user_id={user_id}, session_id={session_id}"
+            f"[maybe_generate_session_title] Failed to update session title: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
 
 
@@ -1936,20 +2024,18 @@ def _deduplicate_by_doc_id(docs: list[Document]) -> list[Document]:
         docs: List of retrieved ``Document`` objects.
 
     Returns:
-        list[Document]: Deduplicated list.
+        list[Document]: Deduplicated list, one Document per doc_id with the smallest distance.
     """
     unique: dict[str, Document] = {}
+
     for doc in docs:
         doc_id: str = doc.base_document.doc_id
         dist: float = doc.base_document.distance
-        logger.debug(
-            "dedup candidate doc_id=%s distance=%.4f",  # no f-string here
-            doc_id,
-            dist,
-        )
+
         # keep the closer (smaller distance) hit if we have seen this id already
         if (prev := unique.get(doc_id)) is None or dist < prev.base_document.distance:
             unique[doc_id] = doc
+
     return list(unique.values())
 
 
@@ -1960,6 +2046,9 @@ def _dedup_sort_trim(
 ) -> list[Document]:
     """Return up to ``top_k`` documents, unique and sorted by distance.
 
+    This function deduplicates input documents by doc_id, then sorts them by semantic
+    distance and returns the top_k items.
+
     Args:
         docs: Raw hits (may contain duplicates).
         top_k: Maximum unique items to return.
@@ -1969,6 +2058,14 @@ def _dedup_sort_trim(
     """
     uniques: list[Document] = _deduplicate_by_doc_id(docs)
     uniques.sort(key=lambda d: d.base_document.distance)
+
+    logger.debug(
+        "[_dedup_sort_trim] Input=%d, Deduped=%d, Returning=%d",
+        len(docs),
+        len(uniques),
+        min(len(uniques), top_k),
+    )
+
     return uniques[:top_k]
 
 
@@ -2101,12 +2198,12 @@ def _enhance_results(
         try:
             enhanced["chroma"] = chroma_repo.enhance(
                 search_results["chroma"],
-                num_before=DEFAULT_ENHANCE_BEFORE,
-                num_after=DEFAULT_ENHANCE_AFTER,
+                num_before=num_before,
+                num_after=num_after,
             )
         except Exception:
             logger.exception(
-                f"[enhance] Chroma enhancement failed:"
+                f"[enhance] Chroma enhancement failed: "
                 f"user_id={user_id}, session_id={session_id}"
             )
 
@@ -2114,13 +2211,13 @@ def _enhance_results(
         try:
             enhanced["bm25"] = chroma_repo.enhance(
                 search_results["bm25"],
-                num_before=DEFAULT_ENHANCE_BEFORE,
-                num_after=DEFAULT_ENHANCE_AFTER,
+                num_before=num_before,
+                num_after=num_after,
             )
         except Exception:
             logger.exception(
-                f"[enhance] BM25 enhancement failed "
-                f"(user_id={user_id}, session_id={session_id})"
+                f"[enhance] BM25 enhancement failed: "
+                f"user_id={user_id}, session_id={session_id}"
             )
 
     return enhanced
@@ -2161,6 +2258,8 @@ async def handle_query(
     )
     user_query: str = extract_latest_user_message(req.messages, user_id, session_id)
 
+    resolved_model_name = MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID
+
     logger.info(
         f"[handle_query] ⇢ user_id={user_id}, session_id={session_id}, "
         f"round_id={req.round_id}"
@@ -2182,7 +2281,7 @@ async def handle_query(
         round_id=req.round_id,
         user_query=user_query,
         client=client,
-        model_name=MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID,
+        model_name=resolved_model_name,
         model_type=OPENAI_TYPE,
         db_type=DB_TYPE,
         db_pool=db_pool,
@@ -2210,7 +2309,7 @@ async def handle_query(
                 retrieved_contexts_str="",
                 rag_mode=req.rag_mode,
                 client=client,
-                model_name=MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID,
+                model_name=resolved_model_name,
                 model_type=OPENAI_TYPE,
                 optimized_queries=None,
                 use_reranker=req.use_reranker,
@@ -2261,7 +2360,7 @@ async def handle_query(
             detail="Document retrieval succeeded, but context enhancement failed for both ChromaDB and BM25.",
         )
 
-    # please write rerank process
+    # TODO: Apply reranker to enhance the retrieved documents before building context.
     if req.use_reranker:
         pass
 
@@ -2286,7 +2385,7 @@ async def handle_query(
             retrieved_contexts_str=ctx_str,
             rag_mode=req.rag_mode,
             client=client,
-            model_name=MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID,
+            model_name=resolved_model_name,
             model_type=OPENAI_TYPE,
             optimized_queries=queries,
             use_reranker=req.use_reranker,

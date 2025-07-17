@@ -7,9 +7,16 @@ import mysql.connector
 import psycopg2.extensions
 from mysql.connector import errors as mysql_errors
 from mysql.connector.pooling import MySQLConnectionPool
+from psycopg2 import Error as Psycopg2Error
+from psycopg2.errors import UniqueViolation
 from psycopg2.pool import SimpleConnectionPool
 
 from ragpon._utils.logging_helper import get_library_logger
+from ragpon.apps.fastapi.db.db_errors import (
+    DatabaseConflictError,
+    DatabaseQueryError,
+    DatabaseUnavailableError,
+)
 
 # Initialize logger
 logger = get_library_logger(__name__)
@@ -123,10 +130,17 @@ class PostgreDBSession(DatabaseSession):
 
         Returns:
             PostgreDBSession: The active database session.
+
+        Raises:
+            DatabaseUnavailableError: If the database connection fails.
         """
-        self.conn = self.pool.getconn()
-        self.cursor = self.conn.cursor()
-        return self
+        try:
+            self.conn = self.pool.getconn()
+            self.cursor = self.conn.cursor()
+            return self
+        except Psycopg2Error as e:
+            logger.exception("[PostgreDBSession] Failed to obtain connection:")
+            raise DatabaseUnavailableError("PostgreSQL connection failed") from e
 
     def __exit__(
         self,
@@ -170,7 +184,16 @@ class PostgreDBSession(DatabaseSession):
             raise RuntimeError(
                 "[PostgreDBSession] Cursor not initialized. Use within a 'with' context."
             )
-        self.cursor.execute(query, params)
+        try:
+            self.cursor.execute(query, params)
+        except UniqueViolation as e:
+            logger.error(
+                "[PostgreDBSession] Unique constraint violation", exc_info=True
+            )
+            raise DatabaseConflictError("Unique constraint violation") from e
+        except Psycopg2Error as e:
+            logger.error("[PostgreDBSession] Query execution failed", exc_info=True)
+            raise DatabaseQueryError("PostgreSQL query failed") from e
 
     def fetchall(self) -> list[tuple]:
         """Fetch all rows from the last query result.
@@ -247,16 +270,15 @@ class MySQLDBSession(DatabaseSession):
             MySQLDBSession: The active database session.
 
         Raises:
-            mysql.connector.Error: If a connection cannot be obtained.
+            DatabaseUnavailableError: If the database connection fails.
         """
         try:
             self.conn = self.pool.get_connection()
             self.cursor = self.conn.cursor(buffered=True)
-            logger.debug("[MySQLDBSession] Connection acquired")
             return self
-        except mysql_errors.Error:
+        except mysql_errors.Error as e:
             logger.exception("[MySQLDBSession] Failed to obtain connection:")
-            raise
+            raise DatabaseUnavailableError("MySQL connection failed") from e
 
     def __exit__(
         self,
@@ -273,7 +295,6 @@ class MySQLDBSession(DatabaseSession):
         """
         if self.cursor:
             self.cursor.close()
-            logger.debug("[MySQLDBSession] Cursor closed")
 
         if self.conn is None:
             return
@@ -281,7 +302,6 @@ class MySQLDBSession(DatabaseSession):
         try:
             if exc_type is None:
                 self.conn.commit()
-                logger.debug("[MySQLDBSession] Transaction committed")
             else:
                 self.conn.rollback()
                 logger.exception(
@@ -289,7 +309,6 @@ class MySQLDBSession(DatabaseSession):
                 )
         finally:
             self.conn.close()
-            logger.debug("[MySQLDBSession] Connection released")
 
     def execute(self, query: str, params: tuple[Any, ...] = ()) -> None:
         """Execute a SQL query with optional parameters.
@@ -312,14 +331,14 @@ class MySQLDBSession(DatabaseSession):
 
         try:
             self.cursor.execute(query, params)
-            logger.debug(
-                "[MySQLDBSession] Executed query: %s (rowcount=%s)",
-                query.strip().splitlines()[0],
-                self.cursor.rowcount,
+        except mysql_errors.IntegrityError as e:
+            logger.error(
+                "[MySQLDBSession] Integrity constraint violation", exc_info=True
             )
-        except mysql_errors.Error:
-            logger.error("[MySQLDBSession] Query failed", exc_info=True)
-            raise
+            raise DatabaseConflictError("Integrity constraint violation") from e
+        except mysql_errors.Error as e:
+            logger.error("[MySQLDBSession] Query execution failed", exc_info=True)
+            raise DatabaseQueryError("MySQL query failed") from e
 
     def fetchall(self) -> list[tuple[Any, ...]]:
         """Fetch all rows from the last query result.
