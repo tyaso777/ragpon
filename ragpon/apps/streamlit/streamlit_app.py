@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import islice
+from pathlib import Path
 from typing import Any, Final
 
 import requests
@@ -188,32 +189,57 @@ other_level = getattr(logging, other_level_str, logging.WARNING)
 app_level_str = os.getenv("RAGPON_APP_LOG_LEVEL", "INFO").upper()
 app_level = getattr(logging, app_level_str, logging.INFO)
 
-# Apply handler to all loggers under 'ragpon.apps.streamlit'
+
+# Determine log file path and console logging setting
+log_path_str: str | None = os.getenv("RAGPON_LOG_PATH")
+console_log_str: str = os.getenv("RAGPON_CONSOLE_LOG", "True")
+console_log: bool = console_log_str.lower() in ("true", "1", "yes")
+
+# Initialize Streamlit app logger
 logger = logging.getLogger("ragpon.apps.streamlit")
 
-if not logger.handlers:  # ← guard to avoid duplicate handlers
-    # Optionally wipe root handlers once
+if not logger.handlers:  # avoid duplicate handlers on reload
+    # Remove any existing handlers at root
     for h in logging.root.handlers[:]:
         logging.root.removeHandler(h)
 
-    # Configure root for libraries
-    logging.basicConfig(
-        level=other_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    # Prepare handler list
+    handlers: list[logging.Handler] = []
+
+    if log_path_str:
+        # Ensure the log directory exists
+        log_path = Path(log_path_str)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # File handler for persistent logs
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        # file_handler.setLevel(other_level)
+        file_handler.setLevel(app_level)
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+        handlers.append(file_handler)
+
+    # Add console handler if enabled or if no other handlers
+    if console_log or not handlers:
+        stream_handler = logging.StreamHandler()
+        # stream_handler.setLevel(other_level)
+        stream_handler.setLevel(app_level)
+        stream_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+        handlers.append(stream_handler)
+
+    # Apply configuration
+    logging.basicConfig(level=other_level, handlers=handlers)
 
     # Configure this app’s logger
     logger.setLevel(app_level)
-    logger.propagate = False
 
-    # Create and add handler
-    handler = logging.StreamHandler()
-    handler.setLevel(app_level)
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    for handler in handlers:
+        logger.addHandler(handler)
+
+    logger.propagate = False
 
 
 # If you create a session with this name in the Streamlit app, a debug mode is activated.
