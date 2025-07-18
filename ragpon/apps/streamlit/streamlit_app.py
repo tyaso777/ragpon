@@ -188,26 +188,33 @@ other_level = getattr(logging, other_level_str, logging.WARNING)
 app_level_str = os.getenv("RAGPON_APP_LOG_LEVEL", "INFO").upper()
 app_level = getattr(logging, app_level_str, logging.INFO)
 
-# Remove existing handlers to reconfigure logging
-for h in logging.root.handlers[:]:
-    logging.root.removeHandler(h)
-
-logging.basicConfig(
-    level=other_level,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-
 # Apply handler to all loggers under 'ragpon.apps.streamlit'
 logger = logging.getLogger("ragpon.apps.streamlit")
-logger.setLevel(app_level)
-logger.propagate = False  # prevent double logging
 
-# Create and add handler
-handler = logging.StreamHandler()
-handler.setLevel(app_level)
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+if not logger.handlers:  # ← guard to avoid duplicate handlers
+    # Optionally wipe root handlers once
+    for h in logging.root.handlers[:]:
+        logging.root.removeHandler(h)
+
+    # Configure root for libraries
+    logging.basicConfig(
+        level=other_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    # Configure this app’s logger
+    logger.setLevel(app_level)
+    logger.propagate = False
+
+    # Create and add handler
+    handler = logging.StreamHandler()
+    handler.setLevel(app_level)
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
 
 # If you create a session with this name in the Streamlit app, a debug mode is activated.
 DEBUG_SESSION_TRIGGER = "__DEBUG_MODE__"
@@ -290,9 +297,6 @@ def fetch_session_ids(
         requests.RequestException: If the HTTP request fails.
     """
     endpoint = f"{server_url}/users/{user_id}/apps/{app_name}/sessions"
-    logger.info(
-        f"[fetch_session_ids] Fetching sessions for user_id={user_id}, app={app_name}"
-    )
     logger.debug(
         f"[fetch_session_ids] GET {endpoint}, user_id={user_id}, app={app_name}"
     )
@@ -307,7 +311,18 @@ def fetch_session_ids(
 
     # Expecting a JSON array of objects
     data = response.json()
-    logger.debug(f"[fetch_session_ids] Received response for user_id={user_id}: {data}")
+
+    summarized = [
+        {
+            "session_id": s["session_id"][:8] + "...",
+            "is_private": bool(s["is_private_session"]),
+            "last_touched": s["last_touched_at"],
+        }
+        for s in data
+    ]
+    logger.debug(
+        f"[fetch_session_ids] Received response for user_id={user_id}: {summarized}"
+    )
 
     # Convert each JSON object into a SessionData instance
     session_list = []
@@ -322,7 +337,7 @@ def fetch_session_ids(
                 ).astimezone(timezone.utc),
             )
         )
-    logger.info(
+    logger.debug(
         f"[fetch_session_ids] Loaded {len(session_list)} sessions for user_id={user_id}"
     )
     return session_list
@@ -429,19 +444,13 @@ def post_query_to_fastapi(
         "use_reranker": use_reranker,
     }
 
-    logger.info(
-        f"[post_query_to_fastapi] Posting query for user_id={user_id}, session_id={session_id}, round_id={round_id}"
-    )
     logger.debug(
-        f"[post_query_to_fastapi] POST {endpoint} for user_id={user_id}, session_id={session_id}, round_id={round_id}"
-    )
-    logger.debug(
-        f"[post_query_to_fastapi] Payload: {payload} for user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        f"[post_query_to_fastapi] Posting query to endpoint={endpoint} for user_id={user_id}, session_id={session_id}, round_id={round_id}"
     )
 
     try:
         response = requests.post(endpoint, json=payload, stream=True)
-        logger.info(
+        logger.debug(
             f"[post_query_to_fastapi] POST succeeded for user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
         return response
@@ -889,7 +898,7 @@ def render_create_session_form(
         )
 
         try:
-            logger.info(
+            logger.debug(
                 f"[render_create_session_form] Creating session via API: "
                 f"user_id={user_id}, private={data['is_private']}"
             )
@@ -945,7 +954,7 @@ def render_create_session_form(
             ] + [new_session]
             st.session_state["current_session"] = new_session
 
-            logger.info(
+            logger.debug(
                 f"[render_create_session_form] Session created successfully: "
                 f"user_id={user_id}, session_id={new_session_id}"
             )
@@ -1225,7 +1234,7 @@ def render_edit_session_form(
     if "pending_edit_action" in st.session_state:
         action = st.session_state.pop("pending_edit_action")
         try:
-            logger.info(
+            logger.debug(
                 f"[render_edit_session_form] Processing session update request: "
                 f"user_id={user_id}, action={'DELETE' if action['delete'] else 'UPDATE'}, "
                 f"session_id={action['session_id']}, len(after_name)='{len(action['after_name'])}', "
@@ -1263,7 +1272,7 @@ def render_edit_session_form(
                 after_is_deleted=action["after_deleted"],
             )
 
-            logger.info(
+            logger.debug(
                 f"[render_edit_session_form] Session '{action['session_id']}' updated successfully for user_id={user_id}, session_id={action['session_id']}, deletion={action['delete']}"
             )
 
@@ -1381,7 +1390,7 @@ def render_load_more_button(
                 )
                 st.session_state["session_histories"][sid] = new_msgs
                 st.session_state["server_has_more"][sid] = has_more
-                logger.info(
+                logger.debug(
                     "[load_more] Loaded history up to limit=%d (has_more=%s) "
                     "for session_id=%s, user_id=%s",
                     limit,
@@ -1429,7 +1438,7 @@ def render_chat_messages(
           and st.session_state["feedback_form_type"]
     """
     displayed_round_ids: set[int] = set()
-    logger.info(
+    logger.debug(
         f"[render_chat_messages] Rendering chat for user_id={user_id}, session_id={session_id_for_display} with {len(messages)} messages"
     )
 
@@ -1481,7 +1490,7 @@ def render_chat_messages(
                 help="Delete this round",
                 disabled=disabled_ui,
             ):
-                logger.info(
+                logger.debug(
                     f"[render_chat_messages] Trash button clicked for round_id={msg.round_id} by user_id={user_id}"
                 )
                 st.session_state["confirm_delete_round_id"] = msg.round_id
@@ -1495,7 +1504,7 @@ def render_chat_messages(
                         if st.button(
                             LABELS.YES_DELETE, key=f"confirm_yes_{msg.round_id}"
                         ):
-                            logger.info(
+                            logger.debug(
                                 f"[render_chat_messages] Confirmed deletion for round_id={msg.round_id} by user_id={user_id}"
                             )
                             st.session_state["is_ui_locked"] = True
@@ -1515,7 +1524,7 @@ def render_chat_messages(
 
             # Good button
             if col_good.button("😊", key=f"good_{msg.id}", disabled=disabled_ui):
-                logger.info(
+                logger.debug(
                     f"[render_chat_messages] GOOD feedback for message_id={msg.id} by user_id={user_id}"
                 )
                 st.session_state["feedback_form_id"] = msg.id
@@ -1524,7 +1533,7 @@ def render_chat_messages(
 
             # Bad button
             if col_bad.button("😞", key=f"bad_{msg.id}", disabled=disabled_ui):
-                logger.info(
+                logger.debug(
                     f"[render_chat_messages] BAD feedback for message_id={msg.id} by user_id={user_id}"
                 )
                 st.session_state["feedback_form_id"] = msg.id
@@ -1546,10 +1555,10 @@ def render_chat_messages(
                             key="submit_feedback",
                             disabled=disabled_ui,
                         ):
-                            logger.info(
-                                f"[render_chat_messages] Submitting feedback for message_id={msg.id} by user_id={user_id}"
-                                f"type={st.session_state['feedback_form_type']} "
-                                f"reason='{feedback_reason}'"
+                            logger.debug(
+                                f"[render_chat_messages] Submitting feedback for message_id={msg.id}, by user_id={user_id}, "
+                                f"type={st.session_state['feedback_form_type']}, "
+                                f"len(reason)='{len(feedback_reason)}'"
                             )
                             st.session_state["is_ui_locked"] = True
                             st.session_state["ui_lock_reason"] = (
@@ -1594,7 +1603,7 @@ def render_chat_messages(
                 round_id=round_id,
                 deleted_by=deleted_by_user,
             )
-            logger.info(
+            logger.debug(
                 f"[render_chat_messages] Deleted round_id={round_id} by user={deleted_by_user}"
             )
             for m in messages:
@@ -1622,9 +1631,9 @@ def render_chat_messages(
     if "pending_feedback" in st.session_state:
         try:
             pending = st.session_state.pop("pending_feedback")
-            logger.info(
-                f"[render_chat_messages] Feedback submitted: message_id={pending['llm_output_id']} by user_id={user_id}"
-                f"type={pending['feedback_type']} reason='{pending['reason']}'"
+            logger.debug(
+                f"[render_chat_messages] Feedback submitted: message_id={pending['llm_output_id']} by user_id={user_id}, "
+                f"type={pending['feedback_type']}, len(reason)='{len(pending['reason'])}'"
             )
 
             if dev_cfg.simulate_backend_failure:
@@ -1748,11 +1757,8 @@ def render_user_chat_input(
             )
 
             user_input = st.session_state.pop("pending_user_input")
-            logger.info(
-                f"[render_user_chat_input] Query submitted by user_id={user_id}, session_id={session_id_for_display}"
-            )
             logger.debug(
-                f"[render_user_chat_input] Query submitted by user_id={user_id}, session_id={session_id_for_display}, user_input={user_input}"
+                f"[render_user_chat_input] Query submitted by user_id={user_id}, session_id={session_id_for_display}, len(user_input)={len(user_input)}"
             )
 
             if dev_cfg.simulate_unexpected_exception:
@@ -1794,13 +1800,21 @@ def render_user_chat_input(
             with st.chat_message("user"):
                 st.write(user_input)
 
-            logger.info(
-                f"[render_user_chat_input] Sending query to FastAPI: "
-                f"user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}, rag_mode={rag_mode}, reranker={use_reranker}"
-            )
+            messages_summary = [
+                {
+                    "role": (
+                        m["role"].value
+                        if hasattr(m["role"], "value")
+                        else str(m["role"])
+                    ),
+                    "len(msg)": len(m["content"]),
+                }
+                for m in messages_to_send
+            ]
+
             logger.debug(
                 f"[render_user_chat_input] Sending query to FastAPI: "
-                f"user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}, rag_mode={rag_mode}, reranker={use_reranker}, messages_to_send={messages_to_send}"
+                f"user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}, rag_mode={rag_mode}, reranker={use_reranker}, messages_summary={messages_summary}"
             )
 
             # 3) Post to FastAPI (streaming)
@@ -1846,7 +1860,7 @@ def render_user_chat_input(
                 )
                 return
 
-            logger.info(
+            logger.debug(
                 f"[render_user_chat_input] Streaming response started for user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}"
             )
 

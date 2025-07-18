@@ -13,12 +13,9 @@ from uuid import UUID
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
-from mysql.connector import errors as mysql_errors
 from mysql.connector.pooling import MySQLConnectionPool
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
-from psycopg2 import errors
-from psycopg2.errors import UniqueViolation
 from psycopg2.pool import SimpleConnectionPool
 
 from ragpon import (
@@ -84,10 +81,10 @@ logging.basicConfig(
 logging.getLogger("ragpon.apps.fastapi").setLevel(app_level)
 
 # Log the resolved log levels
-logger.info(
+logger.debug(
     f"[Startup] RAGPON_APP_LOG_LEVEL resolved to {logging.getLevelName(app_level)}"
 )
-logger.info(
+logger.debug(
     f"[Startup] RAGPON_OTHER_LOG_LEVEL resolved to {logging.getLevelName(other_level)}"
 )
 
@@ -114,7 +111,7 @@ OPTIMIZED_QUERY_INSTRUCTION = get_optimized_query_instruction()
 
 try:
     client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
-    logger.info(
+    logger.debug(
         f"[Startup] OpenAI client initialized: model={MODEL_NAME}, deployment={DEPLOYMENT_ID}, type={OPENAI_TYPE}"
     )
 except Exception:
@@ -131,7 +128,7 @@ try:
             user="postgres",
             password="postgres123",
         )
-        logger.info("[Startup] PostgreSQL connection pool initialized")
+        logger.debug("[Startup] PostgreSQL connection pool initialized")
     elif DB_TYPE == "mysql":
         db_pool = MySQLConnectionPool(
             pool_name="ragpon_pool",
@@ -144,7 +141,7 @@ try:
             autocommit=False,
             charset="utf8mb4",
         )
-        logger.info("[Startup] MySQL connection pool initialised")
+        logger.debug("[Startup] MySQL connection pool initialised")
 except Exception:
     logger.exception("[Startup] Failed to initialize PostgreSQL connection pool")
     raise
@@ -152,7 +149,7 @@ except Exception:
 base_path = Path(__file__).parent
 try:
     config = Config(config_file=base_path / "config" / "sample_config.yml")
-    logger.info("[Startup] Config file loaded successfully")
+    logger.debug("[Startup] Config file loaded successfully")
 except Exception:
     logger.exception("[Startup] Failed to load configuration file")
     raise
@@ -173,12 +170,12 @@ else:
 
 try:
     embedder = ChromaDBEmbeddingAdapter(RuriLargeEmbedder(config=config))
-    logger.info("[Startup] Embedder initialized successfully")
+    logger.debug("[Startup] Embedder initialized successfully")
 except Exception:
     logger.exception("[Startup] Failed to initialize embedder")
     raise
 
-logger.info(f"[Startup] use_chromadb = {use_chromadb}, use_bm25 = {use_bm25}")
+logger.debug(f"[Startup] use_chromadb = {use_chromadb}, use_bm25 = {use_bm25}")
 
 # Instantiate repositories only if enabled in config
 if use_chromadb:
@@ -194,7 +191,7 @@ if use_chromadb:
             http_url="chromadb",
             port=8007,
         )
-        logger.info("[Startup] ChromaDB repository initialized")
+        logger.debug("[Startup] ChromaDB repository initialized")
     except Exception:
         logger.exception("[Startup] Failed to initialize ChromaDB repository")
         raise
@@ -210,7 +207,7 @@ if use_bm25:
             result_class=Document,
             tokenizer=SudachiTokenizer(),
         )
-        logger.info("[Startup] BM25 repository initialized")
+        logger.debug("[Startup] BM25 repository initialized")
     except Exception:
         logger.exception("[Startup] Failed to initialize BM25 repository")
         raise
@@ -243,7 +240,7 @@ try:
             f"[Startup] TOP_K_BM25={DEFAULT_TOP_K_BM25} may be too large and impact performance"
         )
 
-    logger.info(
+    logger.debug(
         f"[Startup] Retrieval parameters loaded: "
         f"TOP_K_CHROMADB={DEFAULT_TOP_K_CHROMA}, "
         f"TOP_K_BM25={DEFAULT_TOP_K_BM25}, "
@@ -488,6 +485,9 @@ def generate_queries_from_history(
     session_id: str,
     messages_list: list[dict[str, str]],
     system_instructions: str,
+    client: OpenAI | AzureOpenAI,
+    model_name: str,
+    model_type: Literal["openai", "azure"],
 ) -> list[str]:
     """
     Generate multiple search queries from a given conversation history.
@@ -512,6 +512,9 @@ def generate_queries_from_history(
             multiple queries in JSON format, for example:
             "You are a helpful assistant. Return an array of objects with
              a 'query' key in each."
+        client (OpenAI | AzureOpenAI): OpenAI-compatible client instance.
+        model_name (str): Model name or Azure deployment ID.
+        model_type (Literal['openai','azure']): Backend type indicator.
 
     Returns:
         list[str]: A list of query strings extracted from the model's JSON output.
@@ -520,28 +523,26 @@ def generate_queries_from_history(
         ValueError: If the JSON returned by the model is malformed or missing
             the expected structure.
     """
-    # 1) Build the messages for the ChatCompletion request
+    # Build the messages for the ChatCompletion request
     #    We'll append a final system message at the end
     final_messages = messages_list + [
         {"role": "system", "content": system_instructions}
     ]
 
-    # 2) Prepare ChatCompletion arguments
-    kwargs = {
-        "model": MODEL_NAME,
-        "messages": final_messages,
-        "temperature": 0.0,  # Lower temperature => more deterministic JSON
-    }
-
-    if OPENAI_TYPE == "azure" and DEPLOYMENT_ID is not None:
-        kwargs["model"] = DEPLOYMENT_ID
-
-    # 3) Call the OpenAI ChatCompletion API
     try:
-        response = client.chat.completions.create(**kwargs)
+        response: ChatCompletion = call_llm_sync_with_handling(
+            client=client,
+            model=model_name,
+            messages=final_messages,
+            user_id=user_id,
+            session_id=session_id,
+            temperature=0.0,
+            stream=False,
+            model_type=model_type,
+        )
         raw_text = response.choices[0].message.content.strip()
         logger.info(
-            f"[generate_queries_from_history] Generated queries: user_id={user_id}, session_id={session_id}"
+            f"[generate_queries_from_history] Generated queries using OpenAI response: user_id={user_id}, session_id={session_id}"
         )
     except (IndexError, AttributeError) as exc:
         logger.exception(
@@ -554,7 +555,7 @@ def generate_queries_from_history(
         )
         raise ValueError("Failed to call language model") from exc
 
-    # 4) Parse the JSON output (expected: [{"query": "..."}])
+    # Parse the JSON output (expected: [{"query": "..."}])
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
@@ -569,7 +570,7 @@ def generate_queries_from_history(
         )
         raise ValueError(f"Expected a JSON list, got: {type(parsed)}")
 
-    # 5) Collect queries
+    # Collect queries
     queries = []
     for i, item in enumerate(parsed):
         if not isinstance(item, dict):
@@ -646,12 +647,12 @@ def generate_session_title(
             )
             raise ValueError("OpenAI returned empty title content")
         logger.info(
-            f"[generate_session_title] Title generated for user_id={user_id}, session_id={session_id}, len(query)='{len(query)}'"
+            f"[generate_session_title] Title generated using OpenAI response for user_id={user_id}, session_id={session_id}, len(query)='{len(query)}'"
         )
         return content
     except (IndexError, AttributeError) as exc:
         logger.exception(
-            f"[generate_session_title] Failed to extract title for user_id={user_id}, session_id={session_id}"
+            f"[generate_session_title] Failed to extract title using OpenAI response for user_id={user_id}, session_id={session_id}"
         )
         raise ValueError("OpenAI response missing expected content") from exc
 
@@ -778,7 +779,7 @@ def stream_and_persist_chat_response(
     """
 
     rerank_model = None  # If you want to pass something else, do so
-    logger.info(
+    logger.debug(
         f"[stream_and_persist_chat_response] Start: user_id={user_id}, session_id={session_id}, round_id={round_id}"
     )
 
@@ -910,7 +911,7 @@ def build_context_string(
 
         joined_lines = "\n".join(lines)
 
-        logger.info(
+        logger.debug(
             f"[build_context_string] Context built: user_id={user_id}, session_id={session_id}, total_chars={len(joined_lines)}"
         )
 
@@ -1021,7 +1022,7 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
     Returns:
         list[dict]: A list of session objects.
     """
-    logger.info(
+    logger.debug(
         f"[list_sessions] Fetching sessions: user_id={user_id}, app_name={app_name}"
     )
 
@@ -1063,7 +1064,7 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
             for row in rows
         ]
 
-        logger.info(
+        logger.debug(
             f"[list_sessions] Retrieved {len(sessions)} sessions for user_id={user_id}"
         )
 
@@ -1115,7 +1116,7 @@ async def list_session_queries(
     Raises:
         HTTPException: If the query fails due to database issues or unexpected errors.
     """
-    logger.info(
+    logger.debug(
         f"[list_session_queries] Start querying messages: user_id={user_id}, app_name={app_name}, session_id={session_id}"
     )
 
@@ -1212,7 +1213,7 @@ async def list_session_queries(
 
         unique_rounds: int = len({m.round_id for m in results})  # distinct rounds
 
-        logger.info(
+        logger.debug(
             "[list_session_queries] limit_rounds=%d → returned %d rounds (%d messages) "
             "(has_more=%s, user_id=%s, session_id=%s)",
             limit,
@@ -1721,7 +1722,14 @@ def _parse_request(data: dict, user_id: str, session_id: str) -> QueryRequest:
 
 
 def _build_retrieval_queries(
-    *, req: QueryRequest, user_query: str, user_id: str, session_id: str
+    *,
+    req: QueryRequest,
+    user_query: str,
+    user_id: str,
+    session_id: str,
+    client: OpenAI | AzureOpenAI,
+    model_name: str,
+    model_type: Literal["openai", "azure"],
 ) -> list[str]:
     """Generate optimized retrieval queries or fall back to the original user query.
 
@@ -1745,7 +1753,7 @@ def _build_retrieval_queries(
             - If optimization fails or results in an empty list, returns [user_query].
     """
     if req.rag_mode is not RagModeEnum.OPTIMIZED:
-        logger.info(
+        logger.debug(
             "[_build_retrieval_queries] Non-optimised path: "
             "user_id=%s, session_id=%s, round_id=%s, user_query_len=%d",
             user_id,
@@ -1760,6 +1768,9 @@ def _build_retrieval_queries(
             session_id=session_id,
             messages_list=req.messages,
             system_instructions=OPTIMIZED_QUERY_INSTRUCTION,
+            client=client,
+            model_name=model_name,
+            model_type=model_type,
         )
 
         if not queries:
@@ -2260,7 +2271,7 @@ async def handle_query(
 
     resolved_model_name = MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID
 
-    logger.info(
+    logger.debug(
         f"[handle_query] ⇢ user_id={user_id}, session_id={session_id}, "
         f"round_id={req.round_id}"
     )
@@ -2288,7 +2299,7 @@ async def handle_query(
     )
 
     if req.rag_mode is RagModeEnum.NO_RAG:
-        logger.info(
+        logger.debug(
             "[handle_query] Streaming in NO_RAG mode: "
             "user_id=%s, session_id=%s, round_id=%s",
             user_id,
@@ -2318,7 +2329,13 @@ async def handle_query(
         )
 
     queries: list[str] = _build_retrieval_queries(
-        req=req, user_query=user_query, user_id=user_id, session_id=session_id
+        req=req,
+        user_query=user_query,
+        user_id=user_id,
+        session_id=session_id,
+        client=client,
+        model_name=resolved_model_name,
+        model_type=OPENAI_TYPE,
     )
 
     search_results = _search_repositories(
