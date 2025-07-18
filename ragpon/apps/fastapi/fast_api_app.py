@@ -1355,15 +1355,18 @@ def create_session_with_limit(
                 )
             elif len(current_ids) == 10:
 
-                try:
-                    delete_target_uuid = UUID(payload.delete_target_session_id)
-                except ValueError as exc:
-                    logger.exception(
-                        f"[create_session_with_limit] Invalid delete_target_session_id: user_id={user_id}, session_id={payload.delete_target_session_id}"
-                    )
-                    raise HTTPException(
-                        status_code=400, detail="Invalid delete_target_session_id"
-                    ) from exc
+                if DB_TYPE == "postgresql":
+                    try:
+                        delete_target_uuid = UUID(payload.delete_target_session_id)
+                    except ValueError as exc:
+                        logger.exception(
+                            f"[create_session_with_limit] Invalid delete_target_session_id: user_id={user_id}, session_id={payload.delete_target_session_id}"
+                        )
+                        raise HTTPException(
+                            status_code=400, detail="Invalid delete_target_session_id"
+                        ) from exc
+                elif DB_TYPE == "mysql":
+                    delete_target_uuid = payload.delete_target_session_id
 
                 oldest = min(session_infos, key=lambda s: s["last_touched_at"])
                 if delete_target_uuid != oldest["session_id"]:
