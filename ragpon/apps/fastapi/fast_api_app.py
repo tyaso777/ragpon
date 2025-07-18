@@ -1278,6 +1278,28 @@ def create_session_with_limit(
     app_name: str,
     payload: CreateSessionWithLimitRequest,
 ):
+    """
+    Create a new session with validation of existing sessions and enforcement of session limits.
+
+    This endpoint ensures that:
+    - Existing sessions for the user and app are locked and validated for consistency.
+    - At most 10 non-deleted sessions exist; the oldest may be deleted to make room.
+    - A new session is inserted after validations pass.
+
+    Args:
+        user_id (str): ID of the user.
+        app_name (str): Name of the application.
+        payload (CreateSessionWithLimitRequest): Request payload with new session data,
+            known session IDs, and optional delete target.
+
+    Returns:
+        dict: Response containing a success message and the created session ID.
+
+    Raises:
+        HTTPException (400): If UUIDs are invalid or inputs are malformed.
+        HTTPException (409): If client-side session state is inconsistent with the server.
+        HTTPException (500): If the session count exceeds limit or a DB error occurs.
+    """
     try:
         logger.debug(
             f"[create_session_with_limit] Opening DB transaction for user_id={user_id}, app_name={app_name}"
@@ -1327,6 +1349,10 @@ def create_session_with_limit(
                 elif DB_TYPE == "mysql":
                     known_ids_as_uuid = sorted(k for k in payload.known_session_ids)
                 else:
+                    logger.error(
+                        f"[create_session_with_limit] Unsupported DB_TYPE: {DB_TYPE} "
+                        f"for user_id={user_id}, app_name={app_name}"
+                    )
                     raise HTTPException(
                         status_code=500, detail="Unsupported database type"
                     )
@@ -1341,8 +1367,13 @@ def create_session_with_limit(
             current_ids = sorted(s["session_id"] for s in session_infos)
 
             if set(current_ids) != set(known_ids_as_uuid):
-                logger.error(f"{set(current_ids)=}")
-                logger.error(f"{set(known_ids_as_uuid)=}")
+                logger.error(
+                    "[create_session_with_limit] Session ID mismatch: user_id=%s, app_name=%s, server_session_ids=%s, client_known_session_ids=%s",
+                    user_id,
+                    app_name,
+                    current_ids,
+                    known_ids_as_uuid,
+                )
 
                 raise HTTPException(
                     status_code=409,
@@ -1432,7 +1463,11 @@ def create_session_with_limit(
                 "session_id": new_session_id,
             }
 
-    except HTTPException:
+    except HTTPException as http_exc:
+        logger.warning(
+            f"[create_session_with_limit] HTTPException raised: status_code={http_exc.status_code}, "
+            f"detail={http_exc.detail}, user_id={user_id}, app_name={app_name}"
+        )
         raise
 
     except DatabaseError as exc:
@@ -1544,7 +1579,11 @@ def update_session_with_check(
 
             return {"message": "Session updated successfully", "session_id": session_id}
 
-    except HTTPException:
+    except HTTPException as http_exc:
+        logger.warning(
+            f"[update_session_with_check] HTTPException raised: status_code={http_exc.status_code}, "
+            f"detail={http_exc.detail}, user_id={user_id}, session_id={session_id}"
+        )
         raise
     except DatabaseError as exc:
         logger.exception(
@@ -1619,9 +1658,12 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
         )
         return JSONResponse({"status": "ok", "detail": "Messages logically deleted."})
 
-    except HTTPException:
+    except HTTPException as http_exc:
+        logger.warning(
+            f"[delete_round] HTTPException raised: status_code={http_exc.status_code}, "
+            f"detail={http_exc.detail}, user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        )
         raise
-
     except Exception as exc:
         logger.exception(
             f"[delete_round] Failed to logically delete round: user_id={user_id}, session_id={session_id}, round_id={round_id}"

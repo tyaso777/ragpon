@@ -53,7 +53,9 @@ class Labels:
     CHAT_INPUT_PLACEHOLDER: str = "ここに質問を入力してください..."
     # Feedback
     FEEDBACK_PROMPT: str = "📝 フィードバックを入力"
-    FEEDBACK_REASON: str = "理由（任意）"
+    FEEDBACK_REASON: str = (
+        "フィードバックの理由をご記入ください（任意・最大{max_feedback_length}文字）"
+    )
     SUBMIT_FEEDBACK: str = "✅ フィードバックを送信"
     CANCEL_FEEDBACK: str = "❌ フィードバックをキャンセル"
     FEEDBACK_GOOD: str = "😊"
@@ -69,12 +71,42 @@ class Labels:
 
 @dataclass(frozen=True)
 class ErrorLabels:
+    ACCESS_DENIED: str = "⚠️ アクセス権限がありません。担当者にご確認ください。"
+    APP_INITIALIZATION_FAILED: str = (
+        "⚠️ アプリの初期化に失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+    )
     # Session operations
-    SESSION_CREATION: str = "⚠️ セッションの作成に失敗しました。"
+    SESSION_LIST_LOAD_FAILED: str = (
+        "⚠️ セッション一覧の読み込みに失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+    )
+    SESSION_INDEX_RESOLVE_FAILED: str = (
+        "⚠️ セッションの初期選択処理に失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+    )
+    AUTO_SESSION_CREATION_FAILED: str = (
+        "⚠️ 初期セッションの作成に失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+    )
+    AUTO_SESSION_REGISTER_FAILED: str = (
+        "⚠️ 初期セッションの登録に失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+    )
+    SESSION_SELECTION_FAILED: str = (
+        "⚠️ セッションの選択時にエラーが発生しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+    )
+    SESSION_RADIO_RENDER_FAILED: str = (
+        "⚠️ セッション一覧の表示に失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+    )
+    MESSAGE_HISTORY_LOAD_FAILED: str = (
+        "⚠️ セッション履歴の読み込みに失敗しました。時間をおいて再接続してください。"
+        "問題が継続する場合は管理者に連絡してください。"
+    )
+    MESSAGE_DISPLAY_FAILED: str = (
+        "⚠️ メッセージの表示に失敗しました。セッション履歴の読み込みに失敗した可能性があります。時間をおいて再実行してください。問題が継続する場合は管理者に連絡してください。"
+    )
+
+    SESSION_CREATION_FAILED: str = "⚠️ セッションの作成に失敗しました。"
     # Feedback
-    FEEDBACK_SUBMISSION: str = "⚠️ フィードバックの送信に失敗しました。"
-    MESSAGE_DELETION: str = "⚠️ メッセージの削除に失敗しました。"
-    HISTORY_LOAD: str = "⚠️ 過去のメッセージの読み込みに失敗しました。"
+    FEEDBACK_SUBMISSION_FAILED: str = "⚠️ フィードバックの送信に失敗しました。"
+    MESSAGE_DELETION_FAILED: str = "⚠️ メッセージの削除に失敗しました。"
+    MESSAGE_HISTORY_APPEND_FAILED: str = "⚠️ 過去のメッセージの読み込みに失敗しました。"
     LLM_RESPONSE_FORMAT_ERROR: str = (
         "⚠️ アシスタントの応答が予期しない形式だったため、処理できませんでした。"
     )
@@ -108,17 +140,17 @@ class ErrorLabels:
         "時間をおいて再試行してください。"
     )
     # Generic
-    UNEXPECTED: str = "⚠️ 予期しないエラーが発生しました。"
-    UNEXPECTED_DURING_SESSION_CREATION: str = (
+    GENERIC_UNEXPECTED_ERROR: str = "⚠️ 予期しないエラーが発生しました。"
+    SESSION_CREATION_UNEXPECTED_ERROR: str = (
         "⚠️ セッションの作成に失敗しました。ネットワークに問題がある可能性があります。時間をおいて再試行してください。"
     )
-    UNEXPECTED_DURING_MESSAGE_SUBMISSION: str = (
+    MESSAGE_SUBMISSION_UNEXPECTED_ERROR: str = (
         "⚠️ メッセージの送信中に予期しないエラーが発生しました。"
     )
-    UNEXPECTED_DURING_MESSAGE_DELETION: str = (
+    MESSAGE_DELETION_UNEXPECTED_ERROR: str = (
         "⚠️ メッセージの削除中に予期しないエラーが発生しました。"
     )
-    UNEXPECTED_DURING_FEEDBACK_SUBMISSION: str = (
+    FEEDBACK_SUBMISSION_UNEXPECTED_ERROR: str = (
         "⚠️ フィードバック送信中に予期しないエラーが発生しました。"
     )
 
@@ -131,17 +163,20 @@ class WarningLabels:
     )
     NO_CONTEXT: str = "⚠️ 関連する情報が見つかりませんでした。"
     CONFIRM_DELETION_PROMPT: str = "本当にこの応答を削除してよろしいですか？"
+    PARSE_SYSTEM_MESSAGE_FAILED: str = (
+        "⚠️ 関連情報の表示に失敗しました（形式が正しくない可能性があります）。"
+    )
 
 
 @dataclass(frozen=True)
 class UiLockLabels:
-    CREATING_SESSION: str = "セッションを作成中..."
-    UPDATING_SESSION: str = "セッション情報を更新中..."
-    DELETING_SESSION: str = "セッションを削除中..."
-    DELETING_ROUND: str = "応答を削除中..."
-    SENDING_MESSAGE: str = "メッセージを送信中..."
-    LOADING_HISTORY: str = "履歴を読み込み中..."
-    SUBMITTING_FEEDBACK: str = "フィードバックを送信中..."
+    CREATING_SESSION: str = "⏳ セッションを作成中..."
+    UPDATING_SESSION: str = "⏳ セッション情報を更新中..."
+    DELETING_SESSION: str = "⏳ セッションを削除中..."
+    DELETING_ROUND: str = "⏳ 応答を削除中..."
+    SENDING_MESSAGE: str = "⏳ メッセージを送信中..."
+    LOADING_HISTORY: str = "⏳ 履歴を読み込み中..."
+    SUBMITTING_FEEDBACK: str = "⏳ フィードバックを送信中..."
 
 
 LABELS = Labels()
@@ -163,6 +198,8 @@ class DevTestConfig:
     simulate_unexpected_exception: bool = False
 
 
+EMPLOYEE_CLASS_ALLOWED_IDS: Final[set[str]] = {"70", "80", "99"}
+
 # Role priority for stable, explicit ordering
 ROLE_ORDER: Final[dict[str, int]] = {
     "user": 0,
@@ -176,10 +213,17 @@ DEFAULT_MESSAGE_LIMIT: int = 10  # initial + increment size
 MAX_MESSAGE_LIMIT: int = 100  # client-side sliding window cap
 # NOTE: Must be **≥ Streamlit-side MAX_MESSAGE_LIMIT (100)** so the server
 #       never rejects a limit value the client may legally send.
+MAX_FEEDBACK_LENGTH = 500
 
-MAX_CHAT_INPUT_LENGTH: int = (
-    1000  # Prevent overly long queries from breaking the system
-)
+# Prevent overly long queries from breaking the system
+MAX_CHAT_INPUT_LENGTH: int = 1000
+
+APP_NAME: str = "search_regulations"
+SERVER_URL: str = "http://ragpon-fastapi:8006"
+
+# Number of messages to keep in the chat with the assistant
+NUM_OF_PREV_MSG_WITH_LLM: int = 6
+
 
 # Set root logger level from environment (default: WARNING)
 other_level_str = os.getenv("RAGPON_OTHER_LOG_LEVEL", "WARNING").upper()
@@ -592,6 +636,10 @@ def post_create_session_with_limit(
 
     Returns:
         str: The created session_id
+
+    Raises:
+        requests.exceptions.HTTPError: If the server returns an HTTP error status.
+        requests.exceptions.RequestException: For network or connection issues.
     """
     endpoint = (
         f"{server_url}/users/{user_id}/apps/{app_name}/sessions/create_with_limit"
@@ -606,10 +654,25 @@ def post_create_session_with_limit(
     }
     if delete_target_session_id:
         payload["delete_target_session_id"] = delete_target_session_id
+    try:
+        response = requests.post(endpoint, json=payload)
+        response.raise_for_status()
+        return response.json()["session_id"]
 
-    response = requests.post(endpoint, json=payload)
-    response.raise_for_status()
-    return response.json()["session_id"]
+    except requests.exceptions.HTTPError as http_err:
+        # Log detailed error with status and body
+        status_code = http_err.response.status_code
+        error_body = http_err.response.text
+        logger.exception(
+            f"[post_create_session_with_limit] HTTPError: status={status_code}, user_id={user_id}, app_name={app_name}, body={error_body}"
+        )
+        raise
+
+    except requests.exceptions.RequestException as req_err:
+        logger.exception(
+            f"[post_create_session_with_limit] RequestException: user_id={user_id}, app_name={app_name}, error={req_err}"
+        )
+        raise
 
 
 def delete_round(
@@ -671,9 +734,126 @@ def patch_feedback(
 #################################
 
 
+def check_access_control(user_id: str, employee_class_id: str) -> None:
+    """
+    Check whether the given employee_class_id is allowed to access the app.
+
+    If the ID is not in the allowed set, an error message is shown and execution is halted.
+
+    Args:
+        user_id (str): The ID of the current user (for logging).
+        employee_class_id (str): The employee class ID of the current user.
+
+    Side Effects:
+        - Logs an access denial event with user ID.
+        - Displays an error message via Streamlit.
+        - Calls st.stop() to terminate the app flow if access is denied.
+    """
+    if employee_class_id not in EMPLOYEE_CLASS_ALLOWED_IDS:
+        logger.warning(
+            f"[check_access_control] Access denied for user_id={user_id}, employee_class_id={employee_class_id}"
+        )
+        st.error(ERROR_LABELS.ACCESS_DENIED)
+        st.stop()
+
+
 def is_debug_session_active() -> bool:
     sessions = st.session_state.get("session_ids", [])
     return any(s.session_name == DEBUG_SESSION_TRIGGER for s in sessions)
+
+
+def inject_header_css(app_title: str) -> None:
+    """Inject CSS to fix the Streamlit header and display a centered title.
+
+    This makes the header fixed at the top, adds a custom title via a ::before
+    pseudo-element, and shifts the page content down so nothing is hidden.
+
+    Args:
+        app_title: The title string to render in the header.
+    """
+    st.markdown(
+        f"""
+        <style>
+        header.stAppHeader {{
+            position: fixed !important;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000;
+            background-color: #f9f9f9;
+            border-bottom: 1px solid #ccc;
+        }}
+
+        header.stAppHeader:before {{
+            content: "{app_title}";
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            top: 0.75rem;
+            display: block;
+            font-size: 1.8rem;
+            font-weight: 600;
+            color: #333;
+            font-family: 'Segoe UI', sans-serif;
+            white-space: nowrap;
+        }}
+
+        [data-testid="stAppViewContainer"] > .main > .block-container {{
+            padding-top: 3rem;
+            padding-bottom: 1rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def hide_streamlit_deploy_button() -> None:
+    """Hide the Streamlit deploy button in the app header."""
+    st.markdown(
+        """
+        <style>
+            .stAppDeployButton { display: none; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def setup_ui_locking() -> bool:
+    """Ensure UI locking state is initialized and display a warning if locked.
+
+    This sets default session_state values for UI locking. If the UI is locked,
+    a warning with the lock reason is shown in the sidebar.
+
+    Returns:
+        bool: True if UI is locked, False otherwise.
+    """
+    st.session_state.setdefault("is_ui_locked", False)
+    st.session_state.setdefault("ui_lock_reason", "")
+
+    is_locked: bool = st.session_state["is_ui_locked"]
+    if is_locked:
+        st.sidebar.warning(st.session_state["ui_lock_reason"])
+    return is_locked
+
+
+def initialize_session_state(user_id: str) -> None:
+    """Initialize session state variables for the current user.
+
+    Args:
+        user_id: The ID of the user to store in session_state.
+    """
+    st.session_state.setdefault("current_session", None)
+    st.session_state.setdefault("show_edit_form", False)
+    st.session_state.setdefault("session_histories", {})
+    st.session_state.setdefault("server_has_more", {})
+    st.session_state.setdefault("show_create_form", False)
+    if "user_id" not in st.session_state:
+        st.session_state["user_id"] = user_id
+        logger.info(
+            f"[initialize_session_state] user_id={user_id} has logged in to the app."
+        )
 
 
 def render_dev_test_settings() -> None:
@@ -822,12 +1002,19 @@ def load_session_ids(server_url: str, user_id: str, app_name: str) -> list[Sessi
     Returns:
         list[SessionData]: A list of active session metadata objects.
     """
-    # Ensure that session_ids is initialized in the session state.
-    if "session_ids" not in st.session_state:
-        st.session_state["session_ids"] = fetch_session_ids(
-            server_url, user_id, app_name
+    try:
+        # Ensure that session_ids is initialized in the session state.
+        if "session_ids" not in st.session_state:
+            st.session_state["session_ids"] = fetch_session_ids(
+                server_url=server_url, user_id=user_id, app_name=app_name
+            )
+        return st.session_state["session_ids"]
+    except Exception:
+        logger.exception(
+            f"[load_session_ids] Failed to fetch sessions for user_id={user_id}"
         )
-    return st.session_state["session_ids"]
+        st.error(ERROR_LABELS.SESSION_LIST_LOAD_FAILED)
+        st.stop()
 
 
 def render_create_session_form(
@@ -1016,14 +1203,14 @@ def render_create_session_form(
             logger.exception(
                 f"[render_create_session_form] API request failed for user_id={user_id}"
             )
-            st.session_state["error_message"] = ERROR_LABELS.SESSION_CREATION
+            st.session_state["error_message"] = ERROR_LABELS.SESSION_CREATION_FAILED
 
         except Exception:
             logger.exception(
                 f"[render_create_session_form] Unexpected error for user_id={user_id}"
             )
             st.session_state["error_message"] = (
-                ERROR_LABELS.UNEXPECTED_DURING_SESSION_CREATION
+                ERROR_LABELS.SESSION_CREATION_UNEXPECTED_ERROR
             )
 
         finally:
@@ -1084,11 +1271,16 @@ def render_session_list(
                 )
 
             except requests.exceptions.RequestException as exc:
-                st.sidebar.error(f"Failed to register default session to server: {exc}")
+                logger.exception(
+                    f"[render_session_list] Failed to register session: user_id={user_id}"
+                )
+                st.sidebar.error(ERROR_LABELS.AUTO_SESSION_REGISTER_FAILED)
                 st.stop()
-            except Exception as e:
-                # Catch simulated or unexpected errors like RuntimeError
-                st.sidebar.error(f"Auto session creation failed: {e}")
+            except Exception:
+                logger.exception(
+                    f"[render_session_list] Failed to create session: user_id={user_id}"
+                )
+                st.sidebar.error(ERROR_LABELS.SESSION_CREATION_FAILED)
                 st.stop()
 
             new_session = SessionData(
@@ -1114,45 +1306,54 @@ def render_session_list(
     )
     # 2) Determine default index to match current_session
     current_idx: int = 0
-    current_session = st.session_state["current_session"]
-    for idx, session in enumerate(sorted_sessions):
-        if session.session_id == current_session.session_id:
-            current_idx = idx
-            break
-    # 3) Render radio with explicit index
+    try:
+        current_session = st.session_state["current_session"]
+        for idx, session in enumerate(sorted_sessions):
+            if session.session_id == current_session.session_id:
+                current_idx = idx
+                break
+    except Exception:
+        logger.exception(
+            f"[render_session_list] Failed to determine default session index: user_id={user_id}"
+        )
+        st.sidebar.error(ERROR_LABELS.SESSION_INDEX_RESOLVE_FAILED)
+        st.stop()
 
-    # 3-1) Sort sessions newest-first
-    # sorted_sessions: list[SessionData] = sorted(
-    #     st.session_state["session_ids"],
-    #     key=lambda x: x.last_touched_at,
-    #     reverse=True,
-    # )
+    try:
+        # 3-3) Define callback to update current_session when selection changes
+        def _on_session_change() -> None:
+            """Update the current_session when the user selects a different session."""
+            try:
+                st.session_state["current_session"] = st.session_state[
+                    "unique_session_radio"
+                ]
+            except Exception:
+                logger.exception(
+                    f"[render_session_list] Failed to update current_session during radio selection: user_id={user_id}"
+                )
+                st.sidebar.error(ERROR_LABELS.SESSION_SELECTION_FAILED)
+                st.stop()
 
-    # 3-2) Determine default index to match current_session
-    current_idx: int = 0
-    current_session = st.session_state["current_session"]
-    for idx, session in enumerate(sorted_sessions):
-        if session.session_id == current_session.session_id:
-            current_idx = idx
-            break
-
-    # 3-3) Define callback to update current_session when selection changes
-    def _on_session_change() -> None:
-        """Update the current_session when the user selects a different session."""
-        st.session_state["current_session"] = st.session_state["unique_session_radio"]
-
-    # 3-4) Render radio with explicit index and callback
-    selected_session_data: SessionData = st.sidebar.radio(
-        LABELS.SELECT_SESSION,
-        options=sorted_sessions,
-        index=current_idx,
-        format_func=lambda x: (
-            f"{x.session_name} (Private)" if x.is_private_session else x.session_name
-        ),
-        key="unique_session_radio",
-        on_change=_on_session_change,
-        disabled=disabled_ui,
-    )
+        # 3-4) Render radio with explicit index and callback
+        selected_session_data: SessionData = st.sidebar.radio(
+            LABELS.SELECT_SESSION,
+            options=sorted_sessions,
+            index=current_idx,
+            format_func=lambda x: (
+                f"{x.session_name} (Private)"
+                if x.is_private_session
+                else x.session_name
+            ),
+            key="unique_session_radio",
+            on_change=_on_session_change,
+            disabled=disabled_ui,
+        )
+    except Exception:
+        logger.exception(
+            f"[render_session_list] Failed to render session radio: user_id={user_id}"
+        )
+        st.sidebar.error(ERROR_LABELS.SESSION_RADIO_RENDER_FAILED)
+        st.stop()
 
     # Update the current session in session_state
     st.session_state["current_session"] = selected_session_data
@@ -1160,15 +1361,23 @@ def render_session_list(
 
     # If we haven't loaded this session before, fetch from the server
     if selected_session_id not in st.session_state["session_histories"]:
-        msgs, has_more = fetch_session_history(
-            server_url=server_url,
-            user_id=user_id,
-            app_name=app_name,
-            session_id=selected_session_id,
-            limit=DEFAULT_MESSAGE_LIMIT,
-        )
-        st.session_state["session_histories"][selected_session_id] = msgs
-        st.session_state["server_has_more"][selected_session_id] = has_more
+        try:
+            msgs, has_more = fetch_session_history(
+                server_url=server_url,
+                user_id=user_id,
+                app_name=app_name,
+                session_id=selected_session_id,
+                limit=DEFAULT_MESSAGE_LIMIT,
+            )
+            st.session_state["session_histories"][selected_session_id] = msgs
+            st.session_state["server_has_more"][selected_session_id] = has_more
+        except Exception:
+            logger.exception(
+                f"[render_session_list] Failed to fetch session history: user_id={user_id}, session_id={selected_session_id}"
+            )
+            st.sidebar.error(ERROR_LABELS.MESSAGE_HISTORY_LOAD_FAILED)
+            st.stop()
+
     return selected_session_data
 
 
@@ -1358,6 +1567,38 @@ def render_edit_session_form(
             st.rerun()
 
 
+def get_current_session_messages(user_id: str) -> tuple[str, list[Message]]:
+    """Retrieve the current session ID and its sorted messages.
+
+    Handles errors by showing a user-facing message and stopping the app.
+
+    Args:
+        user_id (str): The user ID, used for logging context.
+
+    Returns:
+        tuple[str, list[Message]]: A tuple of (current_session_id, sorted messages list).
+    """
+    try:
+        current_session = st.session_state["current_session"]
+        current_session_id = current_session.session_id
+        messages = st.session_state["session_histories"][current_session_id]
+        messages.sort(
+            key=lambda m: (
+                m.round_id,
+                ROLE_ORDER.get(m.role, 99),  # unknown roles sink to the end
+            )
+        )
+        return current_session_id, messages
+    except Exception:
+        logger.exception(
+            f"[get_current_session_messages] Failed to retrieve or sort messages: "
+            f"user_id={user_id}, session_id={locals().get('current_session_id', 'unknown')}"
+        )
+        # Show an error in the UI and stop execution
+        st.error(ERROR_LABELS.MESSAGE_DISPLAY_FAILED)
+        st.stop()
+
+
 def render_load_more_button(
     *,
     session_id: str,
@@ -1424,13 +1665,15 @@ def render_load_more_button(
                     sid,
                     user_id,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception:
                 logger.exception(
                     "[load_more] Failed to load more rounds: session_id=%s, user_id=%s",
                     sid,
                     user_id,
                 )
-                st.session_state["chat_error_message"] = ERROR_LABELS.HISTORY_LOAD
+                st.session_state["chat_error_message"] = (
+                    ERROR_LABELS.MESSAGE_HISTORY_APPEND_FAILED
+                )
             finally:
                 # Always rerun so that UI (button disable, new messages) updates
                 st.session_state["is_ui_locked"] = False
@@ -1441,7 +1684,7 @@ def render_load_more_button(
 def render_chat_messages(
     messages: list[Message],
     server_url: str,
-    session_id_for_display: str,
+    current_session_id: str,
     user_id: str,
     disabled_ui: bool,
 ) -> None:
@@ -1452,7 +1695,7 @@ def render_chat_messages(
     Args:
         messages (list[Message]): The list of messages in the conversation.
         server_url (str): The base URL of the FastAPI server.
-        session_id_for_display (str): The current session's ID.
+        current_session_id (str): The current session's ID.
         user_id (str): The user ID for the current user.
         disabled_ui (bool): If True, disables feedback and deletion buttons during ongoing operations.
 
@@ -1465,7 +1708,7 @@ def render_chat_messages(
     """
     displayed_round_ids: set[int] = set()
     logger.debug(
-        f"[render_chat_messages] Rendering chat for user_id={user_id}, session_id={session_id_for_display} with {len(messages)} messages"
+        f"[render_chat_messages] Rendering chat for user_id={user_id}, session_id={current_session_id} with {len(messages)} messages"
     )
 
     dev_cfg: DevTestConfig = st.session_state.get("dev_test_config", DevTestConfig())
@@ -1496,10 +1739,11 @@ def render_chat_messages(
                             )
                 else:
                     st.caption(WARNING_LABELS.NO_CONTEXT)
-            except Exception as e:
-                st.warning("Failed to parse system message content.")
-                st.exception(e)
-            continue  # system message does not need feedback UI
+            except Exception:
+                st.caption(WARNING_LABELS.PARSE_SYSTEM_MESSAGE_FAILED)
+                logger.exception(
+                    f"[render_chat_messages] Failed to parse system message content in session_id={current_session_id}, user_id={user_id}"
+                )
 
         # For assistant messages, show the row of Trash/Good/Bad
         if msg.role == "assistant":
@@ -1570,8 +1814,11 @@ def render_chat_messages(
             if st.session_state.get("feedback_form_id") == msg.id:
                 with st.expander(LABELS.FEEDBACK_PROMPT, expanded=True):
                     feedback_reason = st.text_area(
-                        LABELS.FEEDBACK_REASON,
+                        LABELS.FEEDBACK_REASON.format(
+                            max_feedback_length=MAX_FEEDBACK_LENGTH
+                        ),
                         key="feedback_reason",
+                        max_chars=MAX_FEEDBACK_LENGTH,
                         disabled=disabled_ui,
                     )
                     col1, col2 = st.columns(2)
@@ -1625,7 +1872,7 @@ def render_chat_messages(
 
             delete_round(
                 server_url=server_url,
-                session_id=session_id_for_display,
+                session_id=current_session_id,
                 round_id=round_id,
                 deleted_by=deleted_by_user,
             )
@@ -1635,18 +1882,20 @@ def render_chat_messages(
             for m in messages:
                 if m.round_id == round_id:
                     m.is_deleted = True
-            st.session_state["session_histories"][session_id_for_display] = messages
+            st.session_state["session_histories"][current_session_id] = messages
         except requests.exceptions.RequestException as e:
             logger.warning(
                 f"[render_chat_messages] RequestException while deleting round_id={round_id} for user_id={user_id}: {e}"
             )
-            st.session_state["chat_error_message"] = ERROR_LABELS.MESSAGE_DELETION
+            st.session_state["chat_error_message"] = (
+                ERROR_LABELS.MESSAGE_DELETION_FAILED
+            )
         except Exception:
             logger.exception(
                 f"[render_chat_messages] Unexpected error while deleting round_id={round_id} for user_id={user_id}"
             )
             st.session_state["chat_error_message"] = (
-                ERROR_LABELS.UNEXPECTED_DURING_MESSAGE_DELETION
+                ERROR_LABELS.MESSAGE_DELETION_UNEXPECTED_ERROR
             )
         finally:
             st.session_state["is_ui_locked"] = False
@@ -1677,7 +1926,7 @@ def render_chat_messages(
                 feedback=pending["feedback_type"],
                 reason=pending["reason"],
                 user_id=user_id,
-                session_id=session_id_for_display,
+                session_id=current_session_id,
             )
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
@@ -1685,7 +1934,9 @@ def render_chat_messages(
             logger.exception(
                 f"[render_chat_messages] RequestException while submitting feedback for message_id={pending['llm_output_id']} by user_id={user_id}"
             )
-            st.session_state["chat_error_message"] = ERROR_LABELS.FEEDBACK_SUBMISSION
+            st.session_state["chat_error_message"] = (
+                ERROR_LABELS.FEEDBACK_SUBMISSION_FAILED
+            )
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
         except Exception:
@@ -1693,7 +1944,7 @@ def render_chat_messages(
                 f"[render_chat_messages] Unexpected error while submitting feedback for message_id={pending['llm_output_id']} by user_id={user_id}"
             )
             st.session_state["chat_error_message"] = (
-                ERROR_LABELS.UNEXPECTED_DURING_FEEDBACK_SUBMISSION
+                ERROR_LABELS.FEEDBACK_SUBMISSION_UNEXPECTED_ERROR
             )
             st.session_state["feedback_form_id"] = None
             st.session_state["feedback_form_type"] = None
@@ -1708,7 +1959,7 @@ def render_user_chat_input(
     server_url: str,
     user_id: str,
     app_name: str,
-    session_id_for_display: str,
+    current_session_id: str,
     num_of_prev_msg_with_llm: int,
     disabled_ui: bool,
 ) -> None:
@@ -1722,7 +1973,7 @@ def render_user_chat_input(
         server_url (str): The base URL of the FastAPI server.
         user_id (str): The ID of the current user.
         app_name (str): The name of the application.
-        session_id_for_display (str): The session ID for which messages are posted.
+        current_session_id (str): The session ID for which messages are posted.
         num_of_prev_msg_with_llm (int): Number of previous messages to send to the LLM.
         disabled_ui (bool): If True, disables input widgets during ongoing operations.
 
@@ -1784,7 +2035,7 @@ def render_user_chat_input(
 
             user_input = st.session_state.pop("pending_user_input")
             logger.debug(
-                f"[render_user_chat_input] Query submitted by user_id={user_id}, session_id={session_id_for_display}, len(user_input)={len(user_input)}"
+                f"[render_user_chat_input] Query submitted by user_id={user_id}, session_id={current_session_id}, len(user_input)={len(user_input)}"
             )
 
             if dev_cfg.simulate_unexpected_exception:
@@ -1793,7 +2044,9 @@ def render_user_chat_input(
                 )
 
             # 2a) Build the short array of recent non-deleted messages
-            last_msgs = last_n_non_deleted(messages, num_of_prev_msg_with_llm)
+            last_msgs = last_n_non_deleted(
+                messages=messages, n=num_of_prev_msg_with_llm
+            )
             messages_to_send = [
                 {"role": m.role, "content": m.content}
                 for m in last_msgs
@@ -1840,7 +2093,7 @@ def render_user_chat_input(
 
             logger.debug(
                 f"[render_user_chat_input] Sending query to FastAPI: "
-                f"user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}, rag_mode={rag_mode}, reranker={use_reranker}, messages_summary={messages_summary}"
+                f"user_id={user_id}, session_id={current_session_id}, round_id={new_round_id}, rag_mode={rag_mode}, reranker={use_reranker}, messages_summary={messages_summary}"
             )
 
             # 3) Post to FastAPI (streaming)
@@ -1854,7 +2107,7 @@ def render_user_chat_input(
                     server_url=server_url,
                     user_id=user_id,
                     app_name=app_name,
-                    session_id=session_id_for_display,
+                    session_id=current_session_id,
                     messages_list=messages_to_send,
                     user_msg_id=user_msg_id,
                     system_msg_id=system_msg_id,
@@ -1869,7 +2122,7 @@ def render_user_chat_input(
                     # Another tab beat us; advise user to refresh
                     logger.exception(
                         "[render_user_chat_input] FastAPI returned 409 Conflict — "
-                        f"session is stale. user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}"
+                        f"session is stale. user_id={user_id}, session_id={current_session_id}, round_id={new_round_id}"
                     )
                     st.error(ERROR_LABELS.SESSION_EDIT_HTTP_409)
                     st.stop()
@@ -1879,15 +2132,15 @@ def render_user_chat_input(
 
             except requests.exceptions.RequestException as e:
                 logger.exception(
-                    f"[render_user_chat_input] Failed to post query to FastAPI for user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}"
+                    f"[render_user_chat_input] Failed to post query to FastAPI for user_id={user_id}, session_id={current_session_id}, round_id={new_round_id}"
                 )
                 st.session_state["chat_error_message"] = (
-                    ERROR_LABELS.UNEXPECTED_DURING_MESSAGE_SUBMISSION
+                    ERROR_LABELS.MESSAGE_SUBMISSION_UNEXPECTED_ERROR
                 )
                 return
 
             logger.debug(
-                f"[render_user_chat_input] Streaming response started for user_id={user_id}, session_id={session_id_for_display}, round_id={new_round_id}"
+                f"[render_user_chat_input] Streaming response started for user_id={user_id}, session_id={current_session_id}, round_id={new_round_id}"
             )
 
             # 4) Stream partial assistant responses
@@ -1996,26 +2249,28 @@ def render_user_chat_input(
             if new_round_id == 0:
                 # Force re-fetch so the updated title from the backend is shown
                 st.session_state["session_ids"] = fetch_session_ids(
-                    server_url, user_id, app_name
+                    server_url=server_url, user_id=user_id, app_name=app_name
                 )
                 # Update current_session to include the new title
                 for sess in st.session_state["session_ids"]:
-                    if sess.session_id == session_id_for_display:
+                    if sess.session_id == current_session_id:
                         st.session_state["current_session"] = sess
                         break
 
             # 7) Refresh sidebar ordering locally
             now = datetime.now(timezone.utc)
             for s in st.session_state["session_ids"]:
-                if s.session_id == session_id_for_display:
+                if s.session_id == current_session_id:
                     s.last_touched_at = now
                     break
             st.session_state["session_ids"].sort(key=lambda x: x.last_touched_at)
         except Exception:
             logger.exception(
-                f"[render_user_chat_input] Unexpected error in main block for user_id={user_id}, session_id={session_id_for_display}"
+                f"[render_user_chat_input] Unexpected error in main block for user_id={user_id}, session_id={current_session_id}"
             )
-            st.session_state["chat_error_message"] = ERROR_LABELS.UNEXPECTED
+            st.session_state["chat_error_message"] = (
+                ERROR_LABELS.GENERIC_UNEXPECTED_ERROR
+            )
         finally:
             st.session_state["is_ui_locked"] = False
             st.session_state["ui_lock_reason"] = ""
@@ -2042,93 +2297,22 @@ def main(user_id: str, employee_class_id: str) -> None:
         employee_class_id (str): The employee class ID of the user, used for access control.
     """
 
-    # --- Access control check ---
-    allowed_ids = {"70", "80", "99"}
-    if employee_class_id not in allowed_ids:
-        st.error("アクセス権限がありません。担当者にご確認ください。")
+    try:
+        check_access_control(user_id=user_id, employee_class_id=employee_class_id)
+        inject_header_css(app_title=LABELS.APP_TITLE)
+        hide_streamlit_deploy_button()
+        disabled_ui = setup_ui_locking()
+        initialize_session_state(user_id=user_id)
+    except Exception:
+        logger.exception("[Main] Unexpected error during app setup.")
+        st.error(ERROR_LABELS.APP_INITIALIZATION_FAILED)
         st.stop()
-
-    # -- Header CSS: title, hide menu, shift content down
-    st.markdown(
-        """
-        <style>
-        header.stAppHeader {
-            background-color: #f9f9f9;  /* subtle background */
-            border-bottom: 1px solid #ccc;
-        }
-
-        header.stAppHeader:before {
-            content: """
-        + f'"{LABELS.APP_TITLE}";'
-        + """
-            display: block;
-            font-size: 1.8rem;
-            font-weight: 600;
-            color: #333;
-            padding: 0.75rem 1rem;
-            text-align: center;
-            font-family: 'Segoe UI', sans-serif;
-            white-space: nowrap;
-        }
-
-        /* Optional: Hide Streamlit menu button */
-        header.stAppHeader button[kind="icon"] {
-            display: none;
-        }
-
-        .block-container {
-            padding-top: 2rem;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # -- Hide Streamlit “Deploy” button
-    st.markdown(
-        """
-        <style>
-            .stAppDeployButton { display: none; }
-        </style>
-    """,
-        unsafe_allow_html=True,
-    )
-
-    # Initialize session state variables for UI locking
-    st.session_state.setdefault("is_ui_locked", False)
-    st.session_state.setdefault("ui_lock_reason", "")
-
-    disabled_ui = st.session_state["is_ui_locked"]
-
-    if disabled_ui:
-        st.sidebar.warning(f"⏳ {st.session_state['ui_lock_reason']}")
-
-    # Step 1: Initialize session state
-    if "current_session" not in st.session_state:
-        st.session_state["current_session"] = None
-    if "user_id" not in st.session_state:
-        st.session_state["user_id"] = user_id
-        logger.info(f"[Main] user_id={user_id} has logged in to the app.")
-    if "show_edit_form" not in st.session_state:
-        st.session_state["show_edit_form"] = False
-    if "session_histories" not in st.session_state:
-        st.session_state["session_histories"] = {}  # { session_id: [messages], ... }
-    if "server_has_more" not in st.session_state:
-        st.session_state["server_has_more"] = {}
-    if "show_create_form" not in st.session_state:
-        st.session_state["show_create_form"] = False
-
-    app_name: str = "search_regulations"
-    server_url: str = "http://ragpon-fastapi:8006"  # fixed server URL
-    num_of_prev_msg_with_llm: int = (
-        6  # Number of messages to keep in the chat with the assistant
-    )
 
     # Step 1.5: Show global error messages at the top of sidebar
     show_sidebar_error_message(user_id=user_id)
 
     # Step 2: Fetch list of sessions
-    load_session_ids(server_url=server_url, user_id=user_id, app_name=app_name)
+    load_session_ids(server_url=SERVER_URL, user_id=user_id, app_name=APP_NAME)
 
     # Step 2.5.1 ── Sync DevTestConfig from widget state
     # (Runs only when the special debug session "__DEBUG_MODE__" exists.)
@@ -2140,55 +2324,44 @@ def main(user_id: str, employee_class_id: str) -> None:
 
     # Step 3: Sidebar creation form
     render_create_session_form(
-        server_url=server_url,
+        server_url=SERVER_URL,
         user_id=user_id,
-        app_name=app_name,
+        app_name=APP_NAME,
         disabled_ui=disabled_ui,
     )
 
     # Step 4: Sidebar session list
     render_session_list(
         user_id=user_id,
-        app_name=app_name,
-        server_url=server_url,
+        app_name=APP_NAME,
+        server_url=SERVER_URL,
         disabled_ui=disabled_ui,
     )
 
     # Step 5: Sidebar edit/delete form
     render_edit_session_form(
         user_id=user_id,
-        app_name=app_name,
-        server_url=server_url,
+        app_name=APP_NAME,
+        server_url=SERVER_URL,
         disabled_ui=disabled_ui,
     )
 
     # Step 6: Display conversation messages
-    session_id_for_display = st.session_state["current_session"].session_id
-    messages: list[Message] = st.session_state["session_histories"][
-        session_id_for_display
-    ]
-
-    # Sort first by round_id, then by role priority
-    messages.sort(
-        key=lambda m: (
-            m.round_id,
-            ROLE_ORDER.get(m.role, 99),  # unknown roles sink to the end
-        )
-    )
+    current_session_id, messages = get_current_session_messages(user_id=user_id)
 
     render_load_more_button(
-        session_id=session_id_for_display,
-        server_url=server_url,
+        session_id=current_session_id,
+        server_url=SERVER_URL,
         user_id=user_id,
-        app_name=app_name,
+        app_name=APP_NAME,
         messages=messages,
         disabled_ui=disabled_ui,
     )
 
     render_chat_messages(
         messages=messages,
-        server_url=server_url,
-        session_id_for_display=session_id_for_display,
+        server_url=SERVER_URL,
+        current_session_id=current_session_id,
         user_id=user_id,
         disabled_ui=disabled_ui,
     )
@@ -2199,11 +2372,11 @@ def main(user_id: str, employee_class_id: str) -> None:
     # Step 7: Handle new user input
     render_user_chat_input(
         messages=messages,
-        server_url=server_url,
+        server_url=SERVER_URL,
         user_id=user_id,
-        app_name=app_name,
-        session_id_for_display=session_id_for_display,
-        num_of_prev_msg_with_llm=num_of_prev_msg_with_llm,
+        app_name=APP_NAME,
+        current_session_id=current_session_id,
+        num_of_prev_msg_with_llm=NUM_OF_PREV_MSG_WITH_LLM,
         disabled_ui=disabled_ui,
     )
 
