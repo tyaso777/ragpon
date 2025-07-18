@@ -12,7 +12,6 @@
          podman run -d `
          --name postgres `
          --network ragnet `
-         -p 5432:5432 `
          -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\apps\postgres\initdb:/docker-entrypoint-initdb.d:Z" `
          -v postgres:/var/lib/postgresql/data `
          -e POSTGRES_DB=postgres `
@@ -32,7 +31,6 @@
          podman run -d \
             --name postgres \
             --network ragnet \
-            -p 5432:5432 \
             -v postgres:/var/lib/postgresql/data \
             -v /home/user/ragpon/ragpon/apps/postgres/initdb:/docker-entrypoint-initdb.d:Z \
             -e POSTGRES_DB=postgres \
@@ -94,7 +92,6 @@
          podman run -it --rm `
             --name chromadb `
             --network ragnet `
-            -p 8007:8007 `
             -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon:/app:Z" `
             chroma-app
       ```
@@ -105,7 +102,6 @@
          podman run -it --rm \
             --name chromadb \
             --network ragnet \
-            -p 8007:8007 \
             -v /home/user/ragpon:/app:Z \
             chroma-app
       ```
@@ -119,13 +115,8 @@
             -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon:/app:Z" `
             -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\apps\logs:/app/logs:Z" `
             --workdir /app `
-            -e PYTHONPATH=/app `
+            --env-file "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\apps\fastapi\.env.win" `
             -e OPENAI_API_KEY=$Env:OPENAI_API_KEY `
-            -e RAGPON_OTHER_LOG_LEVEL=WARNING `
-            -e RAGPON_APP_LOG_LEVEL=DEBUG `
-            -e RAGPON_LOG_PATH=/app/logs/fastapi.log `
-            -e RAGPON_CONSOLE_LOG=False `
-            -p 8006:8006 `
             ragpon-fastapi `
             bash -c "
                unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && \
@@ -135,8 +126,6 @@
                      --workers 4
             "
       ```
-
-
 
    # For WSL podman.
       ```powershell
@@ -148,24 +137,12 @@
             -v /home/user/ragpon:/app:Z \
             -v /home/user/ragpon/ragpon/apps/logs:/app/logs:Z \
             --workdir /app \
-            -e PYTHONPATH=/app \
-            -e OPENAI_API_KEY=$OPENAI_API_KEY \
-            -e RAGPON_OTHER_LOG_LEVEL=WARNING \
-            -e RAGPON_APP_LOG_LEVEL=DEBUG \
-            -e RAGPON_LOG_PATH=/app/logs/fastapi.log \
-            -e RAGPON_CONSOLE_LOG=False \
-            -p 8006:8006 \
+            --env-file /home/user/ragpon/ragpon/apps/fastapi/.env \
             ragpon-fastapi \
             bash -c "\
-               # 1) clear any inherited proxy settings
+               # clear any inherited proxy settings
                unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && \
-               # 2) configure Azure OpenAI
-               export OPENAI_TYPE=azure && \
-               export AZURE_OPENAI_ENDPOINT=https://~~~.com && \
-               export AZURE_OPENAI_API_KEY=~~~ && \
-               export AZURE_OPENAI_DEPLOYMENT=gpt-4o && \
-               export AZURE_OPENAI_MODEL=2024-08-01-preview && \
-               # 3) start the FastAPI app with Uvicorn
+               # start the FastAPI app with Uvicorn
                uvicorn ragpon.apps.fastapi.fast_api_app:app \
                --host 0.0.0.0 \
                --port 8006 \
@@ -182,7 +159,6 @@
             -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\apps\logs:/app/logs:Z" `
             --workdir /app `
             -e PYTHONPATH=/app `
-            -e OPENAI_API_KEY=$Env:OPENAI_API_KEY `
             -e STREAMLIT_CONFIG_FILE=/app/ragpon/ragpon/apps/streamlit/config.toml `
             -e RAGPON_OTHER_LOG_LEVEL=WARNING `
             -e RAGPON_APP_LOG_LEVEL=DEBUG `
@@ -205,16 +181,7 @@
             -v /home/user/ragpon:/app:Z \
             -v /home/user/ragpon/ragpon/apps/logs:/app/logs:Z \
             --workdir /app \
-            -e PYTHONPATH=/app \
-            -e OPENAI_API_KEY=$OPENAI_API_KEY \
-            -e STREAMLIT_CONFIG_FILE=/app/ragpon/ragpon/apps/streamlit/config.toml \
-            -e RAGPON_OTHER_LOG_LEVEL=WARNING \
-            -e RAGPON_APP_LOG_LEVEL=DEBUG \
-            -e RAGPON_LOG_PATH=/app/logs/streamlit.log \
-            -e RAGPON_CONSOLE_LOG=False \
-            -e USE_SAML=false \
-            -e DEV_USER_ID=test_user5 \
-            -e DEV_EMPLOYEE_CLASS_ID=70 \
+            --env-file /home/user/ragpon/ragpon/apps/streamlit/.env \
             -p 8005:8005 \
             ragpon-streamlit \
             bash -c "\

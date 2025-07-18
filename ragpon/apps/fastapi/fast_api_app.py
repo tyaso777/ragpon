@@ -142,6 +142,15 @@ except Exception:
     logger.exception("[Startup] Failed to initialize OpenAI client during startup")
     raise
 
+
+def _get_env(name: str) -> str:
+    """Fetch an environment variable or raise if it's not set."""
+    try:
+        return os.environ[name]
+    except KeyError as e:
+        raise RuntimeError(f"Required environment variable '{name}' is not set") from e
+
+
 try:
     if DB_TYPE == "postgres":
         db_pool = SimpleConnectionPool(
@@ -155,15 +164,15 @@ try:
         logger.debug("[Startup] PostgreSQL connection pool initialized")
     elif DB_TYPE == "mysql":
         db_pool = MySQLConnectionPool(
-            pool_name="ragpon_pool",
-            pool_size=32,
-            host="host.containers.internal",
-            port=3306,
-            user="rw_user",
-            password="rw_password",
-            database="ragpon-mysql",
-            autocommit=False,
-            charset="utf8mb4",
+            pool_name=_get_env("MYSQL_POOL_NAME"),
+            pool_size=int(_get_env("MYSQL_POOL_SIZE")),
+            host=_get_env("MYSQL_HOST"),
+            port=int(_get_env("MYSQL_PORT")),
+            user=_get_env("MYSQL_USER"),
+            password=_get_env("MYSQL_PASSWORD"),
+            database=_get_env("MYSQL_DATABASE"),
+            autocommit=_get_env("MYSQL_AUTOCOMMIT").lower() in ("true", "1", "yes"),
+            charset=_get_env("MYSQL_CHARSET"),
         )
         logger.debug("[Startup] MySQL connection pool initialised")
 except Exception:
