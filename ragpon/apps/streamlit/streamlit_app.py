@@ -101,7 +101,10 @@ class ErrorLabels:
     MESSAGE_DISPLAY_FAILED: str = (
         "⚠️ メッセージの表示に失敗しました。セッション履歴の読み込みに失敗した可能性があります。時間をおいて再実行してください。問題が継続する場合は管理者に連絡してください。"
     )
-
+    STREAMING_BACKEND_ERROR: str = (
+        "⚠️ サーバーからの応答中にエラーが発生しました。\n\n"
+        "しばらく待ってから再度お試しください。問題が継続する場合は管理者に連絡してください。"
+    )
     SESSION_CREATION_FAILED: str = "⚠️ セッションの作成に失敗しました。"
     # Feedback
     FEEDBACK_SUBMISSION_FAILED: str = "⚠️ フィードバックの送信に失敗しました。"
@@ -161,11 +164,12 @@ class WarningLabels:
     SESSION_LIMIT_REACHED: str = (
         "⚠️ セッションの上限（{max_count}）に達しました。新規セッション作成時に最も古いセッションが削除されます。"
     )
-    NO_CONTEXT: str = "⚠️ 関連する情報が見つかりませんでした。"
     CONFIRM_DELETION_PROMPT: str = "本当にこの応答を削除してよろしいですか？"
+    NO_CONTEXT: str = "⚠️ 関連する情報が見つかりませんでした。"
     PARSE_SYSTEM_MESSAGE_FAILED: str = (
         "⚠️ 関連情報の表示に失敗しました（形式が正しくない可能性があります）。"
     )
+    RENDER_SYSTEM_MESSAGE_FAILED: str = "⚠️ 関連情報の表示中にエラーが発生しました。"
 
 
 @dataclass(frozen=True)
@@ -1681,6 +1685,42 @@ def render_load_more_button(
                 st.rerun()
 
 
+def render_system_context_rows(
+    rows: list[dict[str, Any]],
+    user_id: str,
+    session_id: str,
+) -> None:
+    """
+    Render system context rows with error handling.
+
+    Args:
+        rows (list[dict[str, Any]]): Parsed context rows to be displayed.
+        user_id (str): User ID for logging.
+        session_id (str): Session ID for logging.
+
+    Side Effects:
+        - Renders context rows in Markdown.
+        - Falls back to warning if display fails.
+    """
+    try:
+        if isinstance(rows, list) and rows:
+            with st.expander(LABELS.VIEW_SOURCES):
+                for row in rows:
+                    st.markdown(
+                        f"**RAG Rank:** {row.get('rag_rank', '-')}\n"
+                        f"**Doc ID:** {row.get('doc_id', '')}\n"
+                        f"**Semantic Distance:** {float(row.get('semantic_distance', 0.0)):.4f}\n\n"
+                        f"> {row.get('text', '').strip()}"
+                    )
+        else:
+            st.caption(WARNING_LABELS.NO_CONTEXT)
+    except Exception:
+        st.caption(WARNING_LABELS.RENDER_SYSTEM_MESSAGE_FAILED)
+        logger.exception(
+            f"[render_system_context_rows] Failed to render rows: user_id={user_id}, session_id={session_id}"
+        )
+
+
 def render_chat_messages(
     messages: list[Message],
     server_url: str,
@@ -1725,25 +1765,15 @@ def render_chat_messages(
         elif msg.role == "system":
             try:
                 rows = json.loads(msg.content)
-                if isinstance(rows, list) and rows:
-                    with st.expander(LABELS.VIEW_SOURCES):
-                        for row in rows:
-                            st.markdown(
-                                f"""
-**RAG Rank:** {row.get("rag_rank", "-")}  
-**Doc ID:** {row.get("doc_id", "")}  
-**Semantic Distance:** {float(row.get("semantic_distance", 0.0)):.4f}
-
-> {row.get("text", "").strip()}
-"""
-                            )
-                else:
-                    st.caption(WARNING_LABELS.NO_CONTEXT)
+                if not isinstance(rows, list):
+                    raise ValueError("System message is not a list.")
             except Exception:
                 st.caption(WARNING_LABELS.PARSE_SYSTEM_MESSAGE_FAILED)
                 logger.exception(
-                    f"[render_chat_messages] Failed to parse system message content in session_id={current_session_id}, user_id={user_id}"
+                    f"[render_chat_messages] Failed to parse system message content: user_id={user_id}, session_id={current_session_id}"
                 )
+            else:
+                render_system_context_rows(rows, user_id, current_session_id)
 
         # For assistant messages, show the row of Trash/Good/Bad
         if msg.role == "assistant":
@@ -2193,6 +2223,12 @@ def render_user_chat_input(
                             elif "system_context_rows" in payload:
                                 system_context_rows = payload["system_context_rows"]
                             elif "error" in payload:
+                                logger.warning(
+                                    f"[render_user_chat_input] Assistant backend returned error: {payload['error']}"
+                                )
+                                st.session_state["chat_error_message"] = (
+                                    ERROR_LABELS.STREAMING_BACKEND_ERROR
+                                )
                                 st.session_state["chat_error_message"] = "⚠️ " + str(
                                     payload["error"]
                                 )
@@ -2206,22 +2242,16 @@ def render_user_chat_input(
                             )
                             return
 
-            # Display system context rows outside chat message
-            if isinstance(system_context_rows, list):
-                if system_context_rows:
-                    with st.expander(LABELS.VIEW_SOURCES):
-                        for row in system_context_rows:
-                            st.markdown(
-                                f"""
-**RAG Rank:** {row.get("rag_rank", "-")}
-**Doc ID:** {row.get("doc_id", "")}
-**Semantic Distance:** {float(row.get("semantic_distance", 0.0)):.4f}
-
-> {row.get("text", "").strip()}
-    """
-                            )
+                # Display system context rows outside chat message
+                if isinstance(system_context_rows, list):
+                    render_system_context_rows(
+                        system_context_rows, user_id, current_session_id
+                    )
                 else:
-                    st.caption(WARNING_LABELS.NO_CONTEXT)
+                    logger.warning(
+                        f"[render_user_chat_input] system_context_rows is not a list: type={type(system_context_rows)}, user_id={user_id}, session_id={current_session_id}"
+                    )
+                    st.caption(WARNING_LABELS.PARSE_SYSTEM_MESSAGE_FAILED)
 
             # 5) Save final assistant message
             assistant_msg = Message(
