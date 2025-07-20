@@ -981,7 +981,7 @@ def show_sidebar_error_message(user_id: str) -> None:
     error_msg = st.session_state.pop("error_message", None)
     if error_msg:
         logger.warning(
-            f"[UI] Showing deferred error message for user_id={user_id}: {error_msg}"
+            f"[show_sidebar_error_message] Showing deferred error message for user_id={user_id}: {error_msg}"
         )
         st.sidebar.error(error_msg)
 
@@ -998,7 +998,7 @@ def show_chat_error_message(user_id: str) -> None:
     error_msg = st.session_state.pop("chat_error_message", None)
     if error_msg:
         logger.warning(
-            f"[UI][Chat] Showing chat error message for user_id={user_id}: {error_msg}"
+            f"[show_chat_error_message] Showing chat error message for user_id={user_id}: {error_msg}"
         )
         # with st.chat_message("assistant"):
         st.error(error_msg)
@@ -2241,9 +2241,6 @@ def render_user_chat_input(
                                 )
                                 st.session_state["chat_error_message"] = (
                                     ERROR_LABELS.STREAMING_BACKEND_ERROR
-                                )
-                                st.session_state["chat_error_message"] = "⚠️ " + str(
-                                    payload["error"]
                                 )
                                 return
                         except json.JSONDecodeError:
