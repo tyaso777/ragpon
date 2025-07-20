@@ -14,7 +14,7 @@ import requests
 import streamlit as st
 
 from ragpon._utils.logging_helper import get_library_logger
-from ragpon.apps.chat_domain import Message, RagModeEnum, SessionData
+from ragpon.apps.chat_domain import Message, RagModeEnum, RoleEnum, SessionData
 
 
 @dataclass(frozen=True)
@@ -2109,7 +2109,7 @@ def render_user_chat_input(
 
             # 2d) Add the user's message locally
             user_msg = Message(
-                role="user",
+                role=RoleEnum.USER,
                 content=user_input,
                 id=user_msg_id,
                 round_id=new_round_id,
@@ -2265,7 +2265,7 @@ def render_user_chat_input(
 
             # 5) Save final assistant message
             assistant_msg = Message(
-                role="assistant",
+                role=RoleEnum.ASSISTANT,
                 content=partial_message_text,
                 id=assistant_msg_id,
                 round_id=new_round_id,
@@ -2275,7 +2275,7 @@ def render_user_chat_input(
 
             if isinstance(system_context_rows, list):
                 system_msg = Message(
-                    role="system",
+                    role=RoleEnum.SYSTEM,
                     content=json.dumps(
                         system_context_rows, ensure_ascii=False, indent=2
                     ),
