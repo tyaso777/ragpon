@@ -813,7 +813,7 @@ def stream_and_persist_chat_response(
 
     rerank_model = None  # If you want to pass something else, do so
     logger.debug(
-        f"[stream_and_persist_chat_response] Start: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        f"[stream_and_persist_chat_response] Starting stream_and_persist_chat_response: user_id={user_id}, session_id={session_id}, round_id={round_id}"
     )
 
     openai_messages = build_openai_messages(
@@ -878,7 +878,7 @@ def stream_and_persist_chat_response(
         yield format_sse_chunk(data={"data": "[DONE]"})
 
         logger.info(
-            f"[stream_and_persist_chat_response] Done streaming: user_id={user_id}, session_id={session_id}, round_id={round_id}, total_chars={len(assistant_response)}"
+            f"[stream_and_persist_chat_response] Finished stream_and_persist_chat_response: user_id={user_id}, session_id={session_id}, round_id={round_id}, total_chars={len(assistant_response)}"
         )
 
     except Exception:
@@ -1056,7 +1056,7 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
         list[dict]: A list of session objects.
     """
     logger.debug(
-        f"[list_sessions] Fetching sessions: user_id={user_id}, app_name={app_name}"
+        f"[list_sessions] Starting list_sessions: user_id={user_id}, app_name={app_name}"
     )
 
     try:
@@ -1098,7 +1098,7 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
         ]
 
         logger.debug(
-            f"[list_sessions] Retrieved {len(sessions)} sessions for user_id={user_id}"
+            f"[list_sessions] Finished list_sessions: user_id={user_id}, app_name={app_name}, session_count={len(sessions)}"
         )
 
         return sessions
@@ -1150,9 +1150,8 @@ async def list_session_queries(
         HTTPException: If the query fails due to database issues or unexpected errors.
     """
     logger.debug(
-        f"[list_session_queries] Start querying messages: user_id={user_id}, app_name={app_name}, session_id={session_id}"
+        f"[list_session_queries] Starting list_session_queries: user_id={user_id}, app_name={app_name}, session_id={session_id}"
     )
-
     try:
         with get_database_client(DB_TYPE, db_pool) as db:
             # DENSE_RANK() assigns 1 to the latest round, 2 to the next, …;
@@ -1247,14 +1246,15 @@ async def list_session_queries(
         unique_rounds: int = len({m.round_id for m in results})  # distinct rounds
 
         logger.debug(
-            "[list_session_queries] limit_rounds=%d → returned %d rounds (%d messages) "
-            "(has_more=%s, user_id=%s, session_id=%s)",
+            "[list_session_queries] Finished list_session_queries: user_id=%s, app_name=%s, session_id=%s, "
+            "limit_rounds=%d → returned %d rounds (%d messages), has_more=%s",
+            user_id,
+            app_name,
+            session_id,
             limit,
             unique_rounds,
             len(results),
             has_more,
-            user_id,
-            session_id,
         )
 
         return MessageListResponse(messages=results, has_more=has_more)
@@ -1302,7 +1302,7 @@ def create_session_with_limit(
     """
     try:
         logger.debug(
-            f"[create_session_with_limit] Opening DB transaction for user_id={user_id}, app_name={app_name}"
+            f"[create_session_with_limit] Starting create_session_with_limit: user_id={user_id}, app_name={app_name}"
         )
         with get_database_client(DB_TYPE, db_pool) as db:
             # BEGIN TRANSACTION
@@ -1458,6 +1458,10 @@ def create_session_with_limit(
                 ),
             )
 
+            logger.debug(
+                f"[create_session_with_limit] Finished create_session_with_limit: user_id={user_id}, app_name={app_name}, session_id={new_session_id}"
+            )
+
             return {
                 "message": "Session created successfully",
                 "session_id": new_session_id,
@@ -1520,7 +1524,7 @@ def update_session_with_check(
     """
     try:
         logger.debug(
-            f"[update_session_with_check] Starting session update: user_id={user_id}, session_id={session_id}"
+            f"[update_session_with_check] Starting update_session_with_check: user_id={user_id}, app_name={app_name}, session_id={session_id}"
         )
         with get_database_client(DB_TYPE, db_pool) as db:
             db.execute(
@@ -1577,6 +1581,10 @@ def update_session_with_check(
                 ),
             )
 
+            logger.debug(
+                f"[update_session_with_check] Finished update_session_with_check: user_id={user_id}, app_name={app_name}, session_id={session_id}"
+            )
+
             return {"message": "Session updated successfully", "session_id": session_id}
 
     except HTTPException as http_exc:
@@ -1618,9 +1626,8 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
             - 500: On unexpected database or system errors.
     """
     user_id = payload.deleted_by
-
     logger.debug(
-        f"[delete_round] Starting DB transaction to delete round (logical): user_id={user_id}, session_id={session_id}, round_id={round_id}"
+        f"[delete_round] Starting delete_round: user_id={user_id}, session_id={session_id}, round_id={round_id}"
     )
 
     try:
@@ -1654,8 +1661,9 @@ async def delete_round(session_id: str, round_id: int, payload: DeleteRoundPaylo
                 raise HTTPException(status_code=404, detail="No messages to delete")
 
         logger.debug(
-            f"[delete_round] Round marked as deleted: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+            f"[delete_round] Finished delete_round: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
+
         return JSONResponse({"status": "ok", "detail": "Messages logically deleted."})
 
     except HTTPException as http_exc:
@@ -1686,8 +1694,9 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
     Raises:
         HTTPException: 404 if the message was not found, 500 on DB failure.
     """
+
     logger.debug(
-        f"[patch_feedback] Starting DB transaction: user_id={payload.user_id}, session_id={payload.session_id}, "
+        f"[patch_feedback] Starting patch_feedback: user_id={payload.user_id}, session_id={payload.session_id}, "
         f"llm_output_id={llm_output_id}, feedback={payload.feedback}"
     )
 
@@ -1723,7 +1732,7 @@ async def patch_feedback(llm_output_id: str, payload: PatchFeedbackPayload):
                 raise HTTPException(status_code=404, detail="LLM output not found")
 
         logger.debug(
-            f"[patch_feedback] Feedback successfully patched: user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
+            f"[patch_feedback] Finished patch_feedback: user_id={payload.user_id}, session_id={payload.session_id}, llm_output_id={llm_output_id}"
         )
 
         return JSONResponse({"status": "ok", "msg": "Feedback patched successfully."})
@@ -2350,8 +2359,7 @@ async def handle_query(
     resolved_model_name = MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID
 
     logger.debug(
-        f"[handle_query] ⇢ user_id={user_id}, session_id={session_id}, "
-        f"round_id={req.round_id}"
+        f"[handle_query] Starting handle_query: user_id={user_id}, session_id={session_id}, round_id={req.round_id}"
     )
 
     insert_placeholder_user_message(
