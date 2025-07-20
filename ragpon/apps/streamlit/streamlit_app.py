@@ -69,98 +69,111 @@ class Labels:
     DELETED_MESSAGE_NOTICE: str = "🗑️ このメッセージは削除されました。"
 
 
+CONTACT_ADMIN: str = "問題が継続する場合は管理者に連絡してください。"
+
+RECONNECTION_ACTION: str = "時間をおいて再接続してください。"
+RETRY_ACTION: str = "しばらく待ってから再度お試しください。"
+REFRESH_ACTION: str = "F5 キーを押して画面を更新してください。"
+
+RECONNECTION_INSTRUCTIONS: str = f"{RECONNECTION_ACTION}{CONTACT_ADMIN}"
+RETRY_INSTRUCTIONS: str = f"{RETRY_ACTION}{CONTACT_ADMIN}"
+REFRESH_INSTRUCTIONS: str = f"{REFRESH_ACTION}{CONTACT_ADMIN}"
+
+
 @dataclass(frozen=True)
 class ErrorLabels:
     ACCESS_DENIED: str = "⚠️ アクセス権限がありません。担当者にご確認ください。"
     APP_INITIALIZATION_FAILED: str = (
-        "⚠️ アプリの初期化に失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ アプリの初期化に失敗しました。{RECONNECTION_INSTRUCTIONS}"
     )
     # Session operations
     SESSION_LIST_LOAD_FAILED: str = (
-        "⚠️ セッション一覧の読み込みに失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ セッション一覧の読み込みに失敗しました。{RECONNECTION_INSTRUCTIONS}"
     )
     SESSION_INDEX_RESOLVE_FAILED: str = (
-        "⚠️ セッションの初期選択処理に失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ セッションの初期選択処理に失敗しました。{RECONNECTION_INSTRUCTIONS}"
     )
     AUTO_SESSION_CREATION_FAILED: str = (
-        "⚠️ 初期セッションの作成に失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ 初期セッションの作成に失敗しました。{RECONNECTION_INSTRUCTIONS}"
     )
     AUTO_SESSION_REGISTER_FAILED: str = (
-        "⚠️ 初期セッションの登録に失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ 初期セッションの登録に失敗しました。{RECONNECTION_INSTRUCTIONS}"
     )
     SESSION_SELECTION_FAILED: str = (
-        "⚠️ セッションの選択時にエラーが発生しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ セッションの選択時にエラーが発生しました。{RECONNECTION_INSTRUCTIONS}"
     )
     SESSION_RADIO_RENDER_FAILED: str = (
-        "⚠️ セッション一覧の表示に失敗しました。時間をおいて再接続してください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ セッション一覧の表示に失敗しました。{RECONNECTION_INSTRUCTIONS}"
     )
     MESSAGE_HISTORY_LOAD_FAILED: str = (
-        "⚠️ セッション履歴の読み込みに失敗しました。時間をおいて再接続してください。"
-        "問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ セッション履歴の読み込みに失敗しました。{RECONNECTION_INSTRUCTIONS}"
     )
     MESSAGE_DISPLAY_FAILED: str = (
-        "⚠️ メッセージの表示に失敗しました。セッション履歴の読み込みに失敗した可能性があります。時間をおいて再実行してください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ メッセージの表示に失敗しました。セッション履歴の読み込みに失敗した可能性があります。{RECONNECTION_INSTRUCTIONS}"
     )
     STREAMING_BACKEND_ERROR: str = (
-        "⚠️ サーバーからの応答中にエラーが発生しました。\n\n"
-        "しばらく待ってから再度お試しください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ サーバーからの応答中にエラーが発生しました。{RETRY_INSTRUCTIONS}"
     )
-    SESSION_CREATION_FAILED: str = "⚠️ セッションの作成に失敗しました。"
+    SESSION_CREATION_FAILED: str = (
+        f"⚠️ セッションの作成に失敗しました。{RECONNECTION_INSTRUCTIONS}"
+    )
+
     # Feedback
-    FEEDBACK_SUBMISSION_FAILED: str = "⚠️ フィードバックの送信に失敗しました。"
-    MESSAGE_DELETION_FAILED: str = "⚠️ メッセージの削除に失敗しました。"
-    MESSAGE_HISTORY_APPEND_FAILED: str = "⚠️ 過去のメッセージの読み込みに失敗しました。"
+    FEEDBACK_SUBMISSION_FAILED: str = (
+        f"⚠️ フィードバックの送信に失敗しました。{RETRY_INSTRUCTIONS}"
+    )
+    MESSAGE_DELETION_FAILED: str = (
+        f"⚠️ メッセージの削除に失敗しました。{RETRY_INSTRUCTIONS}"
+    )
+    MESSAGE_HISTORY_APPEND_FAILED: str = (
+        f"⚠️ 過去のメッセージの読み込みに失敗しました。{RETRY_INSTRUCTIONS}"
+    )
     LLM_RESPONSE_FORMAT_ERROR: str = (
-        "⚠️ アシスタントの応答が予期しない形式だったため、処理できませんでした。"
+        f"⚠️ アシスタントの応答が予期しない形式だったため、処理できませんでした。{RETRY_INSTRUCTIONS}"
     )
     LLM_RESPONSE_MALFORMED: str = (
-        "⚠️ アシスタントの応答が不正な形式だったため、処理できませんでした。"
+        f"⚠️ アシスタントの応答が不正な形式だったため、処理できませんでした。{RETRY_INSTRUCTIONS}"
     )
     # HTTP Errors
     SESSION_CREATION_HTTP_500: str = (
-        "⚠️ サーバー内部エラーが発生しました。\n\n"
-        "セッションが一部作成された可能性があります。"
-        "画面を更新してください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ サーバー内部エラーが発生しました。セッションが一部作成された可能性があります。{REFRESH_INSTRUCTIONS}"
     )
     SESSION_CREATION_HTTP_409: str = (
-        "⚠️ セッション状態の不整合が検出されました。\n\n"
-        "ページを更新してからもう一度操作してください。"
+        f"⚠️ セッション状態の不整合が検出されました。{REFRESH_INSTRUCTIONS}"
     )
     SESSION_CREATION_HTTP_UNEXPECTED: str = (
-        "⚠️ 予期しないHTTPエラーが発生しました。\n\n"
-        "画面を更新してください。問題が継続する場合は管理者に連絡してください。"
+        f"⚠️ 予期しないHTTPエラーが発生しました。{RECONNECTION_INSTRUCTIONS}"
     )
     SESSION_EDIT_HTTP_404: str = (
-        "⚠️ このセッションは存在しないか、すでに削除されています。\n\n"
-        "セッション一覧を最新の状態にするためF5キーを押してページを更新してください。"
+        f"⚠️ このセッションは存在しないか、すでに削除されています。{REFRESH_INSTRUCTIONS}"
     )
     SESSION_EDIT_HTTP_409: str = (
-        "⚠️ このセッションは他のタブで内容が更新された可能性があります。\n\n"
-        "F5キーを押して最新の情報を取得してから再度操作してください。"
+        f"⚠️ このセッションは他のタブで内容が更新された可能性があります。{REFRESH_INSTRUCTIONS}"
     )
     SESSION_EDIT_HTTP_500: str = (
-        "⚠️ セッションの変更中にサーバーエラーが発生しました。\n\n"
-        "時間をおいて再試行してください。"
+        f"⚠️ セッションの変更中にサーバーエラーが発生しました。{RECONNECTION_INSTRUCTIONS}"
     )
     # Generic
-    GENERIC_UNEXPECTED_ERROR: str = "⚠️ 予期しないエラーが発生しました。"
+    GENERIC_UNEXPECTED_ERROR: str = (
+        f"⚠️ 予期しないエラーが発生しました。{RECONNECTION_INSTRUCTIONS}"
+    )
     SESSION_CREATION_UNEXPECTED_ERROR: str = (
-        "⚠️ セッションの作成に失敗しました。ネットワークに問題がある可能性があります。時間をおいて再試行してください。"
+        f"⚠️ セッションの作成に失敗しました。ネットワークに問題がある可能性があります。{RECONNECTION_INSTRUCTIONS}"
     )
     MESSAGE_SUBMISSION_UNEXPECTED_ERROR: str = (
-        "⚠️ メッセージの送信中に予期しないエラーが発生しました。"
+        f"⚠️ メッセージの送信中に予期しないエラーが発生しました。{RECONNECTION_INSTRUCTIONS}"
     )
     MESSAGE_DELETION_UNEXPECTED_ERROR: str = (
-        "⚠️ メッセージの削除中に予期しないエラーが発生しました。"
+        f"⚠️ メッセージの削除中に予期しないエラーが発生しました。{RECONNECTION_INSTRUCTIONS}"
     )
     FEEDBACK_SUBMISSION_UNEXPECTED_ERROR: str = (
-        "⚠️ フィードバック送信中に予期しないエラーが発生しました。"
+        f"⚠️ フィードバック送信中に予期しないエラーが発生しました。{RECONNECTION_INSTRUCTIONS}"
     )
 
 
 @dataclass(frozen=True)
 class WarningLabels:
-    NO_SESSION_SELECTED: str = "現在選択されているセッションがありません。"
+    NO_SESSION_SELECTED: str = "⚠️ 現在選択されているセッションがありません。"
     SESSION_LIMIT_REACHED: str = (
         "⚠️ セッションの上限（{max_count}）に達しました。新規セッション作成時に最も古いセッションが削除されます。"
     )
@@ -1284,7 +1297,7 @@ def render_session_list(
                 logger.exception(
                     f"[render_session_list] Failed to create session: user_id={user_id}"
                 )
-                st.sidebar.error(ERROR_LABELS.SESSION_CREATION_FAILED)
+                st.sidebar.error(ERROR_LABELS.AUTO_SESSION_CREATION_FAILED)
                 st.stop()
 
             new_session = SessionData(
