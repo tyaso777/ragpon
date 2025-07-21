@@ -1,14 +1,15 @@
 # For Linux:
+    # create requirements.txt file with:
+        # poetry export --with dev --without-hashes -f requirements.txt -o requirements.txt
     # copy db and models to apps/fastapi folder manually.
     # copy Sudachi packages to user/ragpon/packages manually.
+    # change how_to_run_memo.txt to use azure openai.
     # change compose.yml to use azure openai.
 
     # podman machine ssh
     # cd /home/user/ragpon
     # podman build -f ragpon/apps/fastapi/Dockerfile -t ragpon-fastapi:latest .
 
-# create requirements.txt file with:
-# poetry export --with dev --without-hashes -f requirements.txt -o requirements.txt
 
 # Use lightweight Python base image
 FROM python:3.11-slim
