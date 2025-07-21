@@ -12,6 +12,7 @@ from typing import Any, Final
 
 import requests
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.apps.chat_domain import Message, RagModeEnum, RoleEnum, SessionData
@@ -241,6 +242,16 @@ SERVER_URL: str = "http://ragpon-fastapi:8006"
 # Number of messages to keep in the chat with the assistant
 NUM_OF_PREV_MSG_WITH_LLM: int = 6
 
+USE_INACTIVITY_REDIRECT: bool = os.getenv(
+    "USE_INACTIVITY_REDIRECT", "true"
+).lower() in ("true", "1", "yes")
+DEFAULT_TIMEOUT_SECONDS: int = int(
+    os.getenv("RAGPON_TIMEOUT_SECONDS", "1800")
+)  # default: 30 min
+DEFAULT_INTERVAL_MS: int = int(
+    os.getenv("RAGPON_INTERVAL_MS", "60_000")
+)  # default: 1 min
+DEFAULT_REDIRECT_URL: str = os.getenv("RAGPON_REDIRECT_URL", "https://example.com")
 
 # Set root logger level from environment (default: WARNING)
 other_level_str = os.getenv("RAGPON_OTHER_LOG_LEVEL", "WARNING").upper()
@@ -871,6 +882,97 @@ def initialize_session_state(user_id: str) -> None:
         logger.info(
             f"[initialize_session_state] user_id={user_id} has logged in to the app."
         )
+
+
+def record_user_touch(*, user_id: str) -> None:
+    """
+    Record the current UTC time as the last moment of user interaction or
+    app load and log it.
+
+    Args:
+        user_id: Authenticated user identifier, added to the log message.
+    """
+    st.session_state["user_touch_app_last_at"] = datetime.now(timezone.utc)
+    logger.debug(
+        "[record_user_touch] user_id=%s set user_touch_app_last_at=%s",
+        user_id,
+        st.session_state["user_touch_app_last_at"],
+    )
+
+
+def inject_redirect_js(*, timeout_seconds: int, target_url: str, user_id: str) -> None:
+    """
+    Inject a <meta http-equiv="refresh"> tag to redirect after inactivity.
+
+    Args:
+        timeout_seconds: Idle period before redirect (seconds).
+        target_url: Absolute URL of the destination page.
+        user_id: Authenticated user identifier, passed through for logging.
+    """
+    last_touch: datetime = st.session_state.get(
+        "user_touch_app_last_at", datetime.now(timezone.utc)
+    )
+    remaining = max(
+        0,
+        timeout_seconds
+        - int((datetime.now(timezone.utc) - last_touch).total_seconds()),
+    )
+    remaining_ms: int = remaining * 1000
+
+    if remaining == 0:
+        logger.info(
+            "[inject_redirect_js] user_id=%s idle timeout exceeded; "
+            "redirecting immediately → %s",
+            user_id,
+            target_url,
+        )
+        # If the timeout is already exceeded, redirect immediately
+        st.markdown(
+            f'<meta http-equiv="refresh" content="{remaining};url={target_url}" />',
+            unsafe_allow_html=True,
+        )
+    else:
+        logger.debug(
+            "[inject_redirect_js] user_id=%s scheduling redirect in %d s (%d ms) → %s",
+            user_id,
+            remaining,
+            remaining_ms,
+            target_url,
+        )
+
+
+def setup_inactivity_redirect(
+    *, user_id: str, timeout_seconds: int, target_url: str, interval_ms: int = 1000
+) -> None:
+    """
+    Drive periodic reruns, reset the inactivity timer on user actions,
+    and inject/refresh the redirect script.
+
+    Args:
+        user_id: Authenticated user identifier for logging.
+        timeout_seconds: Seconds of inactivity before redirect.
+        target_url: URL to navigate to when idle timeout triggers.
+        interval_ms: Milliseconds between automatic reruns.
+    """
+    # Auto-refresh to drive reruns
+    refresh_count = st_autorefresh(interval=interval_ms, key="inactivity_check")
+
+    # Determine if this is a user-triggered run by comparing to previous count
+    prev_count = st.session_state.get("inac_prev_refresh_count")
+    # On initial load, prev_count is None -> treat as user interaction
+    is_user_run = (prev_count is None) or (refresh_count == prev_count)
+
+    if is_user_run:
+        # Reset inactivity timer
+        record_user_touch(user_id=user_id)
+
+    # Store current count for next comparison
+    st.session_state["inac_prev_refresh_count"] = refresh_count
+
+    # Inject or update redirect script
+    inject_redirect_js(
+        timeout_seconds=timeout_seconds, target_url=target_url, user_id=user_id
+    )
 
 
 def render_dev_test_settings() -> None:
@@ -2343,6 +2445,13 @@ def main(user_id: str, employee_class_id: str) -> None:
         hide_streamlit_deploy_button()
         disabled_ui = setup_ui_locking()
         initialize_session_state(user_id=user_id)
+        if USE_INACTIVITY_REDIRECT:
+            setup_inactivity_redirect(
+                user_id=user_id,
+                timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
+                target_url=DEFAULT_REDIRECT_URL,
+                interval_ms=DEFAULT_INTERVAL_MS,
+            )
     except Exception:
         logger.exception("[Main] Unexpected error during app setup.")
         st.error(ERROR_LABELS.APP_INITIALIZATION_FAILED)

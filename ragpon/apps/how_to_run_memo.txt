@@ -158,15 +158,7 @@
             -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon:/app:Z" `
             -v "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\apps\logs:/app/logs:Z" `
             --workdir /app `
-            -e PYTHONPATH=/app `
-            -e STREAMLIT_CONFIG_FILE=/app/ragpon/ragpon/apps/streamlit/config.toml `
-            -e RAGPON_OTHER_LOG_LEVEL=WARNING `
-            -e RAGPON_APP_LOG_LEVEL=DEBUG `
-            -e RAGPON_LOG_PATH=/app/logs/streamlit.log `
-            -e RAGPON_CONSOLE_LOG=False `
-            -e USE_SAML=false `
-            -e DEV_USER_ID=test_user5 `
-            -e DEV_EMPLOYEE_CLASS_ID=70 `
+            --env-file "D:\Users\AtsushiSuzuki\OneDrive\デスクトップ\test\ragpon\ragpon\apps\streamlit\.env.win" `
             -p 8005:8005 `
             ragpon-streamlit `
             bash -c "streamlit run ragpon/apps/streamlit/streamlit_app.py --server.port 8005 --server.address 0.0.0.0"
