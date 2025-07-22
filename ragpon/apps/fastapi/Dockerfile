@@ -5,6 +5,7 @@
     # copy Sudachi packages to user/ragpon/packages manually.
     # change how_to_run_memo.txt to use azure openai.
     # change compose.yml to use azure openai.
+    # delete comment out (#) from the line below in the Dockerfile to use local packages for Linux.
 
     # podman machine ssh
     # cd /home/user/ragpon

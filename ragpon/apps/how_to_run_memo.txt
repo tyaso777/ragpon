@@ -83,6 +83,12 @@
 
       # Check
       podman logs ragpon-mysql
+
+      # Create Image
+      podman commit ragpon-mysql ragpon-mysql-image
+
+      # Create .tar file
+      podman save --output ragpon-mysql-image.tar ragpon-mysql-image
       ```
 
 
@@ -104,6 +110,13 @@
             --network ragnet \
             -v /home/user/ragpon:/app:Z \
             chroma-app
+
+      # Create Image
+      podman commit chromadb ragpon-chroma-image
+
+      # Create .tar file
+      podman save --output ragpon-chroma-image.tar ragpon-chroma-image
+
       ```
 
 # 4. to run FASTAPI
@@ -147,6 +160,14 @@
                --host 0.0.0.0 \
                --port 8006 \
                --workers 4"
+
+      # Create Image
+      podman commit ragpon-fastapi ragpon-fastapi-image
+
+      # Create .tar file
+      podman save --output ragpon-fastapi-image.tar ragpon-fastapi-image
+      
+
       ```
 
 # 5. to run STREAMLIT
@@ -181,6 +202,13 @@
                streamlit run ragpon/apps/streamlit/streamlit_app.py \
                   --server.port 8005 --server.address 0.0.0.0\
             "
+
+      # Create Image 
+      podman commit ragpon-streamlit ragpon-streamlit-image
+
+      # Create .tar file
+      podman save --output ragpon-streamlit-image.tar ragpon-streamlit-image
+
       ```
 
 # 6. to run Locust
