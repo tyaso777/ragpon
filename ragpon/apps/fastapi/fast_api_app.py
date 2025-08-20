@@ -522,13 +522,11 @@ def generate_queries_from_history(
     model_name: str,
     model_type: Literal["openai", "azure"],
 ) -> list[str]:
-    """
-    Generate multiple search queries from a given conversation history.
+    """Return retrieval queries extracted via function-calling.
 
-    This function takes the existing conversation (messages_list) and appends
-    final instructions (system_instructions) to request a JSON array of objects
-    like: [{"query": "..."}]. The model's response is parsed into Python objects,
-    and a list of query strings is returned.
+    The model is forced to call a single function `emit_queries` whose schema
+    guarantees valid JSON. We then parse that tool call, sanitize, de-duplicate,
+    and cap the number of queries.
 
     Args:
         user_id (str): ID of the user (used for logging).
@@ -553,75 +551,221 @@ def generate_queries_from_history(
         list[str]: A list of query strings extracted from the model's JSON output.
 
     Raises:
-        ValueError: If the JSON returned by the model is malformed or missing
-            the expected structure.
+        ValueError: If the model does not return the required tool call or if
+            the tool-call arguments are not valid JSON matching the schema.
     """
-    # Build the messages for the ChatCompletion request
-    #    We'll append a final system message at the end
-    final_messages = messages_list + [
+    # 1) Put the system guardrails FIRST for maximum authority.
+    final_messages = [
         {"role": "system", "content": system_instructions}
+    ] + messages_list
+
+    # 2) Function (tool) schema to force a well-typed JSON payload.
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "emit_queries",
+                "description": "Return retrieval queries.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {"query": {"type": "string"}},
+                                "required": ["query"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["items"],
+                    "additionalProperties": False,
+                },
+            },
+        }
     ]
 
-    try:
-        response: ChatCompletion = call_llm_sync_with_handling(
-            client=client,
-            model=model_name,
-            messages=final_messages,
-            user_id=user_id,
-            session_id=session_id,
-            temperature=0.0,
-            stream=False,
-            model_type=model_type,
-        )
-        raw_text = response.choices[0].message.content.strip()
-        logger.info(
-            f"[generate_queries_from_history] Generated queries using OpenAI response: user_id={user_id}, session_id={session_id}"
-        )
-    except (IndexError, AttributeError) as exc:
-        logger.exception(
-            f"[generate_queries_from_history] Failed to extract text from OpenAI response: user_id={user_id}, session_id={session_id}"
-        )
-        raise ValueError("OpenAI response missing expected content") from exc
-    except Exception as exc:
-        logger.exception(
-            f"[generate_queries_from_history] OpenAI API call failed: user_id={user_id}, session_id={session_id}"
-        )
-        raise ValueError("Failed to call language model") from exc
+    # 3) Call the LLM with tools enabled and force the specific function.
+    response: ChatCompletion = call_llm_sync_with_handling(
+        client=client,
+        model=model_name,
+        messages=final_messages,
+        user_id=user_id,
+        session_id=session_id,
+        temperature=0.0,
+        top_p=1.0,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+        stream=False,
+        model_type=model_type,
+        tools=tools,
+        tool_choice={"type": "function", "function": {"name": "emit_queries"}},
+    )
 
-    # Parse the JSON output (expected: [{"query": "..."}])
+    # 4) Locate the correct tool call by name (not just index 0).
+    tool_calls = response.choices[0].message.tool_calls or []
+    emit_call = next(
+        (tc for tc in tool_calls if tc.function.name == "emit_queries"), None
+    )
+    if emit_call is None:
+        logger.error(
+            "[generate_queries_from_history] No 'emit_queries' tool call: "
+            "user_id=%s, session_id=%s, tool_calls=%s",
+            user_id,
+            session_id,
+            [tc.function.name for tc in tool_calls],
+        )
+        raise ValueError("Expected tool call 'emit_queries' but got none")
+
+    # 5) Parse and validate arguments; fail closed on invalid JSON.
     try:
-        parsed = json.loads(raw_text)
+        args = json.loads(emit_call.function.arguments)
     except json.JSONDecodeError as exc:
-        logger.warning(
-            f"[generate_queries_from_history] Failed to parse JSON from model response: user_id={user_id}, session_id={session_id}, len(raw_text)={len(raw_text)}"
+        logger.error(
+            "[generate_queries_from_history] JSON parse error from tool call: "
+            "user_id=%s, session_id=%s, err=%s, raw=%s",
+            user_id,
+            session_id,
+            exc,
+            emit_call.function.arguments[:500],
         )
-        raise ValueError(f"Failed to parse JSON from model") from exc
+        raise ValueError("Malformed JSON in tool call arguments") from exc
 
-    if not isinstance(parsed, list):
-        logger.warning(
-            f"[generate_queries_from_history] Expected JSON list, got {type(parsed)}: {raw_text} for user_id={user_id}, session_id={session_id}"
-        )
-        raise ValueError(f"Expected a JSON list, got: {type(parsed)}")
+    items = cast(list[dict[str, str]], args.get("items", []))
 
-    # Collect queries
-    queries = []
-    for i, item in enumerate(parsed):
-        if not isinstance(item, dict):
-            logger.warning(
-                f"[generate_queries_from_history] Invalid type at index {i}: expected dict, got {type(item)} for user_id={user_id}, session_id={session_id}"
-            )
-            raise ValueError(f"Expected dict at index {i}, got: {type(item)}")
-        if "query" not in item:
-            logger.warning(
-                f"[generate_queries_from_history] Missing 'query' key at index {i}: {item} for user_id={user_id}, session_id={session_id}"
-            )
-            raise ValueError(f"Missing 'query' key at index {i} in: {item}")
-        queries.append(item["query"])
+    # 6) Sanitize: strip, drop empties, preserve order, dedupe, and cap length.
+    seen: set[str] = set()
+    queries: list[str] = []
+    for it in items:
+        q = (it.get("query") or "").strip()
+        if not q or q in seen:
+            continue
+        seen.add(q)
+        queries.append(q)
+        if len(queries) >= MAX_OPTIMIZED_QUERIES:
+            break
 
-    # Limit the number of optimized queries to avoid overload or abuse
-    queries = queries[:MAX_OPTIMIZED_QUERIES]
+    logger.info(
+        "[generate_queries_from_history] Generated %d query(ies): user_id=%s, session_id=%s",
+        len(queries),
+        user_id,
+        session_id,
+    )
 
     return queries
+
+
+# def generate_queries_from_history(
+#     user_id: str,
+#     session_id: str,
+#     messages_list: list[dict[str, str]],
+#     system_instructions: str,
+#     client: OpenAI | AzureOpenAI,
+#     model_name: str,
+#     model_type: Literal["openai", "azure"],
+# ) -> list[str]:
+#     """
+#     Generate multiple search queries from a given conversation history.
+
+#     This function takes the existing conversation (messages_list) and appends
+#     final instructions (system_instructions) to request a JSON array of objects
+#     like: [{"query": "..."}]. The model's response is parsed into Python objects,
+#     and a list of query strings is returned.
+
+#     Args:
+#         user_id (str): ID of the user (used for logging).
+#         session_id (str): ID of the session (used for logging).
+#         messages_list (list[dict[str, str]]):
+#             The conversation so far, e.g.:
+#             [
+#               {"role": "user", "content": "User's question 1"},
+#               {"role": "assistant", "content": "Assistant's answer 1"},
+#               ...
+#             ]
+#         system_instructions (str):
+#             The final system message that instructs the model to produce
+#             multiple queries in JSON format, for example:
+#             "You are a helpful assistant. Return an array of objects with
+#              a 'query' key in each."
+#         client (OpenAI | AzureOpenAI): OpenAI-compatible client instance.
+#         model_name (str): Model name or Azure deployment ID.
+#         model_type (Literal['openai','azure']): Backend type indicator.
+
+#     Returns:
+#         list[str]: A list of query strings extracted from the model's JSON output.
+
+#     Raises:
+#         ValueError: If the JSON returned by the model is malformed or missing
+#             the expected structure.
+#     """
+#     # Build the messages for the ChatCompletion request
+#     #    We'll append a final system message at the end
+#     final_messages = messages_list + [
+#         {"role": "system", "content": system_instructions}
+#     ]
+
+#     try:
+#         response: ChatCompletion = call_llm_sync_with_handling(
+#             client=client,
+#             model=model_name,
+#             messages=final_messages,
+#             user_id=user_id,
+#             session_id=session_id,
+#             temperature=0.0,
+#             stream=False,
+#             model_type=model_type,
+#         )
+#         raw_text = response.choices[0].message.content.strip()
+#         logger.info(
+#             f"[generate_queries_from_history] Generated queries using OpenAI response: user_id={user_id}, session_id={session_id}"
+#         )
+#     except (IndexError, AttributeError) as exc:
+#         logger.exception(
+#             f"[generate_queries_from_history] Failed to extract text from OpenAI response: user_id={user_id}, session_id={session_id}"
+#         )
+#         raise ValueError("OpenAI response missing expected content") from exc
+#     except Exception as exc:
+#         logger.exception(
+#             f"[generate_queries_from_history] OpenAI API call failed: user_id={user_id}, session_id={session_id}"
+#         )
+#         raise ValueError("Failed to call language model") from exc
+
+#     # Parse the JSON output (expected: [{"query": "..."}])
+#     try:
+#         parsed = json.loads(raw_text)
+#     except json.JSONDecodeError as exc:
+#         logger.warning(
+#             f"[generate_queries_from_history] Failed to parse JSON from model response: user_id={user_id}, session_id={session_id}, len(raw_text)={len(raw_text)}"
+#         )
+#         raise ValueError(f"Failed to parse JSON from model") from exc
+
+#     if not isinstance(parsed, list):
+#         logger.warning(
+#             f"[generate_queries_from_history] Expected JSON list, got {type(parsed)}: {raw_text} for user_id={user_id}, session_id={session_id}"
+#         )
+#         raise ValueError(f"Expected a JSON list, got: {type(parsed)}")
+
+#     # Collect queries
+#     queries = []
+#     for i, item in enumerate(parsed):
+#         if not isinstance(item, dict):
+#             logger.warning(
+#                 f"[generate_queries_from_history] Invalid type at index {i}: expected dict, got {type(item)} for user_id={user_id}, session_id={session_id}"
+#             )
+#             raise ValueError(f"Expected dict at index {i}, got: {type(item)}")
+#         if "query" not in item:
+#             logger.warning(
+#                 f"[generate_queries_from_history] Missing 'query' key at index {i}: {item} for user_id={user_id}, session_id={session_id}"
+#             )
+#             raise ValueError(f"Missing 'query' key at index {i} in: {item}")
+#         queries.append(item["query"])
+
+#     # Limit the number of optimized queries to avoid overload or abuse
+#     queries = queries[:MAX_OPTIMIZED_QUERIES]
+
+#     return queries
 
 
 def generate_session_title(
