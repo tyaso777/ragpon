@@ -221,7 +221,7 @@ if use_chromadb:
             similarity="cosine",
             connection_mode="http",
             folder_path=None,
-            http_url="chromadb",
+            http_url=_get_env("CHROMADB_HOST"),  # "chromadb",
             port=8007,
         )
         logger.debug("[Startup] ChromaDB repository initialized")
