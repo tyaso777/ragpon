@@ -7,10 +7,10 @@ DATABASES:
   BM25_PATH: "/app/ragpon/apps/fastapi/db/bm25"  # Set to "None" for in-memory mode or provide a file path
   USE_CHROMADB: "True"  # Set to "True" to enable ChromaDB
   CHROMADB_COLLECTION_NAME: "pdf_collection"  # Name of the ChromaDB collection
-  CHROMADB_FOLDER_PATH: "/app/ragpon/apps/fastapi/db"  # Folder path for ChromaDB storage, or "None" for in-memory
+  CHROMADB_FOLDER_PATH: "---"  # this is not used in the current setup
 
 RETRIEVAL:
-  TOP_K_CHROMADB: 12
+  TOP_K_CHROMADB: 20
   TOP_K_BM25: 4
   ENHANCE_NUM_BEFORE: 1
   ENHANCE_NUM_AFTER: 1
