@@ -83,7 +83,7 @@ REFRESH_INSTRUCTIONS: str = f"{REFRESH_ACTION}{CONTACT_ADMIN}"
 
 @dataclass(frozen=True)
 class ErrorLabels:
-    ACCESS_DENIED: str = "⚠️ アクセス権限がありません。担当者にご確認ください。"
+    ACCESS_DENIED: str = "⚠️ アクセス権限がありません。管理者にご確認ください。"
     APP_INITIALIZATION_FAILED: str = (
         f"⚠️ アプリの初期化に失敗しました。{RECONNECTION_INSTRUCTIONS}"
     )
@@ -216,7 +216,18 @@ class DevTestConfig:
     simulate_unexpected_exception: bool = False
 
 
-EMPLOYEE_CLASS_ALLOWED_IDS: Final[set[str]] = {"70", "80", "99"}
+EMPLOYEE_CLASS_ALLOWED_IDS: Final[set[str]] = {
+    "70",
+    "50",
+    "80",
+    "99",
+    "60",
+    "90",
+    "40",
+    "45",
+    "65",
+    "86",
+}
 
 # Role priority for stable, explicit ordering
 ROLE_ORDER: Final[dict[str, int]] = {
@@ -842,6 +853,18 @@ def hide_streamlit_deploy_button() -> None:
         """
         <style>
             .stAppDeployButton { display: none; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def hide_streamlit_menu() -> None:
+    """Hide the Streamlit hamburger menu in the app header."""
+    st.markdown(
+        """
+        <style>
+            #MainMenu { visibility: hidden; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1821,11 +1844,15 @@ def render_system_context_rows(
         if isinstance(rows, list) and rows:
             with st.expander(LABELS.VIEW_SOURCES):
                 for row in rows:
+                    raw_text = row.get("text", "").strip()
+                    lines = raw_text.splitlines()
+                    quoted_text = "\n".join(f"> {line}" for line in lines)
+
                     st.markdown(
                         f"**RAG Rank:** {row.get('rag_rank', '-')}\n"
                         f"**Doc ID:** {row.get('doc_id', '')}\n"
                         f"**Semantic Distance:** {float(row.get('semantic_distance', 0.0)):.4f}\n\n"
-                        f"> {row.get('text', '').strip()}"
+                        f"{quoted_text}"
                     )
         else:
             st.caption(WARNING_LABELS.NO_CONTEXT)
@@ -2440,9 +2467,10 @@ def main(user_id: str, employee_class_id: str) -> None:
     """
 
     try:
-        check_access_control(user_id=user_id, employee_class_id=employee_class_id)
-        inject_header_css(app_title=LABELS.APP_TITLE)
         hide_streamlit_deploy_button()
+        hide_streamlit_menu()
+        inject_header_css(app_title=LABELS.APP_TITLE)
+        check_access_control(user_id=user_id, employee_class_id=employee_class_id)
         disabled_ui = setup_ui_locking()
         initialize_session_state(user_id=user_id)
         if USE_INACTIVITY_REDIRECT:
