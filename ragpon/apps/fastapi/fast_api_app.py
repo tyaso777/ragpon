@@ -2267,58 +2267,306 @@ def _enhance_results(
     user_id: str,
     session_id: str,
 ) -> dict[str, list[Document]]:
-    """Expand each hit by surrounding context lines / chunks.
+    """Expand each hit by surrounding context lines/chunks with graceful fallback.
 
     The helper delegates to ``chroma_repo.enhance`` for both Chroma and
     BM25 results (the latter are passed straight through the same API).
 
+    Strategy:
+      1) Try bulk enhancement for each source (Chroma / BM25) as before.
+      2) If bulk fails, enhance per document with directional fallbacks:
+         - Try (num_before, num_after)
+         - If that fails, try (0, num_after)     # give up on BEFORE
+         - If that fails, try (num_before, 0)    # give up on AFTER
+      3) If all fail, keep the doc as-is but ensure `enhanced_text` is base text.
+      4) Never raise; always return a dict with lists (possibly base-text-only).
+
     Args:
-        search_results: Output from the retrieval step —
-            ``{"chroma": [...], "bm25": [...]}``.
-        chroma_repo: Initialised ChromaDB repository or ``None`` to skip.
-        num_before: Number of neighbouring chunks *before* each hit.
-        num_after:  Number of neighbouring chunks *after* each hit.
-        user_id: User ID for contextual logging only.
-        session_id: Session ID for contextual logging only.
+        search_results: Retrieval output, e.g., {"chroma": [...], "bm25": [...]}.
+        chroma_repo: Initialized ChromaDB repository or None to skip enhancement.
+        num_before: Number of neighboring chunks before each hit.
+        num_after: Number of neighboring chunks after each hit.
+        user_id: For contextual logging.
+        session_id: For contextual logging.
 
     Returns:
-        dict[str, list[Document]]: Enhanced results using the same keys as
-        *search_results*. Lists may be empty if a repository is disabled,
-        empty, or the enhancement call fails.
-
-    Notes:
-        All exceptions thrown by the repository are caught and logged; the
-        function never raises.
+        dict[str, list[Document]]: Enhanced results keyed like `search_results`.
     """
     enhanced: dict[str, list[Document]] = {}
 
-    if search_results["chroma"] and chroma_repo:
-        try:
-            enhanced["chroma"] = chroma_repo.enhance(
-                search_results["chroma"],
-                num_before=num_before,
-                num_after=num_after,
+    def _ensure_enhanced_text(doc: Document) -> None:
+        """Guarantee `doc.enhanced_text` is usable.
+
+        Uses `doc.base_document.text` if `enhanced_text` is None or empty.
+        Sets empty string as a last resort.
+        Idempotent.
+        """
+        doc_id: str = doc.base_document.doc_id
+        if isinstance(doc.enhanced_text, str) and doc.enhanced_text.strip() != "":
+            logger.debug(
+                "[enhance.ensure] Keep existing enhanced_text "
+                "(user_id=%s, session_id=%s, doc_id=%s)",
+                user_id,
+                session_id,
+                doc_id,
             )
-        except Exception:
-            logger.exception(
-                f"[enhance] Chroma enhancement failed: "
-                f"user_id={user_id}, session_id={session_id}"
+            return
+        doc.enhanced_text = doc.base_document.text or ""
+        logger.debug(
+            "[enhance.ensure] Set enhanced_text from base text "
+            "(user_id=%s, session_id=%s, doc_id=%s, base_len=%d)",
+            user_id,
+            session_id,
+            doc_id,
+            len(doc.enhanced_text),
+        )
+
+    def _try_enhance_one(doc: Document) -> Document:
+        """Enhance one doc with directional fallbacks.
+
+        Tries full (before/after), then disables BEFORE, then disables AFTER.
+        If all fail, returns doc with `enhanced_text` set to base text.
+        """
+        doc_id: str = doc.base_document.doc_id
+
+        if not chroma_repo:
+            logger.debug(
+                "[enhance.per-doc] Enhancement disabled; using base text "
+                "(user_id=%s, session_id=%s, doc_id=%s)",
+                user_id,
+                session_id,
+                doc_id,
+            )
+            _ensure_enhanced_text(doc)
+            return doc
+
+        # Full attempt
+        try:
+            return chroma_repo.enhance(doc, num_before=num_before, num_after=num_after)  # type: ignore[arg-type]
+        except Exception as e:
+            logger.warning(
+                "[enhance.per-doc] Full enhance failed "
+                "(user_id=%s, session_id=%s, doc_id=%s, before=%d, after=%d, err=%s)",
+                user_id,
+                session_id,
+                doc_id,
+                num_before,
+                num_after,
+                e,
             )
 
-    if search_results["bm25"] and chroma_repo:
-        try:
-            enhanced["bm25"] = chroma_repo.enhance(
-                search_results["bm25"],
-                num_before=num_before,
-                num_after=num_after,
+        # Disable BEFORE
+        if num_before > 0:
+            try:
+                return chroma_repo.enhance(doc, num_before=0, num_after=num_after)  # type: ignore[arg-type]
+            except Exception as e:
+                logger.warning(
+                    "[enhance.per-doc] Retry without BEFORE failed "
+                    "(user_id=%s, session_id=%s, doc_id=%s, after=%d, err=%s)",
+                    user_id,
+                    session_id,
+                    doc_id,
+                    num_after,
+                    e,
+                )
+
+        # Disable AFTER
+        if num_after > 0:
+            try:
+                return chroma_repo.enhance(doc, num_before=num_before, num_after=0)  # type: ignore[arg-type]
+            except Exception as e:
+                logger.warning(
+                    "[enhance.per-doc] Retry without AFTER failed "
+                    "(user_id=%s, session_id=%s, doc_id=%s, before=%d, err=%s)",
+                    user_id,
+                    session_id,
+                    doc_id,
+                    num_before,
+                    e,
+                )
+
+        # Give up on enhancement; keep the doc usable
+        logger.warning(
+            "[enhance.per-doc] Enhancement abandoned; using base text "
+            "(user_id=%s, session_id=%s, doc_id=%s)",
+            user_id,
+            session_id,
+            doc_id,
+        )
+        _ensure_enhanced_text(doc)
+        return doc
+
+    def _bulk_then_per_doc(docs: list[Document], label: str) -> list[Document]:
+        """Try bulk enhance; fall back to per-doc with graceful degradation.
+
+        Args:
+            docs: Documents to enhance.
+            label: Source label (e.g., 'Chroma' or 'BM25') for logging.
+
+        Returns:
+            Enhanced docs; never raises.
+        """
+        if not docs:
+            return []
+        if not chroma_repo:
+            # Enhancement disabled; ensure downstream has usable text
+            for d in docs:
+                _ensure_enhanced_text(d)
+            logger.debug(
+                "[enhance.bulk] Enhancement disabled for %s; ensured base text "
+                "(user_id=%s, session_id=%s, count=%d)",
+                label,
+                user_id,
+                session_id,
+                len(docs),
             )
+            return docs
+
+        # 1) Bulk attempt (fast path, original behavior)
+        try:
+            result: list[Document] = chroma_repo.enhance(
+                docs, num_before=num_before, num_after=num_after  # type: ignore[arg-type]
+            )
+            logger.debug(
+                "[enhance.bulk] %s bulk enhancement succeeded "
+                "(user_id=%s, session_id=%s, before=%d, after=%d, count=%d)",
+                label,
+                user_id,
+                session_id,
+                num_before,
+                num_after,
+                len(result),
+            )
+            return result
         except Exception:
             logger.exception(
-                f"[enhance] BM25 enhancement failed: "
-                f"user_id={user_id}, session_id={session_id}"
+                "[enhance.bulk] %s bulk enhancement failed; falling back per-doc "
+                "(user_id=%s, session_id=%s, before=%d, after=%d)",
+                label,
+                user_id,
+                session_id,
+                num_before,
+                num_after,
             )
+
+        # 2) Per-doc fallback with directional retries
+        out: list[Document] = []
+        for d in docs:
+            try:
+                out.append(_try_enhance_one(d))
+            except Exception as e:  # Extra defensive guard
+                logger.warning(
+                    "[enhance.bulk->per-doc] Unexpected error; using base text "
+                    "(user_id=%s, session_id=%s, source=%s, doc_id=%s, err=%s)",
+                    user_id,
+                    session_id,
+                    label,
+                    d.base_document.doc_id,
+                    e,
+                )
+                _ensure_enhanced_text(d)
+                out.append(d)
+        logger.debug(
+            "[enhance.bulk->per-doc] Completed with fallbacks "
+            "(user_id=%s, session_id=%s, source=%s, count=%d)",
+            user_id,
+            session_id,
+            label,
+            len(out),
+        )
+        return out
+
+    # Process each source independently; never raise
+    chroma_docs = search_results.get("chroma", [])
+    if chroma_docs:
+        logger.debug(
+            "[enhance.entry] Start Chroma enhancement "
+            "(user_id=%s, session_id=%s, count=%d, before=%d, after=%d)",
+            user_id,
+            session_id,
+            len(chroma_docs),
+            num_before,
+            num_after,
+        )
+        enhanced["chroma"] = _bulk_then_per_doc(chroma_docs, "Chroma")
+
+    bm25_docs = search_results.get("bm25", [])
+    if bm25_docs:
+        logger.debug(
+            "[enhance.entry] Start BM25 enhancement "
+            "(user_id=%s, session_id=%s, count=%d, before=%d, after=%d)",
+            user_id,
+            session_id,
+            len(bm25_docs),
+            num_before,
+            num_after,
+        )
+        enhanced["bm25"] = _bulk_then_per_doc(bm25_docs, "BM25")
 
     return enhanced
+
+
+# def _enhance_results(
+#     *,
+#     search_results: dict[str, list[Document]],
+#     chroma_repo: ChromaDBRepository | None,
+#     num_before: int,
+#     num_after: int,
+#     user_id: str,
+#     session_id: str,
+# ) -> dict[str, list[Document]]:
+#     """Expand each hit by surrounding context lines / chunks.
+
+#     The helper delegates to ``chroma_repo.enhance`` for both Chroma and
+#     BM25 results (the latter are passed straight through the same API).
+
+#     Args:
+#         search_results: Output from the retrieval step —
+#             ``{"chroma": [...], "bm25": [...]}``.
+#         chroma_repo: Initialised ChromaDB repository or ``None`` to skip.
+#         num_before: Number of neighbouring chunks *before* each hit.
+#         num_after:  Number of neighbouring chunks *after* each hit.
+#         user_id: User ID for contextual logging only.
+#         session_id: Session ID for contextual logging only.
+
+#     Returns:
+#         dict[str, list[Document]]: Enhanced results using the same keys as
+#         *search_results*. Lists may be empty if a repository is disabled,
+#         empty, or the enhancement call fails.
+
+#     Notes:
+#         All exceptions thrown by the repository are caught and logged; the
+#         function never raises.
+#     """
+#     enhanced: dict[str, list[Document]] = {}
+
+#     if search_results["chroma"] and chroma_repo:
+#         try:
+#             enhanced["chroma"] = chroma_repo.enhance(
+#                 search_results["chroma"],
+#                 num_before=num_before,
+#                 num_after=num_after,
+#             )
+#         except Exception:
+#             logger.exception(
+#                 f"[enhance] Chroma enhancement failed: "
+#                 f"user_id={user_id}, session_id={session_id}"
+#             )
+
+#     if search_results["bm25"] and chroma_repo:
+#         try:
+#             enhanced["bm25"] = chroma_repo.enhance(
+#                 search_results["bm25"],
+#                 num_before=num_before,
+#                 num_after=num_after,
+#             )
+#         except Exception:
+#             logger.exception(
+#                 f"[enhance] BM25 enhancement failed: "
+#                 f"user_id={user_id}, session_id={session_id}"
+#             )
+
+#     return enhanced
 
 
 @app.post("/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries")
