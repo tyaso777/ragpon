@@ -248,7 +248,8 @@ MAX_FEEDBACK_LENGTH = 500
 MAX_CHAT_INPUT_LENGTH: int = 1000
 
 APP_NAME: str = "search_regulations"
-SERVER_URL: str = "http://ragpon-fastapi:8006"
+BPC_API_CONTAINER_NAME: str = os.getenv("BPC_API_CONTAINER_NAME", "ragpon-fastapi")
+SERVER_URL: str = f"http://{BPC_API_CONTAINER_NAME}:8006"
 
 # Number of messages to keep in the chat with the assistant
 NUM_OF_PREV_MSG_WITH_LLM: int = 6
