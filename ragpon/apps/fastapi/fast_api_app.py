@@ -968,6 +968,14 @@ def stream_and_persist_chat_response(
         system_prompt_with_context=SYSTEM_PROMPT_WITH_CONTEXT,
     )
 
+    logger.debug(
+        "[stream_and_persist_chat_response] Built OpenAI messages: user_id=%s, session_id=%s, round_id=%s, message_count=%d",
+        user_id,
+        session_id,
+        round_id,
+        len(openai_messages),
+    )
+
     try:
         response_stream = call_llm_sync_with_handling(
             client=client,
@@ -980,6 +988,13 @@ def stream_and_persist_chat_response(
             model_type=model_type,
         )
 
+        logger.debug(
+            "[stream_and_persist_chat_response] LLM stream generator acquired: user_id=%s, session_id=%s, round_id=%s",
+            user_id,
+            session_id,
+            round_id,
+        )
+
         # accumulate_llm_response
         assistant_parts: list[str] = []
         for content_chunk in cast(Generator[str, None, None], response_stream):
@@ -988,6 +1003,13 @@ def stream_and_persist_chat_response(
 
         assistant_response = "".join(assistant_parts)
 
+        logger.debug(
+            "[stream_and_persist_chat_response] Yielding context info start: user_id=%s, session_id=%s, round_id=%s",
+            user_id,
+            session_id,
+            round_id,
+        )
+
         yield from yield_context_info(
             user_id=user_id,
             session_id=session_id,
@@ -995,8 +1017,22 @@ def stream_and_persist_chat_response(
             assistant_response=assistant_response,
         )
 
+        logger.debug(
+            "[stream_and_persist_chat_response] Yielding context info done: user_id=%s, session_id=%s, round_id=%s",
+            user_id,
+            session_id,
+            round_id,
+        )
+
         user_query = extract_latest_user_message(
             messages_list=messages, user_id=user_id, session_id=session_id
+        )
+
+        logger.debug(
+            "[stream_and_persist_chat_response] Extracted latest user message: user_id=%s, session_id=%s, round_id=%s",
+            user_id,
+            session_id,
+            round_id,
         )
 
         finalize_user_round(
@@ -1106,50 +1142,178 @@ def parse_context_string_to_structured(
     user_id: str,
     session_id: str,
 ) -> list[dict[str, str | float | int]]:
-    """
-    Parses a previously generated context string into structured RAG entries.
+    """Parse context blocks fast and deterministically (no heavy regex).
 
-    This function is used to reverse-engineer the structured format when only the
-    stringified context (stored in DB) is available. If parsing fails, the function
-    logs a warning and returns any partially parsed results instead of raising an exception.
+    Expected block shape (repeated):
+        RAG Rank: <int>
+        doc_id: <str>
+        semantic distance: <float>
+        Text: <multiline...until next 'RAG Rank:' or EOF>
+        # Note: The first text chunk may be on the same line as 'Text:'.
+
+    This parser:
+      * Ignores everything after the optional '--- Optimized Queries ---' divider.
+      * Is robust to extra blank lines / incidental noise between fields.
+      * Parses in a single pass (O(n)).
+      * Tolerates missing/invalid fields (uses defaults instead of raising).
 
     Args:
-        content (str): Retrieved context string in fixed textual format.
-        user_id (str): The user ID for logging and traceability.
-        session_id (str): The session ID for logging and traceability.
+      content: Raw context string stored in the system message.
+      user_id: For logging/tracing (unused here).
+      session_id: For logging/tracing (unused here).
 
     Returns:
-        list[dict[str, str | float | int]]: List of structured entries with rag_rank, doc_id, semantic_distance, and text.
-
+      List of dict rows with keys: "rag_rank", "doc_id", "semantic_distance", "text".
     """
+    # Fast exit if no obvious header.
+    if "RAG Rank:" not in content:
+        return []
+
+    # Cut off after divider if present (be tolerant about surrounding newlines).
+    div_idx = content.find("--- Optimized Queries ---")
+    if div_idx != -1:
+        content = content[:div_idx]
+
+    # Normalize newlines and split once.
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+    lines = content.split("\n")
+    n = len(lines)
+
+    def _is_rank_header(line: str) -> bool:
+        """True if line begins a new 'RAG Rank: <int>' block."""
+        s = line.lstrip()
+        if not s.startswith("RAG Rank:"):
+            return False
+        rest = s[len("RAG Rank:") :].strip()
+        return bool(rest) and rest[0].isdigit()
+
+    def _safe_int(s: str, default: int = 0) -> int:
+        try:
+            return int(s)
+        except Exception:
+            return default
+
+    def _safe_float(s: str, default: float = 0.0) -> float:
+        try:
+            return float(s)
+        except Exception:
+            return default
 
     results: list[dict[str, str | float | int]] = []
-    try:
-        context_only = content.split("\n\n--- Optimized Queries ---\n")[0]
+    i = 0
 
-        pattern = re.compile(
-            r"RAG Rank: (?P<rank>\d+)\n"
-            r"doc_id: (?P<doc_id>.+?)\n"
-            r"semantic distance: (?P<distance>.+?)\n"
-            r"Text: (?P<text>.*?)(?=\nRAG Rank:|\Z)",
-            re.DOTALL,
-        )
+    while i < n:
+        # Seek next header
+        while i < n and not _is_rank_header(lines[i]):
+            i += 1
+        if i >= n:
+            break
 
-        for match in pattern.finditer(context_only):
-            results.append(
-                {
-                    "rag_rank": int(match.group("rank")),
-                    "doc_id": match.group("doc_id").strip(),
-                    "semantic_distance": float(match.group("distance")),
-                    "text": match.group("text").strip(),
-                }
-            )
-    except Exception as exc:
-        logger.warning(
-            f"[parse_context_string_to_structured] Failed to parse context string: user_id={user_id}, session_id={session_id}, error={exc}"
+        # Parse "RAG Rank: <int>"
+        rank_line = lines[i].lstrip()
+        rank_str = rank_line.split(":", 1)[1].strip()
+        rag_rank = _safe_int(rank_str, default=0)
+        i += 1
+
+        # Holders
+        doc_id: str = ""
+        semantic_distance: float = 0.0
+        text_lines: list[str] = []
+
+        # Scan header fields until we hit "Text:" or the next header/EOF
+        while i < n and not _is_rank_header(lines[i]):
+            line = lines[i].lstrip()
+
+            if line.startswith("doc_id:"):
+                doc_id = line.split(":", 1)[1].strip()
+                i += 1
+                continue
+
+            if line.startswith("semantic distance:"):
+                dist_str = line.split(":", 1)[1].strip()
+                semantic_distance = _safe_float(dist_str, default=0.0)
+                i += 1
+                continue
+
+            if line.startswith("Text:"):
+                # 1) Capture any inline text on this same line
+                #    e.g., "Text: foo bar" → first chunk = "foo bar"
+                #    (If empty, we just start from next lines.)
+                inline = line.split(":", 1)[1]
+                inline = inline.lstrip()  # keep leading spaces minimal
+                if inline:
+                    text_lines.append(inline)
+
+                # 2) Then collect following lines until the next header or EOF
+                i += 1
+                while i < n and not _is_rank_header(lines[i]):
+                    text_lines.append(lines[i])
+                    i += 1
+                break  # end of this block
+
+            # Unknown line in header area → skip
+            i += 1
+
+        results.append(
+            {
+                "rag_rank": rag_rank,
+                "doc_id": doc_id,
+                "semantic_distance": semantic_distance,
+                "text": "\n".join(text_lines).strip(),
+            }
         )
 
     return results
+
+
+# def parse_context_string_to_structured(
+#     content: str,
+#     user_id: str,
+#     session_id: str,
+# ) -> list[dict[str, str | float | int]]:
+#     """
+#     Parses a previously generated context string into structured RAG entries.
+
+#     This function is used to reverse-engineer the structured format when only the
+#     stringified context (stored in DB) is available. If parsing fails, the function
+#     logs a warning and returns any partially parsed results instead of raising an exception.
+
+#     Args:
+#         content (str): Retrieved context string in fixed textual format.
+#         user_id (str): The user ID for logging and traceability.
+#         session_id (str): The session ID for logging and traceability.
+
+#     Returns:
+#         list[dict[str, str | float | int]]: List of structured entries with rag_rank, doc_id, semantic_distance, and text.
+
+#     """
+
+#     results: list[dict[str, str | float | int]] = []
+#     try:
+#         context_only = content.split("\n\n--- Optimized Queries ---\n")[0]
+#         pattern = re.compile(
+#             r"RAG Rank: (?P<rank>\d+)\n"
+#             r"doc_id: (?P<doc_id>.+?)\n"
+#             r"semantic distance: (?P<distance>.+?)\n"
+#             r"Text: (?P<text>.*?)(?=\nRAG Rank:|\Z)",
+#             re.DOTALL,
+#         )
+
+#         for match in pattern.finditer(context_only):
+#             results.append(
+#                 {
+#                     "rag_rank": int(match.group("rank")),
+#                     "doc_id": match.group("doc_id").strip(),
+#                     "semantic_distance": float(match.group("distance")),
+#                     "text": match.group("text").strip(),
+#                 }
+#             )
+#     except Exception as exc:
+#         logger.warning(
+#             f"[parse_context_string_to_structured] Failed to parse context string: user_id={user_id}, session_id={session_id}, error={exc}"
+#         )
+
+#     return results
 
 
 def extract_referenced_rag_ranks(text: str, user_id: str, session_id: str) -> list[int]:
@@ -2149,14 +2313,50 @@ def yield_context_info(
     Yields:
         str: A Server-Sent Event (SSE) chunk containing the filtered context rows.
     """
+    logger.debug(
+        "[yield_context_info] Starting: user_id=%s, session_id=%s, "
+        "len(retrieved_contexts_str)=%d, len(assistant_response)=%d",
+        user_id,
+        session_id,
+        len(retrieved_contexts_str),
+        len(assistant_response),
+    )
     try:
+        logger.debug(
+            "[yield_context_info] Calling parse_context_string_to_structured: "
+            "user_id=%s, session_id=%s",
+            user_id,
+            session_id,
+        )
         context_rows = parse_context_string_to_structured(
             content=retrieved_contexts_str, user_id=user_id, session_id=session_id
         )
+        logger.debug(
+            "[yield_context_info] parse_context_string_to_structured completed: "
+            "user_id=%s, session_id=%s, len(context_rows)=%d",
+            user_id,
+            session_id,
+            len(context_rows),
+        )
+
         # Extract referenced RAG ranks from assistant content
+        logger.debug(
+            "[yield_context_info] Calling extract_referenced_rag_ranks: "
+            "user_id=%s, session_id=%s",
+            user_id,
+            session_id,
+        )
         referenced_ranks = extract_referenced_rag_ranks(
             text=assistant_response, user_id=user_id, session_id=session_id
         )
+        logger.debug(
+            "[yield_context_info] extract_referenced_rag_ranks completed: "
+            "user_id=%s, session_id=%s, referenced_ranks=%s",
+            user_id,
+            session_id,
+            referenced_ranks,
+        )
+
         if not referenced_ranks:
             logger.debug(
                 "[yield_context_info] No referenced RAG ranks found: user_id=%s, session_id=%s",
