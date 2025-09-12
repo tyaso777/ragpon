@@ -2467,6 +2467,16 @@ def main(user_id: str, employee_class_id: str) -> None:
         employee_class_id (str): The employee class ID of the user, used for access control.
     """
 
+    st.markdown(
+        """
+        <meta http-equiv="Content-Language" content="ja">
+        <script>
+        document.documentElement.lang = 'ja';
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
     try:
         hide_streamlit_deploy_button()
         hide_streamlit_menu()
