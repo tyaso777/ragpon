@@ -17,10 +17,11 @@ from streamlit_autorefresh import st_autorefresh
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.apps.chat_domain import Message, RagModeEnum, RoleEnum, SessionData
 
+APP_TITLE: str = os.getenv("APP_TITLE", "📘 規程・マニュアル等検索アプリ")
+
 
 @dataclass(frozen=True)
 class Labels:
-    APP_TITLE: str = "📘 規程・マニュアル等検索アプリ"
     # Session creation
     CREATE_SESSION: str = "🆕 新しいセッションを作成"
     SESSION_NAME: str = "📛 セッション名"
@@ -800,6 +801,42 @@ def check_access_control(user_id: str, employee_class_id: str) -> None:
 def is_debug_session_active() -> bool:
     sessions = st.session_state.get("session_ids", [])
     return any(s.session_name == DEBUG_SESSION_TRIGGER for s in sessions)
+
+
+def setup_page_config() -> None:
+    """Configure Streamlit page settings and early language detection prevention.
+
+    This function must be called before any other Streamlit commands to properly
+    configure the page. It sets up basic page metadata and attempts to prevent
+    browser translation prompts by setting language attributes as early as possible.
+
+    Side Effects:
+        - Sets page title, icon, and layout configuration
+        - Injects early JavaScript to set document language to Japanese
+        - Must be called before other st.* functions
+    """
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon="ragpon/apps/streamlit/compass_icon.svg",
+        layout="centered",
+        initial_sidebar_state="expanded",
+        menu_items={"Get Help": None, "Report a bug": None, "About": None},
+    )
+
+    # Early language setting to minimize translation popup duration
+    st.markdown(
+        """
+        <meta http-equiv="Content-Language" content="ja">
+        <meta name="language" content="Japanese">
+        <script>
+        (function() {
+            document.documentElement.lang = 'ja';
+            document.documentElement.setAttribute('lang', 'ja');
+        })();
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def inject_header_css(app_title: str) -> None:
@@ -2467,20 +2504,11 @@ def main(user_id: str, employee_class_id: str) -> None:
         employee_class_id (str): The employee class ID of the user, used for access control.
     """
 
-    st.markdown(
-        """
-        <meta http-equiv="Content-Language" content="ja">
-        <script>
-        document.documentElement.lang = 'ja';
-        </script>
-        """,
-        unsafe_allow_html=True,
-    )
-
     try:
+        setup_page_config()
         hide_streamlit_deploy_button()
         hide_streamlit_menu()
-        inject_header_css(app_title=LABELS.APP_TITLE)
+        inject_header_css(app_title=APP_TITLE)
         check_access_control(user_id=user_id, employee_class_id=employee_class_id)
         disabled_ui = setup_ui_locking()
         initialize_session_state(user_id=user_id)
