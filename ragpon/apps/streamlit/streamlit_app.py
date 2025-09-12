@@ -18,6 +18,7 @@ from ragpon._utils.logging_helper import get_library_logger
 from ragpon.apps.chat_domain import Message, RagModeEnum, RoleEnum, SessionData
 
 APP_TITLE: str = os.getenv("APP_TITLE", "📘 規程・マニュアル等検索アプリ")
+APP_TITLE_WITH_ICON: str = "🧭 " + APP_TITLE
 
 
 @dataclass(frozen=True)
@@ -817,7 +818,7 @@ def setup_page_config() -> None:
     """
     st.set_page_config(
         page_title=APP_TITLE,
-        page_icon="ragpon/apps/streamlit/compass_icon.svg",
+        page_icon="🧭",
         layout="centered",
         initial_sidebar_state="expanded",
         menu_items={"Get Help": None, "Report a bug": None, "About": None},
@@ -2508,7 +2509,7 @@ def main(user_id: str, employee_class_id: str) -> None:
         setup_page_config()
         hide_streamlit_deploy_button()
         hide_streamlit_menu()
-        inject_header_css(app_title=APP_TITLE)
+        inject_header_css(app_title=APP_TITLE_WITH_ICON)
         check_access_control(user_id=user_id, employee_class_id=employee_class_id)
         disabled_ui = setup_ui_locking()
         initialize_session_state(user_id=user_id)
