@@ -1,18 +1,35 @@
 # %%
 # FastAPI side
+import asyncio
+import contextlib
 import json
 import logging
 import os
+import random
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from json import dumps
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable, Generator, Literal, NoReturn, cast
+from typing import (
+    Any,
+    AsyncGenerator,
+    Callable,
+    Generator,
+    Literal,
+    NoReturn,
+    TypeVar,
+    cast,
+)
 from uuid import UUID
 
+import anyio
+from anyio import CapacityLimiter, to_thread
 from fastapi import Body, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from mysql.connector import Error as MySQLError
 from mysql.connector.pooling import MySQLConnectionPool
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
@@ -59,6 +76,28 @@ from ragpon.apps.fastapi.prompts.prompts import (
     get_system_prompt_with_context,
 )
 from ragpon.tokenizer import SudachiTokenizer
+
+T = TypeVar("T")
+
+
+async def run_sync_kw(
+    func: Callable[..., T], /, *args, limiter: CapacityLimiter | None = None, **kwargs
+) -> T:
+    """Run a sync callable with kwargs in a thread (AnyIO wrapper).
+
+    AnyIO's to_thread.run_sync does not forward **kwargs to the target.
+    This helper binds args/kwargs first, then executes the bound callable.
+    Args:
+        func: Target function.
+        *args: Positional args to bind.
+        limiter: Optional CapacityLimiter.
+        **kwargs: Keyword args to bind.
+    Returns:
+        The return value of ``func``.
+    """
+    bound = partial(func, *args, **kwargs)
+    return await to_thread.run_sync(bound, limiter=limiter)
+
 
 # Initialize logger
 logger = get_library_logger(__name__)
@@ -114,9 +153,12 @@ logger.debug(
 
 app = FastAPI()
 
-MAX_CHUNK_LOG_LEN = 300
 # DB_TYPE = "postgres"
 DB_TYPE = "mysql"
+# DB_TYPE = os.getenv("DB_TYPE", "mysql").lower()
+IS_PG = DB_TYPE in {"postgres", "postgresql"}
+IS_MY = DB_TYPE == "mysql"
+
 MAX_TOP_K = 30
 MAX_OPTIMIZED_QUERIES = 3  # "split the request into **1 to 3 queries**" is written in OPTIMIZED_QUERY_INSTRUCTION
 
@@ -134,7 +176,8 @@ SYSTEM_PROMPT_WITH_CONTEXT = get_system_prompt_with_context()
 OPTIMIZED_QUERY_INSTRUCTION = get_optimized_query_instruction()
 
 try:
-    client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
+    # client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
+    client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_async_openai_client()
     logger.debug(
         f"[Startup] OpenAI client initialized: model={MODEL_NAME}, deployment={DEPLOYMENT_ID}, type={OPENAI_TYPE}"
     )
@@ -151,8 +194,16 @@ def _get_env(name: str) -> str:
         raise RuntimeError(f"Required environment variable '{name}' is not set") from e
 
 
+MAX_RETRIES: int = 10
+BASE_DELAY: float = 0.5  # seconds
+MAX_DELAY: float = 5.0  # seconds
+JITTER: float = 0.2  # +/- jitter in seconds
+
+SEARCH_LIMITER = CapacityLimiter(int(os.getenv("SEARCH_CONCURRENCY", "8")))
+EMBED_LIMITER = CapacityLimiter(int(os.getenv("EMBED_CONCURRENCY", "1")))
+
 try:
-    if DB_TYPE == "postgres":
+    if IS_PG:
         db_pool = SimpleConnectionPool(
             minconn=1,
             maxconn=32,
@@ -161,22 +212,56 @@ try:
             user="postgres",
             password="postgres123",
         )
+        DB_LIMITER = CapacityLimiter(31)
         logger.debug("[Startup] PostgreSQL connection pool initialized")
-    elif DB_TYPE == "mysql":
-        db_pool = MySQLConnectionPool(
-            pool_name=_get_env("MYSQL_POOL_NAME"),
-            pool_size=int(_get_env("MYSQL_POOL_SIZE")),
-            host=_get_env("MYSQL_HOST"),
-            port=int(_get_env("MYSQL_PORT")),
-            user=_get_env("MYSQL_USER"),
-            password=_get_env("MYSQL_PASSWORD"),
-            database=_get_env("MYSQL_DATABASE"),
-            autocommit=_get_env("MYSQL_AUTOCOMMIT").lower() in ("true", "1", "yes"),
-            charset=_get_env("MYSQL_CHARSET"),
-        )
-        logger.debug("[Startup] MySQL connection pool initialised")
+    elif IS_MY:
+        pool_size = int(_get_env("MYSQL_POOL_SIZE"))
+        delay: float = BASE_DELAY
+        last_exc: Exception | None = None
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                db_pool = MySQLConnectionPool(
+                    pool_name=_get_env("MYSQL_POOL_NAME"),
+                    pool_size=pool_size,
+                    host=_get_env("MYSQL_HOST"),
+                    port=int(_get_env("MYSQL_PORT")),
+                    user=_get_env("MYSQL_USER"),
+                    password=_get_env("MYSQL_PASSWORD"),
+                    database=_get_env("MYSQL_DATABASE"),
+                    autocommit=_get_env("MYSQL_AUTOCOMMIT").lower()
+                    in ("true", "1", "yes"),
+                    charset=_get_env("MYSQL_CHARSET"),
+                )
+                # Smoke test a single connection so we fail fast if server is up but unreachable.
+                with get_database_client("mysql", db_pool) as db:
+                    db.execute("SELECT 1")
+                    _ = db.fetchone()
+                DB_LIMITER = CapacityLimiter(max(1, pool_size - 1))
+                logger.debug("[Startup] MySQL connection pool initialised")
+                break
+            except MySQLError as e:
+                last_exc = e
+                logger.warning(
+                    "[Startup] MySQL pool init failed (attempt %d/%d): %s",
+                    attempt,
+                    MAX_RETRIES,
+                    e,
+                )
+                if attempt == MAX_RETRIES:
+                    raise  # bubble up after the last attempt
+
+                # Exponential backoff with jitter
+                sleep_for = delay + random.uniform(-JITTER, JITTER)
+                if sleep_for < 0:
+                    sleep_for = 0.0
+                time.sleep(sleep_for)
+                delay = min(delay * 2.0, MAX_DELAY)
+    else:
+        raise RuntimeError(f"Unsupported DB_TYPE: {DB_TYPE}")
+
 except Exception:
-    logger.exception("[Startup] Failed to initialize PostgreSQL connection pool")
+    logger.exception("[Startup] Failed to initialize DB connection pool")
     raise
 
 base_path = Path(__file__).parent
@@ -290,7 +375,7 @@ except (ValueError, TypeError) as exc:
 def insert_placeholder_user_message(
     *,
     db_type: str,
-    pool: SimpleConnectionPool,
+    db_pool: Any,
     user_msg_id: str,
     user_id: str,
     session_id: str,
@@ -304,7 +389,7 @@ def insert_placeholder_user_message(
 
     Args:
         db_type: Database type identifier (e.g., ``"postgres"``).
-        pool: Psycopg2 connection pool.
+        db_pool: db connection pool.
         user_msg_id: UUID for the user message row.
         user_id: Authenticated user ID.
         session_id: Parent chat-session UUID.
@@ -320,7 +405,7 @@ def insert_placeholder_user_message(
     created_at = datetime.now(timezone.utc)
 
     try:
-        with get_database_client(db_type, pool) as db:
+        with get_database_client(db_type, db_pool) as db:
             db.execute(
                 """
                 INSERT INTO messages (
@@ -513,12 +598,12 @@ def finalize_user_round(
         raise
 
 
-def generate_queries_from_history(
+async def generate_queries_from_history(
     user_id: str,
     session_id: str,
     messages_list: list[dict[str, str]],
     system_instructions: str,
-    client: OpenAI | AzureOpenAI,
+    client: AsyncOpenAI | AsyncAzureOpenAI,
     model_name: str,
     model_type: Literal["openai", "azure"],
 ) -> list[str]:
@@ -543,7 +628,7 @@ def generate_queries_from_history(
             multiple queries in JSON format, for example:
             "You are a helpful assistant. Return an array of objects with
              a 'query' key in each."
-        client (OpenAI | AzureOpenAI): OpenAI-compatible client instance.
+        client (AsyncOpenAI | AsyncAzureOpenAI): OpenAI-compatible client instance.
         model_name (str): Model name or Azure deployment ID.
         model_type (Literal['openai','azure']): Backend type indicator.
 
@@ -588,7 +673,7 @@ def generate_queries_from_history(
     ]
 
     # 3) Call the LLM with tools enabled and force the specific function.
-    response: ChatCompletion = call_llm_sync_with_handling(
+    response = await call_llm_async_with_handling(
         client=client,
         model=model_name,
         messages=final_messages,
@@ -602,10 +687,16 @@ def generate_queries_from_history(
         model_type=model_type,
         tools=tools,
         tool_choice={"type": "function", "function": {"name": "emit_queries"}},
+        max_tokens=256,  # keep output compact and predictable
     )
+    chat = cast(ChatCompletion, response)
 
     # 4) Locate the correct tool call by name (not just index 0).
-    tool_calls = response.choices[0].message.tool_calls or []
+    try:
+        tool_calls = chat.choices[0].message.tool_calls or []
+    except (IndexError, AttributeError) as exc:
+        raise ValueError("Model response missing choices/tool_calls") from exc
+
     emit_call = next(
         (tc for tc in tool_calls if tc.function.name == "emit_queries"), None
     )
@@ -621,7 +712,7 @@ def generate_queries_from_history(
 
     # 5) Parse and validate arguments; fail closed on invalid JSON.
     try:
-        args = json.loads(emit_call.function.arguments)
+        args = json.loads(emit_call.function.arguments)  # type: ignore[attr-defined]
     except json.JSONDecodeError as exc:
         logger.error(
             "[generate_queries_from_history] JSON parse error from tool call: "
@@ -629,7 +720,7 @@ def generate_queries_from_history(
             user_id,
             session_id,
             exc,
-            emit_call.function.arguments[:500],
+            emit_call.function.arguments[:500],  # type: ignore[attr-defined]
         )
         raise ValueError("Malformed JSON in tool call arguments") from exc
 
@@ -657,122 +748,12 @@ def generate_queries_from_history(
     return queries
 
 
-# def generate_queries_from_history(
-#     user_id: str,
-#     session_id: str,
-#     messages_list: list[dict[str, str]],
-#     system_instructions: str,
-#     client: OpenAI | AzureOpenAI,
-#     model_name: str,
-#     model_type: Literal["openai", "azure"],
-# ) -> list[str]:
-#     """
-#     Generate multiple search queries from a given conversation history.
-
-#     This function takes the existing conversation (messages_list) and appends
-#     final instructions (system_instructions) to request a JSON array of objects
-#     like: [{"query": "..."}]. The model's response is parsed into Python objects,
-#     and a list of query strings is returned.
-
-#     Args:
-#         user_id (str): ID of the user (used for logging).
-#         session_id (str): ID of the session (used for logging).
-#         messages_list (list[dict[str, str]]):
-#             The conversation so far, e.g.:
-#             [
-#               {"role": "user", "content": "User's question 1"},
-#               {"role": "assistant", "content": "Assistant's answer 1"},
-#               ...
-#             ]
-#         system_instructions (str):
-#             The final system message that instructs the model to produce
-#             multiple queries in JSON format, for example:
-#             "You are a helpful assistant. Return an array of objects with
-#              a 'query' key in each."
-#         client (OpenAI | AzureOpenAI): OpenAI-compatible client instance.
-#         model_name (str): Model name or Azure deployment ID.
-#         model_type (Literal['openai','azure']): Backend type indicator.
-
-#     Returns:
-#         list[str]: A list of query strings extracted from the model's JSON output.
-
-#     Raises:
-#         ValueError: If the JSON returned by the model is malformed or missing
-#             the expected structure.
-#     """
-#     # Build the messages for the ChatCompletion request
-#     #    We'll append a final system message at the end
-#     final_messages = messages_list + [
-#         {"role": "system", "content": system_instructions}
-#     ]
-
-#     try:
-#         response: ChatCompletion = call_llm_sync_with_handling(
-#             client=client,
-#             model=model_name,
-#             messages=final_messages,
-#             user_id=user_id,
-#             session_id=session_id,
-#             temperature=0.0,
-#             stream=False,
-#             model_type=model_type,
-#         )
-#         raw_text = response.choices[0].message.content.strip()
-#         logger.info(
-#             f"[generate_queries_from_history] Generated queries using OpenAI response: user_id={user_id}, session_id={session_id}"
-#         )
-#     except (IndexError, AttributeError) as exc:
-#         logger.exception(
-#             f"[generate_queries_from_history] Failed to extract text from OpenAI response: user_id={user_id}, session_id={session_id}"
-#         )
-#         raise ValueError("OpenAI response missing expected content") from exc
-#     except Exception as exc:
-#         logger.exception(
-#             f"[generate_queries_from_history] OpenAI API call failed: user_id={user_id}, session_id={session_id}"
-#         )
-#         raise ValueError("Failed to call language model") from exc
-
-#     # Parse the JSON output (expected: [{"query": "..."}])
-#     try:
-#         parsed = json.loads(raw_text)
-#     except json.JSONDecodeError as exc:
-#         logger.warning(
-#             f"[generate_queries_from_history] Failed to parse JSON from model response: user_id={user_id}, session_id={session_id}, len(raw_text)={len(raw_text)}"
-#         )
-#         raise ValueError(f"Failed to parse JSON from model") from exc
-
-#     if not isinstance(parsed, list):
-#         logger.warning(
-#             f"[generate_queries_from_history] Expected JSON list, got {type(parsed)}: {raw_text} for user_id={user_id}, session_id={session_id}"
-#         )
-#         raise ValueError(f"Expected a JSON list, got: {type(parsed)}")
-
-#     # Collect queries
-#     queries = []
-#     for i, item in enumerate(parsed):
-#         if not isinstance(item, dict):
-#             logger.warning(
-#                 f"[generate_queries_from_history] Invalid type at index {i}: expected dict, got {type(item)} for user_id={user_id}, session_id={session_id}"
-#             )
-#             raise ValueError(f"Expected dict at index {i}, got: {type(item)}")
-#         if "query" not in item:
-#             logger.warning(
-#                 f"[generate_queries_from_history] Missing 'query' key at index {i}: {item} for user_id={user_id}, session_id={session_id}"
-#             )
-#             raise ValueError(f"Missing 'query' key at index {i} in: {item}")
-#         queries.append(item["query"])
-
-#     # Limit the number of optimized queries to avoid overload or abuse
-#     queries = queries[:MAX_OPTIMIZED_QUERIES]
-
-#     return queries
-
-
-def generate_session_title(
+async def generate_session_title(
+    *,
     query: str,
     user_id: str,
     session_id: str,
-    client: OpenAI | AzureOpenAI,
+    client: AsyncOpenAI | AsyncAzureOpenAI,
     model_name: str,
     model_type: Literal["openai", "azure"],
 ) -> str:
@@ -783,7 +764,7 @@ def generate_session_title(
         query (str): The user's initial query string.
         user_id (str): The user ID for logging and traceability.
         session_id (str): The session ID for logging and traceability.
-        client (OpenAI | AzureOpenAI): The OpenAI-compatible client instance.
+        client (AsyncOpenAI | AsyncAzureOpenAI): The OpenAI-compatible client instance.
         model_name (str): The model name (OpenAI) or deployment ID (Azure).
         model_type (Literal["openai", "azure"]): Indicates which backend is in use.
 
@@ -805,7 +786,7 @@ def generate_session_title(
         {"role": "user", "content": query},
     ]
 
-    response: ChatCompletion = call_llm_sync_with_handling(
+    response = await call_llm_async_with_handling(
         client=client,
         model=model_name,
         messages=messages,
@@ -834,74 +815,7 @@ def generate_session_title(
         raise ValueError("OpenAI response missing expected content") from exc
 
 
-# async def generate_session_title_async(
-#     query: str,
-#     user_id: str,
-#     session_id: str,
-#     client: AsyncOpenAI | AsyncAzureOpenAI,
-#     model_name: str,
-#     model_type: Literal["openai", "azure"],
-# ) -> str:
-#     """
-#     Generates a concise session title from the user's query using a language model.
-
-#     Args:
-#         query (str): The user's initial query string.
-#         user_id (str): The user ID for logging and traceability.
-#         session_id (str): The session ID for logging and traceability.
-#         client (AsyncOpenAI | AsyncAzureOpenAI): The OpenAI-compatible async client instance.
-#         model_name (str): The model name (OpenAI) or deployment ID (Azure).
-#         model_type (Literal["openai", "azure"]): Indicates which backend is in use.
-
-#     Returns:
-#         str: A concise session title (up to 15 characters) in Japanese.
-
-#     Raises:
-#         ValueError: If the API call fails or the response is invalid.
-#     """
-#     messages = [
-#         {
-#             "role": "system",
-#             "content": (
-#                 "You are an assistant that generates concise session titles. "
-#                 "Based on the user's first query, provide a title of at most "
-#                 "15 characters in Japanese."
-#             ),
-#         },
-#         {"role": "user", "content": query},
-#     ]
-
-#     response: ChatCompletion = await call_llm_async_with_handling(
-#         client=client,
-#         model=model_name,
-#         messages=messages,
-#         user_id=user_id,
-#         session_id=session_id,
-#         temperature=0.0,
-#         stream=False,
-#         model_type=model_type,
-#     )
-
-#     try:
-#         content = response.choices[0].message.content.strip()
-#         if not content:
-#             logger.exception(
-#                 f"[generate_session_title_async] OpenAI returned empty title for user_id={user_id}, session_id={session_id}"
-#             )
-#             raise ValueError("OpenAI returned empty title content")
-#         logger.info(
-#             f"[generate_session_title_async] Title generated"
-#             f"for user_id={user_id}, session_id={session_id}, len(query)='{len(query)}'"
-#         )
-#         return content
-#     except (IndexError, AttributeError) as exc:
-#         logger.exception(
-#             f"[generate_session_title_async] Failed to extract title for user_id={user_id}, session_id={session_id}"
-#         )
-#         raise ValueError("OpenAI response missing expected content") from exc
-
-
-def stream_and_persist_chat_response(
+async def stream_and_persist_chat_response(
     *,
     user_id: str,
     session_id: str,
@@ -910,15 +824,15 @@ def stream_and_persist_chat_response(
     user_msg_id: str,
     system_msg_id: str,
     assistant_msg_id: str,
-    messages: list[dict],
+    messages: list[dict[str, str]],
     retrieved_contexts_str: str,
     rag_mode: RagModeEnum,
-    client: OpenAI | AzureOpenAI,
+    client: AsyncOpenAI | AsyncAzureOpenAI,
     model_name: str,
     model_type: Literal["openai", "azure"],
     optimized_queries: list[str] | None = None,
     use_reranker: bool = False,
-) -> Generator[str, None, None]:
+) -> AsyncGenerator[str, None]:
     """Stream an LLM reply and persist chat messages.
 
     Workflow:
@@ -940,7 +854,7 @@ def stream_and_persist_chat_response(
             (each as ``{"role": "...", "content": "..."}``).
         retrieved_contexts_str: Optional RAG context to prepend.
         rag_mode: Retrieval mode applied; see :class:`RagModeEnum`.
-        client: OpenAI or Azure client instance.
+        client: Async OpenAI/Azure client.
         model_name: Model (or deployment) name.
         model_type: Backend type, ``"openai"`` or ``"azure"``.
         optimized_queries: Re-written queries produced during retrieval.
@@ -977,7 +891,7 @@ def stream_and_persist_chat_response(
     )
 
     try:
-        response_stream = call_llm_sync_with_handling(
+        response_stream = await call_llm_async_with_handling(
             client=client,
             model=model_name,
             messages=openai_messages,
@@ -997,9 +911,9 @@ def stream_and_persist_chat_response(
 
         # accumulate_llm_response
         assistant_parts: list[str] = []
-        for content_chunk in cast(Generator[str, None, None], response_stream):
+        async for content_chunk in cast(AsyncGenerator[str, None], response_stream):
             assistant_parts.append(content_chunk)
-            yield format_sse_chunk({"data": content_chunk})
+            yield format_sse_chunk(data={"data": content_chunk})
 
         assistant_response = "".join(assistant_parts)
 
@@ -1010,12 +924,13 @@ def stream_and_persist_chat_response(
             round_id,
         )
 
-        yield from yield_context_info(
+        async for sse in yield_context_info(
             user_id=user_id,
             session_id=session_id,
             retrieved_contexts_str=retrieved_contexts_str,
             assistant_response=assistant_response,
-        )
+        ):
+            yield sse
 
         logger.debug(
             "[stream_and_persist_chat_response] Yielding context info done: user_id=%s, session_id=%s, round_id=%s",
@@ -1035,7 +950,8 @@ def stream_and_persist_chat_response(
             round_id,
         )
 
-        finalize_user_round(
+        await run_sync_kw(
+            finalize_user_round,
             db_type=DB_TYPE,
             pool=db_pool,
             user_msg_id=user_msg_id,
@@ -1055,17 +971,31 @@ def stream_and_persist_chat_response(
             optimized_queries=optimized_queries,
         )
 
-        yield format_sse_chunk(data={"data": "[DONE]"})
+        yield format_sse_chunk({"data": "[DONE]"})
 
         logger.info(
             f"[stream_and_persist_chat_response] Finished stream_and_persist_chat_response: user_id={user_id}, session_id={session_id}, round_id={round_id}, total_chars={len(assistant_response)}"
         )
+
+    except asyncio.CancelledError:
+        # Client closed the connection; do not try to emit more chunks
+        logger.warning(
+            "[stream_and_persist_chat_response] client disconnected: user_id=%s session_id=%s round_id=%s",
+            user_id,
+            session_id,
+            round_id,
+        )
+        return
 
     except Exception:
         logger.exception(
             f"[stream_and_persist_chat_response] Error: user_id={user_id}, session_id={session_id}, round_id={round_id}"
         )
         yield format_sse_chunk(data={"error": "Internal server error occurred"})
+
+        with contextlib.suppress(RuntimeError):
+            yield format_sse_chunk({"data": "[DONE]"})
+        return
 
 
 def build_context_string(
@@ -1266,56 +1196,6 @@ def parse_context_string_to_structured(
     return results
 
 
-# def parse_context_string_to_structured(
-#     content: str,
-#     user_id: str,
-#     session_id: str,
-# ) -> list[dict[str, str | float | int]]:
-#     """
-#     Parses a previously generated context string into structured RAG entries.
-
-#     This function is used to reverse-engineer the structured format when only the
-#     stringified context (stored in DB) is available. If parsing fails, the function
-#     logs a warning and returns any partially parsed results instead of raising an exception.
-
-#     Args:
-#         content (str): Retrieved context string in fixed textual format.
-#         user_id (str): The user ID for logging and traceability.
-#         session_id (str): The session ID for logging and traceability.
-
-#     Returns:
-#         list[dict[str, str | float | int]]: List of structured entries with rag_rank, doc_id, semantic_distance, and text.
-
-#     """
-
-#     results: list[dict[str, str | float | int]] = []
-#     try:
-#         context_only = content.split("\n\n--- Optimized Queries ---\n")[0]
-#         pattern = re.compile(
-#             r"RAG Rank: (?P<rank>\d+)\n"
-#             r"doc_id: (?P<doc_id>.+?)\n"
-#             r"semantic distance: (?P<distance>.+?)\n"
-#             r"Text: (?P<text>.*?)(?=\nRAG Rank:|\Z)",
-#             re.DOTALL,
-#         )
-
-#         for match in pattern.finditer(context_only):
-#             results.append(
-#                 {
-#                     "rag_rank": int(match.group("rank")),
-#                     "doc_id": match.group("doc_id").strip(),
-#                     "semantic_distance": float(match.group("distance")),
-#                     "text": match.group("text").strip(),
-#                 }
-#             )
-#     except Exception as exc:
-#         logger.warning(
-#             f"[parse_context_string_to_structured] Failed to parse context string: user_id={user_id}, session_id={session_id}, error={exc}"
-#         )
-
-#     return results
-
-
 def extract_referenced_rag_ranks(text: str, user_id: str, session_id: str) -> list[int]:
     """
     Extracts all unique RAG_RANK references from a given string,
@@ -1348,6 +1228,70 @@ def extract_referenced_rag_ranks(text: str, user_id: str, session_id: str) -> li
         return []
 
 
+def _list_sessions_sync(
+    *,
+    db_type: str,
+    db_pool: Any,
+    user_id: str,
+    app_name: str,
+) -> list[dict]:
+    """Fetch session rows synchronously (runs in a worker thread).
+
+    This function performs the blocking DB I/O. It is intentionally synchronous
+    so that the FastAPI route can offload it to a thread with a concurrency limiter.
+
+    Args:
+      db_type: Database type identifier (e.g., "postgres", "mysql").
+      db_pool: Connection pool object for the selected DB.
+      user_id: Target user id.
+      app_name: Application name to scope sessions.
+
+    Returns:
+      list[dict[str, object]]: Session rows with keys:
+        - session_id (str)
+        - session_name (str)
+        - is_private_session (bool)
+        - last_touched_at (ISO 8601 string with timezone)
+    """
+
+    sql = """
+        SELECT
+            s.session_id,
+            s.session_name,
+            s.is_private_session,
+            COALESCE(m.last_user_query_at, s.created_at) AS last_touched_at
+        FROM sessions AS s
+        LEFT JOIN (
+            SELECT
+                session_id,
+                MAX(created_at) AS last_user_query_at
+            FROM messages
+            WHERE message_type = 'user'
+              AND is_deleted = FALSE
+            GROUP BY session_id
+        ) AS m ON s.session_id = m.session_id
+        WHERE s.user_id = %s
+          AND s.app_name = %s
+          AND s.is_deleted = FALSE
+        ORDER BY last_touched_at ASC
+    """
+    with get_database_client(db_type, db_pool) as db:
+        db.execute(sql, (user_id, app_name))
+        rows = db.fetchall()
+
+    sessions: list[dict] = []
+    for row in rows:
+        sessions.append(
+            {
+                "session_id": str(row[0]),
+                "session_name": row[1],
+                "is_private_session": row[2],
+                "last_touched_at": row[3].isoformat(),
+            }
+        )
+    return sessions
+
+
 @app.get("/users/{user_id}/apps/{app_name}/sessions")
 async def list_sessions(user_id: str, app_name: str) -> list[dict]:
     """
@@ -1368,56 +1312,103 @@ async def list_sessions(user_id: str, app_name: str) -> list[dict]:
     )
 
     try:
-        with get_database_client(DB_TYPE, db_pool) as db:
-            db.execute(
-                """
-                SELECT
-                    s.session_id,
-                    s.session_name,
-                    s.is_private_session,
-                    COALESCE(m.last_user_query_at, s.created_at) AS last_touched_at
-                FROM sessions AS s
-                LEFT JOIN (
-                    SELECT
-                        session_id,
-                        MAX(created_at) AS last_user_query_at
-                    FROM messages
-                    WHERE message_type = 'user'
-                    AND is_deleted = FALSE
-                    GROUP BY session_id
-                ) AS m ON s.session_id = m.session_id
-                WHERE s.user_id = %s
-                AND s.app_name = %s
-                AND s.is_deleted = FALSE
-                ORDER BY last_touched_at ASC
-                """,
-                (user_id, app_name),
-            )
-            rows = db.fetchall()
-
-        sessions = [
-            {
-                "session_id": str(row[0]),
-                "session_name": row[1],
-                "is_private_session": row[2],
-                "last_touched_at": row[3].isoformat(),
-            }
-            for row in rows
-        ]
+        sessions = await run_sync_kw(
+            _list_sessions_sync,
+            db_type=DB_TYPE,
+            db_pool=db_pool,
+            user_id=user_id,
+            app_name=app_name,
+            limiter=DB_LIMITER,
+        )
 
         logger.debug(
-            f"[list_sessions] Finished list_sessions: user_id={user_id}, app_name={app_name}, session_count={len(sessions)}"
+            "[list_sessions] Finished list_sessions: user_id=%s, app_name=%s, session_count=%s",
+            user_id,
+            app_name,
+            len(sessions),
         )
 
         return sessions
 
     except Exception as exc:
         logger.exception(
-            f"[list_sessions] Failed to fetch sessions: user_id={user_id}, app_name={app_name}"
+            f"[list_sessions] Failed to fetch sessions: user_id=%s, app_name=%s",
+            user_id,
+            app_name,
         )
         raise HTTPException(
             status_code=500, detail="Failed to retrieve session list from the database."
         ) from exc
+
+
+def _list_session_queries_sync(
+    *,
+    db_type: str,
+    db_pool: Any,
+    user_id: str,
+    app_name: str,
+    session_id: str,
+    limit: int,
+) -> tuple[list[tuple], bool]:
+    """Fetch newest-*limit* rounds' messages with a two-phase query (blocking).
+
+    Phase 1: Fetch distinct latest round_ids (DESC) up to limit+1.
+    Phase 2: Fetch messages only for the kept round_ids (ASC).
+
+    Args:
+        db_type: Database type identifier ("postgres" or "mysql").
+        db_pool: DB connection pool.
+        user_id: Target user id.
+        app_name: Application name to scope records.
+        session_id: Chat session UUID.
+        limit: Number of newest *rounds* (not rows) to return.
+
+    Returns:
+        (rows, has_more):
+            rows    : list of tuples (id, round_id, message_type, content, is_deleted)
+            has_more: True if there exist older rounds beyond the returned set.
+    """
+    extra_limit = limit + 1
+    with get_database_client(db_type, db_pool) as db:
+        # Phase 1: find newest N+1 distinct rounds
+        db.execute(
+            """
+            SELECT DISTINCT round_id
+              FROM messages
+             WHERE user_id    = %s
+               AND app_name   = %s
+               AND session_id = %s
+               AND message_type IN ('user','assistant','system')
+             ORDER BY round_id DESC
+             LIMIT %s
+            """,
+            (user_id, app_name, session_id, extra_limit),
+        )
+        round_ids_desc: list[int] = [r[0] for r in db.fetchall()]
+
+        has_more = len(round_ids_desc) > limit
+        keep_rounds: list[int] = round_ids_desc[:limit]
+        if not keep_rounds:
+            return [], False
+
+        # Phase 2: fetch all messages for those rounds, oldest→newest
+        # Build an IN (...) with the right number of placeholders.
+        placeholders = ", ".join(["%s"] * len(keep_rounds))
+        sql = f"""
+            SELECT id, round_id, message_type, content, is_deleted
+              FROM messages
+             WHERE user_id    = %s
+               AND app_name   = %s
+               AND session_id = %s
+               AND message_type IN ('user','assistant','system')
+               AND round_id IN ({placeholders})
+             ORDER BY round_id ASC
+        """
+        params: tuple[object, ...] = (user_id, app_name, session_id, *keep_rounds)
+        db.execute(sql, params)
+        rows: list[tuple] = db.fetchall()
+
+    return rows, has_more
 
 
 @app.get(
@@ -1432,7 +1423,7 @@ async def list_session_queries(
         DEFAULT_MESSAGE_LIMIT,
         ge=1,
         le=MAX_MESSAGE_LIMIT,
-        description="Maximum number of messages (newest-first) to return.",
+        description="Maximum number of rounds (newest-first) to return.",
     ),
 ) -> MessageListResponse:
     """
@@ -1457,46 +1448,41 @@ async def list_session_queries(
     Raises:
         HTTPException: If the query fails due to database issues or unexpected errors.
     """
-    logger.debug(
-        f"[list_session_queries] Starting list_session_queries: user_id={user_id}, app_name={app_name}, session_id={session_id}"
-    )
-    try:
-        with get_database_client(DB_TYPE, db_pool) as db:
-            # DENSE_RANK() assigns 1 to the latest round, 2 to the next, …;
-            # filtering rk ≤ limit keeps exactly limit rounds.
-            extra_limit: int = limit + 1
-            db.execute(
-                """
-                SELECT id, round_id, message_type, content, is_deleted
-                FROM (
-                    SELECT  *,
-                            DENSE_RANK() OVER (ORDER BY round_id DESC) AS rk
-                    FROM    messages
-                    WHERE   user_id      = %s
-                    AND   app_name     = %s
-                    AND   session_id   = %s
-                    AND   message_type IN ('user', 'assistant', 'system')
-                ) ranked
-                WHERE rk <= %s               -- keep only the newest *limit* rounds
-                ORDER BY round_id ASC
-                """,
-                (user_id, app_name, session_id, extra_limit),
-            )
 
-            rows: list[tuple] = db.fetchall()
+    logger.debug(
+        "[list_session_queries] Starting list_session_queries: user_id=%s app_name=%s session_id=%s",
+        user_id,
+        app_name,
+        session_id,
+    )
+
+    try:
+        rows, has_more = await run_sync_kw(
+            _list_session_queries_sync,
+            db_type=DB_TYPE,
+            db_pool=db_pool,
+            user_id=user_id,
+            app_name=app_name,
+            session_id=session_id,
+            limit=limit,
+            limiter=DB_LIMITER,  # keep DB concurrency within pool size
+        )
 
         # Build intermediate structure by round_id
         round_raws: dict[int, dict[str, object]] = {}
 
         for row in rows:
+            msg_id, round_id, role, content, is_deleted = row
+
             raw_dict = {
-                "id": str(row[0]),
-                "round_id": row[1],
-                "role": row[2],
-                "content": row[3],
-                "is_deleted": row[4],
+                "id": str(msg_id),
+                "round_id": int(round_id),
+                "role": role,
+                "content": content,
+                "is_deleted": bool(is_deleted),
             }
-            round_raws.setdefault(row[1], {})[row[2]] = raw_dict
+
+            round_raws.setdefault(int(round_id), {})[role] = raw_dict
 
         results: list[Message] = []
 
@@ -1514,8 +1500,7 @@ async def list_session_queries(
             if "system" in round_data:
                 system_msg = round_data["system"]
                 try:
-                    original = round_data["system"]
-                    raw_context = str(original["content"])
+                    raw_context = str(system_msg["content"])
                     context_rows = parse_context_string_to_structured(
                         content=raw_context, user_id=user_id, session_id=session_id
                     )
@@ -1535,7 +1520,9 @@ async def list_session_queries(
                         key=lambda r: rank_order[r["rag_rank"]],
                     )
 
-                    original["content"] = dumps(filtered, ensure_ascii=False, indent=2)
+                    system_msg["content"] = dumps(
+                        filtered, ensure_ascii=False, indent=2
+                    )
 
                 except Exception as exc:
                     logger.warning(
@@ -1543,13 +1530,6 @@ async def list_session_queries(
                     )
                     system_msg["content"] = "[]"
                 results.append(Message(**system_msg))
-
-        unique_rounds: list[int] = sorted({m.round_id for m in results})
-        has_more: bool = len(unique_rounds) > limit
-        if has_more:
-            # Keep only the newest *limit* round_ids
-            keep_rounds: set[int] = set(unique_rounds[-limit:])
-            results = [m for m in results if m.round_id in keep_rounds]
 
         unique_rounds: int = len({m.round_id for m in results})  # distinct rounds
 
@@ -1650,11 +1630,11 @@ def create_session_with_limit(
                 )
 
             try:
-                if DB_TYPE == "postgresql":
+                if IS_PG:
                     known_ids_as_uuid = sorted(
                         UUID(k) for k in payload.known_session_ids
                     )
-                elif DB_TYPE == "mysql":
+                elif IS_MY:
                     known_ids_as_uuid = sorted(k for k in payload.known_session_ids)
                 else:
                     logger.error(
@@ -1703,7 +1683,7 @@ def create_session_with_limit(
                 )
             elif len(current_ids) == 10:
 
-                if DB_TYPE == "postgresql":
+                if IS_PG:
                     try:
                         delete_target_uuid = UUID(payload.delete_target_session_id)
                     except ValueError as exc:
@@ -1713,7 +1693,7 @@ def create_session_with_limit(
                         raise HTTPException(
                             status_code=400, detail="Invalid delete_target_session_id"
                         ) from exc
-                elif DB_TYPE == "mysql":
+                elif IS_MY:
                     delete_target_uuid = payload.delete_target_session_id
 
                 oldest = min(session_infos, key=lambda s: s["last_touched_at"])
@@ -2116,13 +2096,13 @@ def _parse_request(data: dict, user_id: str, session_id: str) -> QueryRequest:
         raise HTTPException(status_code=400, detail="Invalid query payload") from exc
 
 
-def _build_retrieval_queries(
+async def _build_retrieval_queries(
     *,
     req: QueryRequest,
     user_query: str,
     user_id: str,
     session_id: str,
-    client: OpenAI | AzureOpenAI,
+    client: AsyncOpenAI | AsyncAzureOpenAI,
     model_name: str,
     model_type: Literal["openai", "azure"],
 ) -> list[str]:
@@ -2140,6 +2120,9 @@ def _build_retrieval_queries(
         user_query (str): The latest user prompt to be used for document retrieval.
         user_id (str): Authenticated user ID (used for contextual logging).
         session_id (str): The chat session UUID (used for contextual logging).
+        client: Async OpenAI/Azure client.
+        model_name: Model or deployment name.
+        model_type: Backend type.
 
     Returns:
         list[str]: A list of search queries to use for retrieval.
@@ -2158,15 +2141,24 @@ def _build_retrieval_queries(
         )
         return [user_query]
     try:
-        queries: list[str] = generate_queries_from_history(
-            user_id=user_id,
-            session_id=session_id,
-            messages_list=req.messages,
-            system_instructions=OPTIMIZED_QUERY_INSTRUCTION,
-            client=client,
-            model_name=model_name,
-            model_type=model_type,
-        )
+        with anyio.move_on_after(6.0) as scope:
+            queries = await generate_queries_from_history(
+                user_id=user_id,
+                session_id=session_id,
+                messages_list=req.messages,
+                system_instructions=OPTIMIZED_QUERY_INSTRUCTION,
+                client=client,
+                model_name=model_name,
+                model_type=model_type,
+            )
+        if scope.cancelled_caught:
+            logger.warning(
+                "[_build_retrieval_queries] query generation timed out: user_id=%s, session_id=%s, round_id=%s",
+                user_id,
+                session_id,
+                req.round_id,
+            )
+            return [user_query]
 
         if not queries:
             logger.warning(
@@ -2292,12 +2284,13 @@ def format_sse_chunk(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def yield_context_info(
+async def yield_context_info(
+    *,
     user_id: str,
     session_id: str,
     retrieved_contexts_str: str,
     assistant_response: str,
-) -> Generator[str, None, None]:
+) -> AsyncGenerator[str, None]:
     """
     Yield structured context rows used in the assistant response, based on referenced RAG ranks.
 
@@ -2321,7 +2314,9 @@ def yield_context_info(
         len(retrieved_contexts_str),
         len(assistant_response),
     )
-    try:
+
+    def _compute_chunk() -> str:
+        """Do all sync/CPU work off the event loop and build the SSE string."""
         logger.debug(
             "[yield_context_info] Calling parse_context_string_to_structured: "
             "user_id=%s, session_id=%s",
@@ -2363,6 +2358,8 @@ def yield_context_info(
                 user_id,
                 session_id,
             )
+            return format_sse_chunk({"system_context_rows": []})
+
         # Filter *and* preserve the order in which ranks were referenced
         rank_order = {r: i for i, r in enumerate(referenced_ranks)}
         filtered_rows = sorted(
@@ -2376,23 +2373,88 @@ def yield_context_info(
             referenced_ranks,
             len(filtered_rows),
         )
-        yield format_sse_chunk({"system_context_rows": filtered_rows})
+        return format_sse_chunk({"system_context_rows": filtered_rows})
+
+    try:
+        chunk = await run_sync_kw(_compute_chunk)
+        with contextlib.suppress(RuntimeError):
+            yield chunk
     except Exception:
         logger.exception(
             "[yield_context_info] Failed to yield context info: user_id=%s, session_id=%s",
             user_id,
             session_id,
         )
-        yield format_sse_chunk({"system_context_rows": []})
+        with contextlib.suppress(RuntimeError):
+            yield format_sse_chunk({"system_context_rows": []})
 
 
-def maybe_generate_session_title(
+def _load_session_name_sync(
+    *, db_type: str, db_pool: Any, session_id: str
+) -> str | None:
+    """Load current session title from DB (blocking).
+
+    Args:
+        db_type: Database type identifier.
+        db_pool: Connection pool.
+        session_id: Session UUID.
+
+    Returns:
+        The session_name or None if the session does not exist.
+    """
+    with get_database_client(db_type, db_pool) as db:
+        db.execute(
+            "SELECT session_name FROM sessions WHERE session_id = %s", (session_id,)
+        )
+        row = db.fetchone()
+        return row[0] if row else None
+
+
+def _update_session_title_sync(
+    *,
+    db_type: str,
+    db_pool: Any,
+    session_id: str,
+    user_id: str,
+    new_title: str,
+) -> bool:
+    """Update session title only if it is still 'Untitled Session' (blocking).
+
+    This acts like a CAS (compare-and-set) to avoid races with concurrent writers.
+
+    Args:
+        db_type: Database type identifier.
+        db_pool: Connection pool.
+        session_id: Session UUID.
+        user_id: Actor user ID.
+        new_title: Title to persist.
+
+    Returns:
+        True if an update occurred, False otherwise.
+    """
+    with get_database_client(db_type, db_pool) as db:
+        db.execute(
+            """
+            UPDATE sessions
+               SET session_name = %s,
+                   updated_at   = %s,
+                   updated_by   = %s
+             WHERE session_id   = %s
+               AND session_name = 'Untitled Session'
+            """,
+            (new_title, datetime.now(timezone.utc), user_id, session_id),
+        )
+        # Some drivers expose rowcount; if not, treat missing attr as unknown/True.
+        return getattr(db, "rowcount", 1) > 0
+
+
+async def maybe_generate_session_title(
     *,
     user_id: str,
     session_id: str,
     round_id: int,
     user_query: str,
-    client: OpenAI | AzureOpenAI,
+    client: AsyncOpenAI | AsyncAzureOpenAI,
     model_name: str,
     model_type: Literal["openai", "azure"],
     db_type: str,
@@ -2409,7 +2471,7 @@ def maybe_generate_session_title(
         session_id (str): The ID of the session.
         round_id (int): The round number.
         user_query (str): The user's input used for generating the title.
-        client (OpenAI | AzureOpenAI): The LLM client.
+        client (AsyncOpenAI | AsyncAzureOpenAI): The LLM client.
         model_name (str): The name of the model.
         model_type (Literal["openai", "azure"]): The type of model.
         db_type (str): The database type identifier.
@@ -2419,43 +2481,83 @@ def maybe_generate_session_title(
         return
 
     try:
-        with get_database_client(db_type, db_pool) as db:
-            db.execute(
-                "SELECT session_name FROM sessions WHERE session_id = %s", (session_id,)
-            )
-            result = db.fetchone()
-            if not result:
-                logger.warning(
-                    f"[maybe_generate_session_title] Session not found: user_id={user_id}, session_id={session_id}, round_id={round_id}"
-                )
-                return
-
-            if result[0] != "Untitled Session":
-                return
-
-            try:
-                new_title = generate_session_title(
-                    query=user_query,
-                    user_id=user_id,
-                    session_id=session_id,
-                    client=client,
-                    model_name=model_name,
-                    model_type=model_type,
-                )
-                db.execute(
-                    """
-                    UPDATE sessions SET session_name = %s, updated_at = %s, updated_by = %s
-                    WHERE session_id = %s
-                    """,
-                    (new_title, datetime.now(timezone.utc), user_id, session_id),
-                )
-            except Exception:
-                logger.exception(
-                    f"[maybe_generate_session_title] Failed to generate session title: user_id={user_id}, session_id={session_id}, round_id={round_id}"
-                )
+        current = await run_sync_kw(
+            _load_session_name_sync,
+            db_type=db_type,
+            db_pool=db_pool,
+            session_id=session_id,
+            limiter=DB_LIMITER,  # assumes you defined this globally
+        )
     except Exception:
         logger.exception(
-            f"[maybe_generate_session_title] Failed to update session title: user_id={user_id}, session_id={session_id}, round_id={round_id}"
+            "[maybe_generate_session_title] DB read failed: user_id=%s session_id=%s round_id=%s",
+            user_id,
+            session_id,
+            round_id,
+        )
+        return
+
+    if current is None:
+        logger.warning(
+            "[maybe_generate_session_title] session not found: user_id=%s session_id=%s round_id=%s",
+            user_id,
+            session_id,
+            round_id,
+        )
+        return
+    if current != "Untitled Session":
+        # Already titled; nothing to do.
+        return
+
+    new_title: str | None = None
+    try:
+        with anyio.move_on_after(6.0) as scope:
+            new_title = await generate_session_title(
+                query=user_query,
+                user_id=user_id,
+                session_id=session_id,
+                client=client,
+                model_name=model_name,
+                model_type=model_type,
+            )
+        if scope.cancelled_caught:  # True when timed out
+            logger.warning(
+                "[maybe_generate_session_title] title generation timed out: user_id=%s session_id=%s",
+                user_id,
+                session_id,
+            )
+            return
+    except Exception:
+        logger.exception(
+            "[maybe_generate_session_title] Failed to generate session title: user_id=%s, session_id=%s, round_id=%s",
+            user_id,
+            session_id,
+            round_id,
+        )
+        return
+
+    try:
+        updated = await run_sync_kw(
+            _update_session_title_sync,
+            db_type=db_type,
+            db_pool=db_pool,
+            session_id=session_id,
+            user_id=user_id,
+            new_title=new_title,
+            limiter=DB_LIMITER,  # assumes you defined this globally
+        )
+        if not updated:
+            logger.info(
+                "[maybe_generate_session_title] skipped update (raced or already titled): user_id=%s session_id=%s",
+                user_id,
+                session_id,
+            )
+    except Exception:
+        logger.exception(
+            "[maybe_generate_session_title] Failed to update session title: user_id=%s, session_id=%s, round_id=%s",
+            user_id,
+            session_id,
+            round_id,
         )
 
 
@@ -2511,7 +2613,65 @@ def _dedup_sort_trim(
     return uniques[:top_k]
 
 
-def _search_repositories(
+async def _embed_queries_async(embedder: Any, queries: list[str]) -> list[list[float]]:
+    """Embed multiple queries with strict concurrency control.
+
+    Tries batch encode if available; otherwise falls back to per-item encode.
+    Runs in a thread to keep the event loop unblocked.
+
+    Args:
+        embedder: Embedding model instance (may offer `.encode(list[str])`).
+        queries: Queries to embed.
+
+    Returns:
+        list[list[float]]: One vector per query, in the same order.
+    """
+    if hasattr(embedder, "encode"):
+        # Batch path (preferable if provided by the library).
+        def _do_batch() -> list[list[float]]:
+            return embedder.encode(queries)  # type: ignore[attr-defined]
+
+        return await anyio.to_thread.run_sync(_do_batch, limiter=EMBED_LIMITER)
+
+    # Fallback: per-query encode (serialized via EMBED_LIMITER).
+    async def _one(q: str) -> list[float]:
+        def _do_one() -> list[float]:
+            return embedder(q)  # Callable[[str], list[float]]
+
+        return await anyio.to_thread.run_sync(_do_one, limiter=EMBED_LIMITER)
+
+    # Even if we gather, EMBED_LIMITER=1 will serialize calls safely.
+    return [await _one(q) for q in queries]
+
+
+async def _search_chroma_async(
+    chroma_repo: Any,
+    query: str,
+    qvec: list[float],
+    top_k: int,
+) -> list[Document]:
+    """Call Chroma search off the loop with a limiter."""
+
+    def _do() -> list[Document]:
+        return chroma_repo.search(query, top_k=top_k, query_embeddings=qvec)
+
+    return await anyio.to_thread.run_sync(_do, limiter=SEARCH_LIMITER)
+
+
+async def _search_bm25_async(
+    bm25_repo: Any,
+    query: str,
+    top_k: int,
+) -> list[Document]:
+    """Call BM25 search off the loop with a limiter."""
+
+    def _do() -> list[Document]:
+        return bm25_repo.search(query, top_k=top_k)
+
+    return await anyio.to_thread.run_sync(_do, limiter=SEARCH_LIMITER)
+
+
+async def _search_repositories(
     *,
     queries: list[str],
     chroma_repo: ChromaDBRepository | None,
@@ -2524,7 +2684,7 @@ def _search_repositories(
     session_id: str,
     round_id: int,
 ) -> dict[str, list[Document]]:
-    """Search ChromaDB and/or BM25 and merge results.
+    """Search ChromaDB and/or BM25 concurrently and merge results (async orchestration).
 
     Args:
         queries: Already-optimised search strings.
@@ -2544,61 +2704,100 @@ def _search_repositories(
         ``{"chroma": [...], "bm25": [...]}`` — each list may be empty.
     """
     results: dict[str, list[Document]] = {"chroma": [], "bm25": []}
-    per_query_k_chroma = max(1, top_k_chroma * over_fetch_factor // len(queries))
-    per_query_k_bm25 = max(1, top_k_bm25 * over_fetch_factor // len(queries))
+    n = max(1, len(queries))
+    per_query_k_chroma = max(1, top_k_chroma * over_fetch_factor // n)
+    per_query_k_bm25 = max(1, top_k_bm25 * over_fetch_factor // n)
 
-    for q in queries:
-        if chroma_repo:
-            try:
-                results["chroma"] += chroma_repo.search(
-                    q,
-                    top_k=per_query_k_chroma,
-                    query_embeddings=embedder(q),
-                )
-            except Exception:
-                logger.exception(
-                    f"[_search_repositories] Chroma failure: "
-                    f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
-                )
-        if bm25_repo:
-            try:
-                results["bm25"] += bm25_repo.search(q, top_k=per_query_k_bm25)
-            except Exception:
-                logger.exception(
-                    f"[_search_repositories] BM25 failure:"
-                    f"user_id={user_id}, session_id={session_id}, round_id={round_id}"
-                )
+    qvecs: list[list[float]] = []
 
-    len_chroma_before: int = len(results["chroma"])
+    if chroma_repo is not None:
+        try:
+            qvecs = await _embed_queries_async(embedder, queries)
+        except Exception:
+            logger.exception(
+                "[_search_repositories] Embedding failed: user_id=%s session_id=%s round_id=%s",
+                user_id,
+                session_id,
+                round_id,
+            )
+            # If embedding fails entirely, we skip Chroma.
+            chroma_repo = None
+
+    # 2) Launch searches. Use a task group; limiters bound actual concurrency.
+    async with anyio.create_task_group() as tg:
+        # Chroma per query
+        if chroma_repo is not None:
+            for q, v in zip(queries, qvecs):
+
+                async def _run_chroma(query=q, vec=v) -> None:
+                    try:
+                        hits = await _search_chroma_async(
+                            chroma_repo, query, vec, per_query_k_chroma
+                        )
+                        results["chroma"].extend(hits)
+                    except Exception:
+                        logger.exception(
+                            "[_search_repositories] Chroma failure: user_id=%s session_id=%s round_id=%s",
+                            user_id,
+                            session_id,
+                            round_id,
+                        )
+
+                tg.start_soon(_run_chroma)
+
+        # BM25 per query
+        if bm25_repo is not None:
+            for q in queries:
+
+                async def _run_bm25(query=q) -> None:
+                    try:
+                        hits = await _search_bm25_async(
+                            bm25_repo, query, per_query_k_bm25
+                        )
+                        results["bm25"].extend(hits)
+                    except Exception:
+                        logger.exception(
+                            "[_search_repositories] BM25 failure: user_id=%s session_id=%s round_id=%s",
+                            user_id,
+                            session_id,
+                            round_id,
+                        )
+
+                tg.start_soon(_run_bm25)
+
+    # 3) De-dup, sort, and trim as before.
+    len_chroma_before = len(results["chroma"])
     results["chroma"] = _dedup_sort_trim(results["chroma"], top_k=top_k_chroma)
-    len_bm25_before: int = len(results["bm25"])
+    len_bm25_before = len(results["bm25"])
     results["bm25"] = _dedup_sort_trim(results["bm25"], top_k=top_k_bm25)
 
-    # ─── just for logging ─────────────────────────────────────────────────────
-    chroma_dupes: int = len_chroma_before - len(results["chroma"])
+    chroma_dupes = len_chroma_before - len(results["chroma"])
     if chroma_dupes:
         logger.debug(
-            f"[_search_repositories] Chroma duplicates removed: {chroma_dupes} "
-            f"(user_id={user_id}, session_id={session_id}, round_id={round_id})"
+            "[_search_repositories] Chroma duplicates removed: %d (user_id=%s, session_id=%s, round_id=%d)",
+            chroma_dupes,
+            user_id,
+            session_id,
+            round_id,
         )
-
-    bm25_dupes: int = len_bm25_before - len(results["bm25"])
+    bm25_dupes = len_bm25_before - len(results["bm25"])
     if bm25_dupes:
         logger.debug(
-            f"[_search_repositories] BM25 duplicates removed: {bm25_dupes} "
-            f"(user_id={user_id}, session_id={session_id}, round_id={round_id})"
+            "[_search_repositories] BM25 duplicates removed: %d (user_id=%s, session_id=%s, round_id=%d)",
+            bm25_dupes,
+            user_id,
+            session_id,
+            round_id,
         )
 
     logger.debug(
-        "[_search_repositories] Final unique counts — Chroma: %d, BM25: %d "
-        "(user_id=%s, session_id=%s, round_id=%d)",
+        "[_search_repositories] Final unique counts — Chroma: %d, BM25: %d (user_id=%s, session_id=%s, round_id=%d)",
         len(results["chroma"]),
         len(results["bm25"]),
         user_id,
         session_id,
         round_id,
     )
-
     return results
 
 
@@ -2850,69 +3049,6 @@ def _enhance_results(
     return enhanced
 
 
-# def _enhance_results(
-#     *,
-#     search_results: dict[str, list[Document]],
-#     chroma_repo: ChromaDBRepository | None,
-#     num_before: int,
-#     num_after: int,
-#     user_id: str,
-#     session_id: str,
-# ) -> dict[str, list[Document]]:
-#     """Expand each hit by surrounding context lines / chunks.
-
-#     The helper delegates to ``chroma_repo.enhance`` for both Chroma and
-#     BM25 results (the latter are passed straight through the same API).
-
-#     Args:
-#         search_results: Output from the retrieval step —
-#             ``{"chroma": [...], "bm25": [...]}``.
-#         chroma_repo: Initialised ChromaDB repository or ``None`` to skip.
-#         num_before: Number of neighbouring chunks *before* each hit.
-#         num_after:  Number of neighbouring chunks *after* each hit.
-#         user_id: User ID for contextual logging only.
-#         session_id: Session ID for contextual logging only.
-
-#     Returns:
-#         dict[str, list[Document]]: Enhanced results using the same keys as
-#         *search_results*. Lists may be empty if a repository is disabled,
-#         empty, or the enhancement call fails.
-
-#     Notes:
-#         All exceptions thrown by the repository are caught and logged; the
-#         function never raises.
-#     """
-#     enhanced: dict[str, list[Document]] = {}
-
-#     if search_results["chroma"] and chroma_repo:
-#         try:
-#             enhanced["chroma"] = chroma_repo.enhance(
-#                 search_results["chroma"],
-#                 num_before=num_before,
-#                 num_after=num_after,
-#             )
-#         except Exception:
-#             logger.exception(
-#                 f"[enhance] Chroma enhancement failed: "
-#                 f"user_id={user_id}, session_id={session_id}"
-#             )
-
-#     if search_results["bm25"] and chroma_repo:
-#         try:
-#             enhanced["bm25"] = chroma_repo.enhance(
-#                 search_results["bm25"],
-#                 num_before=num_before,
-#                 num_after=num_after,
-#             )
-#         except Exception:
-#             logger.exception(
-#                 f"[enhance] BM25 enhancement failed: "
-#                 f"user_id={user_id}, session_id={session_id}"
-#             )
-
-#     return enhanced
-
-
 @app.post("/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries")
 async def handle_query(
     user_id: str, app_name: str, session_id: str, request: Request
@@ -2954,17 +3090,19 @@ async def handle_query(
         f"[handle_query] Starting handle_query: user_id={user_id}, session_id={session_id}, round_id={req.round_id}"
     )
 
-    insert_placeholder_user_message(
+    await run_sync_kw(
+        insert_placeholder_user_message,
         db_type=DB_TYPE,
-        pool=db_pool,
+        db_pool=db_pool,
         user_msg_id=req.user_msg_id,
         user_id=user_id,
         session_id=session_id,
         app_name=app_name,
         round_id=req.round_id,
+        limiter=DB_LIMITER,
     )
 
-    maybe_generate_session_title(
+    await maybe_generate_session_title(
         user_id=user_id,
         session_id=session_id,
         round_id=req.round_id,
@@ -3006,7 +3144,7 @@ async def handle_query(
             media_type="text/event-stream",
         )
 
-    queries: list[str] = _build_retrieval_queries(
+    queries: list[str] = await _build_retrieval_queries(
         req=req,
         user_query=user_query,
         user_id=user_id,
@@ -3016,7 +3154,7 @@ async def handle_query(
         model_type=OPENAI_TYPE,
     )
 
-    search_results = _search_repositories(
+    search_results = await _search_repositories(
         queries=queries,
         chroma_repo=chroma_repo if use_chromadb else None,
         bm25_repo=bm25_repo if use_bm25 else None,
@@ -3037,13 +3175,15 @@ async def handle_query(
             500, "No documents were retrieved from either ChromaDB or BM25."
         )
 
-    enhanced = _enhance_results(
+    enhanced = await run_sync_kw(
+        _enhance_results,
         search_results=search_results,
         chroma_repo=chroma_repo,
         num_before=DEFAULT_ENHANCE_BEFORE,
         num_after=DEFAULT_ENHANCE_AFTER,
         user_id=user_id,
         session_id=session_id,
+        limiter=DB_LIMITER,
     )
 
     if not (enhanced.get("chroma") or enhanced.get("bm25")):
@@ -3059,12 +3199,14 @@ async def handle_query(
     if req.use_reranker:
         pass
 
-    ctx_str: str = build_context_string(
+    ctx_str: str = await run_sync_kw(
+        build_context_string,
         enhanced,
         use_chromadb=use_chromadb,
         use_bm25=use_bm25,
         user_id=user_id,
         session_id=session_id,
+        limiter=DB_LIMITER,
     )
 
     return StreamingResponse(
