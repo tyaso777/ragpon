@@ -17,8 +17,9 @@ from streamlit_autorefresh import st_autorefresh
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.apps.chat_domain import Message, RagModeEnum, RoleEnum, SessionData
 
-APP_TITLE: str = os.getenv("APP_TITLE", "📘 規程・マニュアル等検索アプリ")
-APP_TITLE_WITH_ICON: str = "🧭 " + APP_TITLE
+APP_TITLE: str = os.getenv("APP_TITLE", "🧭 規程AI")
+DATA_UPDATE_INFO: str = os.getenv("DATA_UPDATE_INFO", "(データ更新: 2025/09/01)")
+APP_TITLE_WITH_DATA_UPDATE: str = f"🧭 {APP_TITLE} {DATA_UPDATE_INFO}"
 
 
 @dataclass(frozen=True)
@@ -2509,7 +2510,7 @@ def main(user_id: str, employee_class_id: str) -> None:
         setup_page_config()
         hide_streamlit_deploy_button()
         hide_streamlit_menu()
-        inject_header_css(app_title=APP_TITLE_WITH_ICON)
+        inject_header_css(app_title=APP_TITLE_WITH_DATA_UPDATE)
         check_access_control(user_id=user_id, employee_class_id=employee_class_id)
         disabled_ui = setup_ui_locking()
         initialize_session_state(user_id=user_id)
