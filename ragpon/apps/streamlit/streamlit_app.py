@@ -17,9 +17,52 @@ from streamlit_autorefresh import st_autorefresh
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.apps.chat_domain import Message, RagModeEnum, RoleEnum, SessionData
 
-APP_TITLE: str = os.getenv("APP_TITLE", "🧭 規程AI")
+APP_TITLE: str = os.getenv("APP_TITLE", "規程AI")
 DATA_UPDATE_INFO: str = os.getenv("DATA_UPDATE_INFO", "(データ更新: 2025/09/01)")
-APP_TITLE_WITH_DATA_UPDATE: str = f"🧭 {APP_TITLE} {DATA_UPDATE_INFO}"
+APP_TITLE_WITH_DATA_UPDATE: str = f"{APP_TITLE} {DATA_UPDATE_INFO}"
+
+MINIFIED_COMPASS_SVG: str = """
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="240" viewBox="0 0 200 240">
+  <title>Compass Icon with Round Joins (Corrected Orientation)</title>
+  <g transform="scale(1,-1) translate(0,-240)">
+    <circle cx="100.0" cy="110.0" r="90.0" fill="none" stroke="rgb(0,80,136)" stroke-width="10.0" />
+    <circle cx="100.0" cy="110.0" r="70.0" fill="none" stroke="rgb(0,80,136)" stroke-width="7.2" />
+    <!-- Ticks -->
+    <line x1="100.0" y1="180.0" x2="100.0" y2="160.0" stroke="rgb(0,80,136)" stroke-width="6.0" />
+    <line x1="100.0" y1="40.0" x2="100.0" y2="60.0" stroke="rgb(0,80,136)" stroke-width="6.0" />
+    <line x1="30.0" y1="110.0" x2="50.0" y2="110.0" stroke="rgb(0,80,136)" stroke-width="6.0" />
+    <line x1="170.0" y1="110.0" x2="150.0" y2="110.0" stroke="rgb(0,80,136)" stroke-width="6.0" />
+    <!-- Needle triangles with round joins -->
+    <polygon points="100.0,160.0 120.0,110.0 80.0,110.0" transform="rotate(-45 100.0 110.0)"
+             fill="rgb(0,80,136)" stroke="rgb(0,80,136)" stroke-width="3.0" stroke-linejoin="round" />
+    <polygon points="100.0,60.0 120.0,110.0 80.0,110.0" transform="rotate(-45 100.0 110.0)"
+             fill="white" stroke="rgb(0,80,136)" stroke-width="3.0" stroke-linejoin="round" />
+    <!-- Top ring -->
+    <circle cx="100.0" cy="215.0" r="15.0" fill="none" stroke="rgb(0,80,136)" stroke-width="6.0" />
+  </g>
+</svg>
+"""
+
+
+def svg_text_to_data_uri(svg_text: str) -> str:
+    """Encode SVG text as a percent-encoded data URI using a standard charset.
+
+    Args:
+        svg_text: Raw SVG XML string.
+
+    Returns:
+        Data URI string like: data:image/svg+xml;charset=UTF-8,<...>
+    """
+    # Encode everything except a minimal set of safe punctuation.
+    # Note: Do NOT allow spaces; they should be %20.
+    encoded = urllib.parse.quote(
+        svg_text.strip(), safe=";/?:@&=+$-_.!~*'()#,"
+    )  # no space
+    return f"data:image/svg+xml;charset=UTF-8,{encoded}"
+
+
+ICON_DATA_URI = svg_text_to_data_uri(MINIFIED_COMPASS_SVG)
 
 
 @dataclass(frozen=True)
@@ -819,7 +862,7 @@ def setup_page_config() -> None:
     """
     st.set_page_config(
         page_title=APP_TITLE,
-        page_icon="🧭",
+        page_icon=ICON_DATA_URI,
         layout="centered",
         initial_sidebar_state="expanded",
         menu_items={"Get Help": None, "Report a bug": None, "About": None},
@@ -841,7 +884,7 @@ def setup_page_config() -> None:
     )
 
 
-def inject_header_css(app_title: str) -> None:
+def inject_header_css(app_title: str, icon_data_uri: str | None = None) -> None:
     """Inject CSS to fix the Streamlit header and display a centered title.
 
     This makes the header fixed at the top, adds a custom title via a ::before
@@ -849,7 +892,22 @@ def inject_header_css(app_title: str) -> None:
 
     Args:
         app_title: The title string to render in the header.
+        icon_data_uri: Optional data URI for an SVG icon; if provided,
+            the icon is drawn left of the title via background-image.
+
     """
+    icon_css = ""
+    if icon_data_uri:
+        icon_css = f"""
+        header.stAppHeader:before {{
+            padding-left: 2.25rem;                /* space for the icon */
+            background-image: url("{icon_data_uri}");
+            background-repeat: no-repeat;
+            background-position: left 0.25rem center;
+            background-size: 1.6rem 1.6rem;      /* tune icon size */
+        }}
+        """
+
     st.markdown(
         f"""
         <style>
@@ -876,7 +934,7 @@ def inject_header_css(app_title: str) -> None:
             font-family: 'Segoe UI', sans-serif;
             white-space: nowrap;
         }}
-
+        {icon_css}
         [data-testid="stAppViewContainer"] > .main > .block-container {{
             padding-top: 3rem;
             padding-bottom: 1rem;
@@ -2510,7 +2568,9 @@ def main(user_id: str, employee_class_id: str) -> None:
         setup_page_config()
         hide_streamlit_deploy_button()
         hide_streamlit_menu()
-        inject_header_css(app_title=APP_TITLE_WITH_DATA_UPDATE)
+        inject_header_css(
+            app_title=APP_TITLE_WITH_DATA_UPDATE, icon_data_uri=ICON_DATA_URI
+        )
         check_access_control(user_id=user_id, employee_class_id=employee_class_id)
         disabled_ui = setup_ui_locking()
         initialize_session_state(user_id=user_id)
