@@ -885,61 +885,28 @@ def setup_page_config() -> None:
 
 
 def inject_header_css(app_title: str, icon_data_uri: str | None = None) -> None:
-    """Inject CSS to fix the Streamlit header and display a centered title.
+    """Disable custom header styling to remove the extra frame."""
+    _ = (app_title, icon_data_uri)  # reserved for future header tweaks
+    # Intentionally no CSS injection; rely on Streamlit defaults.
 
-    This makes the header fixed at the top, adds a custom title via a ::before
-    pseudo-element, and shifts the page content down so nothing is hidden.
 
-    Args:
-        app_title: The title string to render in the header.
-        icon_data_uri: Optional data URI for an SVG icon; if provided,
-            the icon is drawn left of the title via background-image.
-
-    """
-    icon_css = ""
-    if icon_data_uri:
-        icon_css = f"""
-        header.stAppHeader:before {{
-            padding-left: 2.25rem;                /* space for the icon */
-            background-image: url("{icon_data_uri}");
-            background-repeat: no-repeat;
-            background-position: left 0.25rem center;
-            background-size: 1.6rem 1.6rem;      /* tune icon size */
-        }}
-        """
-
-    st.markdown(
+def render_sidebar_title(*, app_title: str, data_update_info: str, icon_data_uri: str) -> None:
+    """Render the app title in the sidebar to keep it out of printed pages."""
+    st.sidebar.markdown(
         f"""
-        <style>
-        header.stAppHeader {{
-            position: fixed !important;
-            top: 0;
-            left: 0;
-            width: 100%;
-            z-index: 1000;
-            background-color: #f9f9f9;
-            border-bottom: 1px solid #ccc;
-        }}
-
-        header.stAppHeader:before {{
-            content: "{app_title}";
-            position: absolute;
-            left: 50%;
-            transform: translateX(-50%);
-            top: 0.75rem;
-            display: block;
-            font-size: 1.8rem;
-            font-weight: 600;
-            color: #333;
-            font-family: 'Segoe UI', sans-serif;
-            white-space: nowrap;
-        }}
-        {icon_css}
-        [data-testid="stAppViewContainer"] > .main > .block-container {{
-            padding-top: 3rem;
-            padding-bottom: 1rem;
-        }}
-        </style>
+        <div style="
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.5rem 0.25rem 0.75rem 0.25rem;
+            border-bottom: 1px solid #e5e5e5;
+        ">
+          <img src="{icon_data_uri}" alt="app icon" width="28" height="28" />
+          <div style="line-height: 1.2;">
+            <div style="font-size: 1.05rem; font-weight: 700; color: #222;">{app_title}</div>
+            <div style="font-size: 0.85rem; color: #666;">{data_update_info}</div>
+          </div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -2585,6 +2552,13 @@ def main(user_id: str, employee_class_id: str) -> None:
         logger.exception("[Main] Unexpected error during app setup.")
         st.error(ERROR_LABELS.APP_INITIALIZATION_FAILED)
         st.stop()
+
+    # Step 1.4: Move title into sidebar to avoid printing on every page
+    render_sidebar_title(
+        app_title=APP_TITLE,
+        data_update_info=DATA_UPDATE_INFO,
+        icon_data_uri=ICON_DATA_URI,
+    )
 
     # Step 1.5: Show global error messages at the top of sidebar
     show_sidebar_error_message(user_id=user_id)
