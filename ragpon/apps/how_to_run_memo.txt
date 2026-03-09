@@ -2,6 +2,8 @@
 
 # 1-2. replace empty streamlit/common/common_saml.py with true file.
 
+# 1-3. copy models folder to ragpon/apps/fastapi/models from huggingface "models--cl-nagoya--ruri-large.
+
 # 2. to run POSTGRES
 
    podman rm -f postgres
@@ -183,6 +185,10 @@
             -p 8005:8005 `
             ragpon-streamlit `
             bash -c "streamlit run ragpon/apps/streamlit/streamlit_app.py --server.port 8005 --server.address 0.0.0.0"
+      ```
+
+      ```browser
+      http://localhost:8005/?user_id=loaduser-0042&employee_class_id=70
       ```
 
    # For WSL podman.
