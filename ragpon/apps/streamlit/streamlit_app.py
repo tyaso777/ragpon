@@ -96,6 +96,9 @@ class Labels:
     CHOOSE_RERANKER: str = "リランカーを使用しますか？"
     YES: str = "はい"
     NO: str = "いいえ"
+    OTHER_SETTINGS: str = "⚙️その他の設定"
+    WIDE_MODE: str = "ワイドモード"
+    WIDE_MODE_HELP: str = "ON にすると、メイン画面の横幅をウィンドウサイズに応じて広げます。"
     # Chat input
     CHAT_INPUT_PLACEHOLDER: str = "ここに質問を入力してください..."
     # Feedback
@@ -860,10 +863,12 @@ def setup_page_config() -> None:
         - Injects early JavaScript to set document language to Japanese
         - Must be called before other st.* functions
     """
+    layout_mode = "wide" if st.session_state.get("wide_mode", False) else "centered"
+
     st.set_page_config(
         page_title=APP_TITLE,
         page_icon=ICON_DATA_URI,
-        layout="centered",
+        layout=layout_mode,
         initial_sidebar_state="expanded",
         menu_items={"Get Help": None, "Report a bug": None, "About": None},
     )
@@ -910,7 +915,6 @@ def render_sidebar_title(*, app_title: str, data_update_info: str, icon_data_uri
         """,
         unsafe_allow_html=True,
     )
-
 
 def hide_streamlit_deploy_button() -> None:
     """Hide the Streamlit deploy button in the app header."""
@@ -965,11 +969,23 @@ def initialize_session_state(user_id: str) -> None:
     st.session_state.setdefault("session_histories", {})
     st.session_state.setdefault("server_has_more", {})
     st.session_state.setdefault("show_create_form", False)
+    st.session_state.setdefault("wide_mode", False)
     if "user_id" not in st.session_state:
         st.session_state["user_id"] = user_id
         logger.info(
             f"[initialize_session_state] user_id={user_id} has logged in to the app."
         )
+
+
+def render_display_settings(*, disabled_ui: bool) -> None:
+    """Render display-related preferences in the sidebar."""
+    st.sidebar.write(f"## {LABELS.OTHER_SETTINGS}")
+    st.sidebar.toggle(
+        LABELS.WIDE_MODE,
+        key="wide_mode",
+        disabled=disabled_ui,
+        help=LABELS.WIDE_MODE_HELP,
+    )
 
 
 def record_user_touch(*, user_id: str) -> None:
@@ -2631,6 +2647,9 @@ def main(user_id: str, employee_class_id: str) -> None:
         num_of_prev_msg_with_llm=NUM_OF_PREV_MSG_WITH_LLM,
         disabled_ui=disabled_ui,
     )
+
+    # Step 8: Render display settings at the bottom of the sidebar
+    render_display_settings(disabled_ui=disabled_ui)
 
 
 if __name__ == "__main__":
