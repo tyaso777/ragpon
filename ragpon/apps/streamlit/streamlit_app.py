@@ -940,6 +940,24 @@ def hide_streamlit_menu() -> None:
     )
 
 
+def inject_source_text_css() -> None:
+    """Make citation text easier to read inside disabled text areas."""
+    st.markdown(
+        """
+        <style>
+            textarea[aria-label^="source_text_"] {
+                color: #1f1f1f !important;
+                -webkit-text-fill-color: #1f1f1f !important;
+                opacity: 1 !important;
+                font-weight: 400;
+                cursor: text !important;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def setup_ui_locking() -> bool:
     """Ensure UI locking state is initialized and display a warning if locked.
 
@@ -1908,6 +1926,7 @@ def render_system_context_rows(
     rows: list[dict[str, Any]],
     user_id: str,
     session_id: str,
+    round_id: int | str | None = None,
 ) -> None:
     """
     Render system context rows with error handling.
@@ -1916,6 +1935,7 @@ def render_system_context_rows(
         rows (list[dict[str, Any]]): Parsed context rows to be displayed.
         user_id (str): User ID for logging.
         session_id (str): Session ID for logging.
+        round_id (int | str | None): Round ID for widget key disambiguation.
 
     Side Effects:
         - Renders context rows in Markdown.
@@ -1924,17 +1944,28 @@ def render_system_context_rows(
     try:
         if isinstance(rows, list) and rows:
             with st.expander(LABELS.VIEW_SOURCES):
-                for row in rows:
+                for idx, row in enumerate(rows):
                     raw_text = row.get("text", "").strip()
-                    lines = raw_text.splitlines()
-                    quoted_text = "\n".join(f"> {line}" for line in lines)
+                    doc_id = str(row.get("doc_id", ""))
 
                     st.markdown(
                         f"**RAG Rank:** {row.get('rag_rank', '-')}\n"
-                        f"**Doc ID:** {row.get('doc_id', '')}\n"
+                        f"**Doc ID:** {doc_id}\n"
                         f"**Semantic Distance:** {float(row.get('semantic_distance', 0.0)):.4f}\n\n"
-                        f"{quoted_text}"
                     )
+                    st.text_area(
+                        label=f"source_text_{idx + 1}",
+                        value=raw_text,
+                        height=180,
+                        disabled=True,
+                        key=(
+                            f"source_text_{session_id}_{round_id or 'unknown'}_"
+                            f"{idx}_{doc_id or 'unknown'}"
+                        ),
+                        label_visibility="collapsed",
+                    )
+                    if idx < len(rows) - 1:
+                        st.divider()
         else:
             st.caption(WARNING_LABELS.NO_CONTEXT)
     except Exception:
@@ -1996,7 +2027,9 @@ def render_chat_messages(
                     f"[render_chat_messages] Failed to parse system message content: user_id={user_id}, session_id={current_session_id}"
                 )
             else:
-                render_system_context_rows(rows, user_id, current_session_id)
+                render_system_context_rows(
+                    rows, user_id, current_session_id, msg.round_id
+                )
 
         # For assistant messages, show the row of Trash/Good/Bad
         if msg.role == "assistant":
@@ -2465,7 +2498,7 @@ def render_user_chat_input(
                 # Display system context rows outside chat message
                 if isinstance(system_context_rows, list):
                     render_system_context_rows(
-                        system_context_rows, user_id, current_session_id
+                        system_context_rows, user_id, current_session_id, new_round_id
                     )
                 else:
                     logger.warning(
@@ -2551,6 +2584,7 @@ def main(user_id: str, employee_class_id: str) -> None:
         setup_page_config()
         hide_streamlit_deploy_button()
         hide_streamlit_menu()
+        inject_source_text_css()
         inject_header_css(
             app_title=APP_TITLE_WITH_DATA_UPDATE, icon_data_uri=ICON_DATA_URI
         )
