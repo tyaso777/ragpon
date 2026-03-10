@@ -34,7 +34,10 @@ config = Config(config_path)
 config.config
 
 # %%
-doc_service = DocumentProcessingService(config_or_config_path=config)
+doc_service = DocumentProcessingService(
+    config_or_config_path=config,
+    chunk_processor=JAGinzaChunkProcessor(chunk_size=300),
+)
 
 # %%time
 # pdfとwordファイルのDBへの格納
@@ -181,8 +184,8 @@ doc_service3 = DocumentProcessingService(
 
 # %%
 # データの格納（in-memoryではなくファイルとして永続化する）
-# doc_service3.process_file(str(pdf_path))
-# doc_service3.process_file(str(word_path))
+doc_service3.process_file(str(pdf_path))
+doc_service3.process_file(str(word_path))
 
 # ここで使うデータベースには既にこのセルの処理をしている。
 # ここでは、再度のデータ追加せずにデータ取得ができるかを確認する。
