@@ -294,7 +294,7 @@ MAX_MESSAGE_LIMIT: int = 100  # client-side sliding window cap
 MAX_FEEDBACK_LENGTH = 500
 
 # Prevent overly long queries from breaking the system
-MAX_CHAT_INPUT_LENGTH: int = 1000
+MAX_CHAT_INPUT_LENGTH: int = 10000
 
 APP_NAME: str = "search_regulations"
 BPC_API_CONTAINER_NAME: str = os.getenv("BPC_API_CONTAINER_NAME", "ragpon-fastapi")
