@@ -247,3 +247,97 @@ class DataFrameDocumentProcessingPipeline(
 
         logger.info(f"DataFrame processing completed. Total rows: {len(df)}")
         return all_chunks, all_metadata
+
+
+class ChunkedDataFrameDocumentProcessingPipeline(
+    AbstractDocumentProcessingPipeline[TMetadata], Generic[TMetadata]
+):
+    """
+    Pipeline for processing DataFrame rows into chunked documents with metadata.
+
+    Each DataFrame row is treated as a single source document. The text in
+    ``chunk_col_name`` is split with ``chunk_processor``, then each chunk is
+    stored as an individual document while inheriting row-level metadata.
+    """
+
+    def __init__(
+        self,
+        chunk_processor: AbstractChunkProcessor,
+        metadata_generator: CustomMetadataGenerator[TMetadata],
+        chunk_col_name: str,
+        id_col_name: str,
+    ):
+        self.chunk_processor = chunk_processor
+        self.metadata_generator = metadata_generator
+        self.chunk_col_name = chunk_col_name
+        self.id_col_name = id_col_name
+
+    def process_document(self, **kwargs: Any) -> tuple[list[str], list[TMetadata]]:
+        df: pd.DataFrame = kwargs.get("df")
+        if not isinstance(df, pd.DataFrame):
+            logger.error("Invalid or missing DataFrame.")
+            raise DataFrameProcessingError("Invalid or missing DataFrame.")
+
+        if self.id_col_name not in df.columns:
+            logger.error(
+                f"Required column '{self.id_col_name}' is missing in the DataFrame."
+            )
+            raise DataFrameProcessingError(
+                f"Required column '{self.id_col_name}' is missing in the DataFrame."
+            )
+        if self.chunk_col_name not in df.columns:
+            logger.error(
+                f"Required column '{self.chunk_col_name}' is missing in the DataFrame."
+            )
+            raise DataFrameProcessingError(
+                f"Required column '{self.chunk_col_name}' is missing in the DataFrame."
+            )
+
+        str_ids = df[self.id_col_name].astype(str)
+        if not str_ids.is_unique:
+            logger.error(
+                f"String-converted values in '{self.id_col_name}' must be unique."
+            )
+            raise DataFrameProcessingError(
+                f"String-converted values in '{self.id_col_name}' must be unique."
+            )
+
+        logger.info("Starting chunked DataFrame document processing.")
+
+        all_chunks: list[str] = []
+        all_metadata: list[TMetadata] = []
+
+        for index, row in df.iterrows():
+            try:
+                logger.debug("Processing chunked row %s", index)
+                source_doc_id = str(row[self.id_col_name])
+                row_text = row[self.chunk_col_name]
+                chunks = self.chunk_processor.process(row_text)
+                row_metadata = row.drop([self.id_col_name, self.chunk_col_name]).to_dict()
+                base_page_number = row_metadata.get("page_number", 1) or 1
+
+                for serial_number, chunk in enumerate(chunks):
+                    metadata = self.metadata_generator.generate(
+                        doc_id=f"{source_doc_id}_No.{serial_number}",
+                        text=chunk,
+                        **{
+                            **row_metadata,
+                            self.id_col_name: source_doc_id,
+                            "serial_number": serial_number,
+                            "page_number": base_page_number,
+                            "chunk_index_in_page": serial_number,
+                        },
+                    )
+                    all_chunks.append(chunk)
+                    all_metadata.append(metadata)
+            except KeyError as e:
+                logger.error(f"Missing column in row {index}: {e}")
+                raise RowProcessingError(f"Missing column in row {index}") from e
+            except Exception as e:
+                logger.error(f"Error processing row {index}: {e}")
+                raise RowProcessingError(f"Error processing row {index}") from e
+
+        logger.info(
+            "Chunked DataFrame processing completed. Total chunks: %d", len(all_chunks)
+        )
+        return all_chunks, all_metadata

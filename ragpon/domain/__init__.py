@@ -6,6 +6,7 @@ from typing import Any
 _lazy_imports = {
     # document_processing_pipeline
     "AbstractDocumentProcessingPipeline": "ragpon.domain.document_processing_pipeline",
+    "ChunkedDataFrameDocumentProcessingPipeline": "ragpon.domain.document_processing_pipeline",
     "DataFrameDocumentProcessingPipeline": "ragpon.domain.document_processing_pipeline",
     "FilePathDocumentProcessingPipeline": "ragpon.domain.document_processing_pipeline",
     # document_reader

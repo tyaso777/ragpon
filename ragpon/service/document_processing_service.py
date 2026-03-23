@@ -8,6 +8,7 @@ from ragpon._utils.logging_helper import get_library_logger
 from ragpon.chunk_processor import AbstractChunkProcessor, JAGinzaChunkProcessor
 from ragpon.config import Config
 from ragpon.domain.document_processing_pipeline import (
+    ChunkedDataFrameDocumentProcessingPipeline,
     DataFrameDocumentProcessingPipeline,
     FilePathDocumentProcessingPipeline,
 )
@@ -212,6 +213,27 @@ class DocumentProcessingService:
         """
         logger.info("Processing DataFrame.")
         pipeline = DataFrameDocumentProcessingPipeline(
+            metadata_generator=self._metadata_generator,
+            chunk_col_name=chunk_col_name,
+            id_col_name=id_col_name,
+        )
+        all_chunks, all_metadata = pipeline.process_document(df=df)
+        self._save_to_repositories(all_chunks, all_metadata)
+
+    def process_dataframe_with_chunking(
+        self, df: pd.DataFrame, chunk_col_name: str, id_col_name: str
+    ) -> None:
+        """Processes a DataFrame by chunking the text in each row and saving
+        chunk-level documents to the repositories.
+
+        Args:
+            df (pd.DataFrame): The input dataframe containing source documents.
+            chunk_col_name (str): Column name containing the source text.
+            id_col_name (str): Column name containing source-document IDs.
+        """
+        logger.info("Processing DataFrame with chunking.")
+        pipeline = ChunkedDataFrameDocumentProcessingPipeline(
+            chunk_processor=self._chunk_processor,
             metadata_generator=self._metadata_generator,
             chunk_col_name=chunk_col_name,
             id_col_name=id_col_name,

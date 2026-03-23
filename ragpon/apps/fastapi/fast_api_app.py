@@ -1039,11 +1039,22 @@ def build_context_string(
                     doc_id = doc.base_document.doc_id
                     distance = doc.base_document.distance
                     enhanced_text = doc.enhanced_text or ""
+                    metadata = doc.base_document.metadata or {}
+                    notes_link = metadata.get("notes_link", "")
+                    category_values = [
+                        str(metadata.get(f"category_{i}", "")).strip()
+                        for i in range(1, 6)
+                    ]
 
                     # Append metadata and enhanced text
                     lines.append(f"RAG Rank: {i}")
                     lines.append(f"doc_id: {doc_id}")
                     lines.append(f"semantic distance: {distance}")
+                    if notes_link:
+                        lines.append(f"notes_link: {notes_link}")
+                    for idx, category in enumerate(category_values, start=1):
+                        if category:
+                            lines.append(f"category_{idx}: {category}")
                     lines.append(f"Text: {enhanced_text}")
 
                 except Exception as e:
@@ -1078,6 +1089,10 @@ def parse_context_string_to_structured(
         RAG Rank: <int>
         doc_id: <str>
         semantic distance: <float>
+        notes_link: <str>  # optional
+        category_1: <str>  # optional
+        ...
+        category_5: <str>  # optional
         Text: <multiline...until next 'RAG Rank:' or EOF>
         # Note: The first text chunk may be on the same line as 'Text:'.
 
@@ -1093,7 +1108,8 @@ def parse_context_string_to_structured(
       session_id: For logging/tracing (unused here).
 
     Returns:
-      List of dict rows with keys: "rag_rank", "doc_id", "semantic_distance", "text".
+      List of dict rows with keys: "rag_rank", "doc_id", "semantic_distance",
+      "notes_link", "category_1"..."category_5", "text".
     """
     # Fast exit if no obvious header.
     if "RAG Rank:" not in content:
@@ -1148,6 +1164,8 @@ def parse_context_string_to_structured(
         # Holders
         doc_id: str = ""
         semantic_distance: float = 0.0
+        notes_link: str = ""
+        categories: dict[str, str] = {f"category_{i}": "" for i in range(1, 6)}
         text_lines: list[str] = []
 
         # Scan header fields until we hit "Text:" or the next header/EOF
@@ -1162,6 +1180,17 @@ def parse_context_string_to_structured(
             if line.startswith("semantic distance:"):
                 dist_str = line.split(":", 1)[1].strip()
                 semantic_distance = _safe_float(dist_str, default=0.0)
+                i += 1
+                continue
+
+            if line.startswith("notes_link:"):
+                notes_link = line.split(":", 1)[1].strip()
+                i += 1
+                continue
+
+            if any(line.startswith(f"category_{j}:") for j in range(1, 6)):
+                key, value = line.split(":", 1)
+                categories[key.strip()] = value.strip()
                 i += 1
                 continue
 
@@ -1184,14 +1213,15 @@ def parse_context_string_to_structured(
             # Unknown line in header area → skip
             i += 1
 
-        results.append(
-            {
-                "rag_rank": rag_rank,
-                "doc_id": doc_id,
-                "semantic_distance": semantic_distance,
-                "text": "\n".join(text_lines).strip(),
-            }
-        )
+        result_row: dict[str, str | float | int] = {
+            "rag_rank": rag_rank,
+            "doc_id": doc_id,
+            "semantic_distance": semantic_distance,
+            "notes_link": notes_link,
+            "text": "\n".join(text_lines).strip(),
+        }
+        result_row.update(categories)
+        results.append(result_row)
 
     return results
 

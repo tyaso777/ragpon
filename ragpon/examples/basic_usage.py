@@ -1,6 +1,9 @@
 # %%
 import importlib.resources as ir
+import json
 import logging
+from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -17,7 +20,43 @@ from ragpon import (
 with ir.as_file(ir.files("ragpon.examples")) as examples_dir:
     pdf_path = examples_dir / "投資信託とは.pdf"
     word_path = examples_dir / "ragponの使い方.docx"
+    xml_json_path = examples_dir / "xml_example.json"
     config_path = examples_dir / "sample_config.yml"
+
+
+def load_xml_json_as_dataframe(json_path: str | Path) -> pd.DataFrame:
+    """Normalize XML-derived JSONL into a DataFrame for chunked ingestion."""
+    path = Path(json_path)
+    modified_at = datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat()
+    rows: list[dict[str, object]] = []
+
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            metadata = record.get("metadata", {})
+            categories = list(metadata.get("categories", []))
+            category_columns = {
+                f"category_{i + 1}": (categories[i] if i < len(categories) else "")
+                for i in range(5)
+            }
+            rows.append(
+                {
+                    "source_doc_id": record["doc_id"],
+                    "subject": metadata.get("subject", ""),
+                    "body_text": record.get("body_text", ""),
+                    "notes_link": metadata.get("notes_link", ""),
+                    "http_link": metadata.get("http_link", ""),
+                    "owner_department": metadata.get("owner_department", ""),
+                    "file_path": str(path),
+                    "source_file_modified_at": modified_at,
+                    "page_number": 1,
+                    **category_columns,
+                }
+            )
+
+    return pd.DataFrame(rows)
 
 # %%
 # 任意でロギングを設定する
@@ -43,6 +82,12 @@ doc_service = DocumentProcessingService(
 # pdfとwordファイルのDBへの格納
 doc_service.process_file(str(pdf_path))
 doc_service.process_file(str(word_path))
+
+# %%
+# 検索する
+# doc_service.search(query="ragponとは？")
+
+doc_service.enhance_search_results(doc_service.search(query="ragponとは？"), num_before=1, num_after=1)
 
 # %%
 # 検索する
@@ -187,6 +232,24 @@ doc_service3 = DocumentProcessingService(
 doc_service3.process_file(str(pdf_path))
 doc_service3.process_file(str(word_path))
 
+# XML由来JSONの各recordを1 source_docとしてchunk分割しながら格納する
+xml_df = load_xml_json_as_dataframe(xml_json_path)
+xml_df[
+    [
+        "source_doc_id",
+        "subject",
+        "owner_department",
+        "category_1",
+        "category_2",
+        "category_3",
+    ]
+]
+doc_service3.process_dataframe_with_chunking(
+    df=xml_df,
+    chunk_col_name="body_text",
+    id_col_name="source_doc_id",
+)
+
 # ここで使うデータベースには既にこのセルの処理をしている。
 # ここでは、再度のデータ追加せずにデータ取得ができるかを確認する。
 
@@ -198,6 +261,19 @@ reranked_results = doc_service3.rerank_results(
     query="投資信託のリスク", search_results=enhanced_results
 )
 reranked_results
+
+# %%
+# XML由来JSONから入れたデータの検索例
+xml_search_results = doc_service3.search("在宅勤務の申請手続")
+xml_enhanced_results = doc_service3.enhance_search_results(xml_search_results)
+xml_reranked_results = doc_service3.rerank_results(
+    query="在宅勤務の申請手続", search_results=xml_enhanced_results
+)
+xml_reranked_results
+
+# %%
+# notes_link や categories を含む metadata を確認する
+xml_reranked_results["chroma"][0].base_document.metadata
 
 # %%
 # ところで、CPUだとrerankの処理に17秒かかっており、ちょっと遅すぎな感じがある。

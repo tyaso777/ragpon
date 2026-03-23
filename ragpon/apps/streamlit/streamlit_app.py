@@ -1947,11 +1947,28 @@ def render_system_context_rows(
                 for idx, row in enumerate(rows):
                     raw_text = row.get("text", "").strip()
                     doc_id = str(row.get("doc_id", ""))
+                    notes_link = str(row.get("notes_link", "")).strip()
+                    category_values = [
+                        str(row.get(f"category_{i}", "")).strip() for i in range(1, 6)
+                    ]
+                    has_categories = bool(category_values[0])
+                    joined_categories = (
+                        " / ".join([value for value in category_values if value])
+                        if has_categories
+                        else ""
+                    )
+                    display_title = joined_categories if has_categories else doc_id
+                    notes_link_line = (
+                        f"**Notes Link:** [{notes_link}]({notes_link})\n"
+                        if notes_link
+                        else ""
+                    )
 
                     st.markdown(
+                        f"**Source:** {display_title}\n"
                         f"**RAG Rank:** {row.get('rag_rank', '-')}\n"
-                        f"**Doc ID:** {doc_id}\n"
-                        f"**Semantic Distance:** {float(row.get('semantic_distance', 0.0)):.4f}\n\n"
+                        f"**Semantic Distance:** {float(row.get('semantic_distance', 0.0)):.4f}\n"
+                        f"{notes_link_line}\n"
                     )
                     st.text_area(
                         label=f"source_text_{idx + 1}",
