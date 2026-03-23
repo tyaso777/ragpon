@@ -1975,6 +1975,7 @@ def render_system_context_rows(
                 row for row in rows if int(row.get("rag_rank", -1)) == selected_rank
             ]
             if not rows_to_render:
+                st.caption(WARNING_LABELS.NO_CONTEXT)
                 return
 
             for idx, row in enumerate(rows_to_render):
