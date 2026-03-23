@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import time
 import urllib.parse
 import uuid
@@ -250,6 +251,21 @@ LABELS = Labels()
 ERROR_LABELS = ErrorLabels()
 WARNING_LABELS = WarningLabels()
 UI_LOCK_LABELS = UiLockLabels()
+
+
+def extract_referenced_rag_ranks(text: str) -> list[int]:
+    """Extract unique RAG_RANK references in first-seen order."""
+    if not isinstance(text, str) or not text:
+        return []
+
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for match in re.finditer(r"\[\[RAG_RANK=(\d+)\]\]", text):
+        rank = int(match.group(1))
+        if rank not in seen:
+            seen.add(rank)
+            ordered.append(rank)
+    return ordered
 
 
 @dataclass
@@ -1943,46 +1959,66 @@ def render_system_context_rows(
     """
     try:
         if isinstance(rows, list) and rows:
-            with st.expander(LABELS.VIEW_SOURCES):
-                for idx, row in enumerate(rows):
-                    raw_text = row.get("text", "").strip()
-                    doc_id = str(row.get("doc_id", ""))
-                    notes_link = str(row.get("notes_link", "")).strip()
-                    category_values = [
-                        str(row.get(f"category_{i}", "")).strip() for i in range(1, 6)
-                    ]
-                    has_categories = bool(category_values[0])
-                    joined_categories = (
-                        " / ".join([value for value in category_values if value])
-                        if has_categories
-                        else ""
-                    )
-                    display_title = joined_categories if has_categories else doc_id
-                    notes_link_line = (
-                        f"**Notes Link:** [{notes_link}]({notes_link})\n"
-                        if notes_link
-                        else ""
-                    )
+            selected_rank: int | None = None
+            if round_id is not None:
+                selected_rank = st.session_state.get(
+                    f"selected_rag_rank_{session_id}_{round_id}"
+                )
+            if selected_rank is None and rows:
+                selected_rank = int(rows[0].get("rag_rank", 0))
+                if round_id is not None:
+                    st.session_state[
+                        f"selected_rag_rank_{session_id}_{round_id}"
+                    ] = selected_rank
 
-                    st.markdown(
-                        f"**Source:** {display_title}\n"
-                        f"**RAG Rank:** {row.get('rag_rank', '-')}\n"
-                        f"**Semantic Distance:** {float(row.get('semantic_distance', 0.0)):.4f}\n"
-                        f"{notes_link_line}\n"
-                    )
-                    st.text_area(
-                        label=f"source_text_{idx + 1}",
-                        value=raw_text,
-                        height=180,
-                        disabled=True,
-                        key=(
-                            f"source_text_{session_id}_{round_id or 'unknown'}_"
-                            f"{idx}_{doc_id or 'unknown'}"
-                        ),
-                        label_visibility="collapsed",
-                    )
-                    if idx < len(rows) - 1:
-                        st.divider()
+            rows_to_render = [
+                row for row in rows if int(row.get("rag_rank", -1)) == selected_rank
+            ]
+            if not rows_to_render:
+                return
+
+            for idx, row in enumerate(rows_to_render):
+                raw_text = row.get("text", "").strip()
+                doc_id = str(row.get("doc_id", ""))
+                notes_link = str(row.get("notes_link", "")).strip()
+                category_values = [
+                    str(row.get(f"category_{i}", "")).strip() for i in range(1, 6)
+                ]
+                has_categories = bool(category_values[0])
+                joined_categories = (
+                    " / ".join([value for value in category_values if value])
+                    if has_categories
+                    else ""
+                )
+                display_title = joined_categories if has_categories else doc_id
+                notes_link_line = (
+                    f"**Notes Link:** [{notes_link}]({notes_link})\n"
+                    if notes_link
+                    else ""
+                )
+                logical_lines = raw_text.splitlines() or [raw_text]
+                wrapped_line_count = 0
+                for line in logical_lines:
+                    wrapped_line_count += max(1, (len(line) // 45) + 1)
+                text_area_height = min(400, max(180, 80 + wrapped_line_count * 24))
+
+                st.markdown(
+                    f"**Source:** {display_title}\n"
+                    f"\n{notes_link_line}"
+                )
+                st.text_area(
+                    label=f"source_text_{idx + 1}",
+                    value=raw_text,
+                    height=text_area_height,
+                    disabled=True,
+                    key=(
+                        f"source_text_{session_id}_{round_id or 'unknown'}_"
+                        f"{idx}_{doc_id or 'unknown'}"
+                    ),
+                    label_visibility="collapsed",
+                )
+                if idx < len(rows_to_render) - 1:
+                    st.divider()
         else:
             st.caption(WARNING_LABELS.NO_CONTEXT)
     except Exception:
@@ -2018,11 +2054,24 @@ def render_chat_messages(
           and st.session_state["feedback_form_type"]
     """
     displayed_round_ids: set[int] = set()
+    system_rows_by_round: dict[int, list[dict[str, Any]]] = {}
     logger.debug(
         f"[render_chat_messages] Rendering chat for user_id={user_id}, session_id={current_session_id} with {len(messages)} messages"
     )
 
     dev_cfg: DevTestConfig = st.session_state.get("dev_test_config", DevTestConfig())
+
+    for msg in messages:
+        if msg.role != "system":
+            continue
+        try:
+            rows = json.loads(msg.content)
+            if isinstance(rows, list):
+                system_rows_by_round[msg.round_id] = rows
+        except Exception:
+            logger.exception(
+                f"[render_chat_messages] Failed to pre-parse system message content: user_id={user_id}, session_id={current_session_id}"
+            )
 
     for msg in messages:
         if msg.is_deleted:
@@ -2034,19 +2083,7 @@ def render_chat_messages(
             with st.chat_message(msg.role):
                 st.write(msg.content)
         elif msg.role == "system":
-            try:
-                rows = json.loads(msg.content)
-                if not isinstance(rows, list):
-                    raise ValueError("System message is not a list.")
-            except Exception:
-                st.caption(WARNING_LABELS.PARSE_SYSTEM_MESSAGE_FAILED)
-                logger.exception(
-                    f"[render_chat_messages] Failed to parse system message content: user_id={user_id}, session_id={current_session_id}"
-                )
-            else:
-                render_system_context_rows(
-                    rows, user_id, current_session_id, msg.round_id
-                )
+            continue
 
         # For assistant messages, show the row of Trash/Good/Bad
         if msg.role == "assistant":
@@ -2112,6 +2149,78 @@ def render_chat_messages(
                 st.session_state["feedback_form_id"] = msg.id
                 st.session_state["feedback_form_type"] = "bad"
                 st.rerun()
+
+            referenced_ranks = extract_referenced_rag_ranks(msg.content)
+            if referenced_ranks:
+                rank_key = f"selected_rag_rank_{current_session_id}_{msg.round_id}"
+                current_selected_rank = st.session_state.get(rank_key)
+                if current_selected_rank is None:
+                    current_selected_rank = referenced_ranks[0]
+                    st.session_state[rank_key] = current_selected_rank
+                with st.container(border=True):
+                    st.markdown(LABELS.VIEW_SOURCES)
+                    rank_label_col, *rank_button_cols = st.columns(
+                        [1.5] + [1] * len(referenced_ranks) + [0.25, 0.8, 0.8]
+                    )
+                    rank_label_col.markdown("**RAG_RANK:**")
+                    rank_cols = rank_button_cols[:-3]
+                    divider_col = rank_button_cols[-3]
+                    prev_col = rank_button_cols[-2]
+                    next_col = rank_button_cols[-1]
+                    divider_col.markdown(
+                        "<div style='text-align:center;font-size:1.25rem;line-height:2.2;'>|</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    current_rank_index = (
+                        referenced_ranks.index(current_selected_rank)
+                        if current_selected_rank in referenced_ranks
+                        else 0
+                    )
+
+                    for idx, rank in enumerate(referenced_ranks):
+                        if rank_cols[idx].button(
+                            str(rank),
+                            key=f"rag_rank_button_{current_session_id}_{msg.round_id}_{rank}",
+                            disabled=disabled_ui,
+                            type=(
+                                "primary"
+                                if current_selected_rank == rank
+                                else "secondary"
+                            ),
+                        ):
+                            st.session_state[rank_key] = rank
+                            st.rerun()
+
+                    if prev_col.button(
+                        "◁",
+                        key=f"rag_rank_button_prev_{current_session_id}_{msg.round_id}",
+                        disabled=disabled_ui or current_rank_index in (None, 0),
+                        type="secondary",
+                    ):
+                        st.session_state[rank_key] = referenced_ranks[
+                            current_rank_index - 1
+                        ]
+                        st.rerun()
+
+                    if next_col.button(
+                        "▷",
+                        key=f"rag_rank_button_next_{current_session_id}_{msg.round_id}",
+                        disabled=disabled_ui
+                        or current_rank_index is None
+                        or current_rank_index == len(referenced_ranks) - 1,
+                        type="secondary",
+                    ):
+                        st.session_state[rank_key] = referenced_ranks[
+                            current_rank_index + 1
+                        ]
+                        st.rerun()
+                    render_system_context_rows(
+                        system_rows_by_round.get(msg.round_id, []),
+                        user_id,
+                        current_session_id,
+                        msg.round_id,
+                    )
 
             # Inline feedback form if active
             if st.session_state.get("feedback_form_id") == msg.id:

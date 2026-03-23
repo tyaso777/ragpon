@@ -34,6 +34,7 @@ def test_render_single_row_with_notes_link(monkeypatch: Any) -> None:
     monkeypatch.setattr(streamlit_app.st, "markdown", fake_markdown)
     monkeypatch.setattr(streamlit_app.st, "text_area", fake_text_area)
     monkeypatch.setattr(streamlit_app.st, "divider", lambda: None)
+    streamlit_app.st.session_state["selected_rag_rank_s_1"] = 1
 
     row = {
         "rag_rank": 1,
@@ -43,11 +44,9 @@ def test_render_single_row_with_notes_link(monkeypatch: Any) -> None:
         "text": "This is a test.",
     }
 
-    render_system_context_rows([row], user_id="u", session_id="s")
+    render_system_context_rows([row], user_id="u", session_id="s", round_id=1)
 
     md_output = captured.get("markdown", "")
-    assert "**RAG Rank:** 1" in md_output
-    assert "**Doc ID:** doc123" in md_output
-    assert "**Semantic Distance:** 0.1235" in md_output
-    assert "**Notes Link:** notes://server/db/doc123" in md_output
+    assert "**Source:** doc123" in md_output
+    assert "notes://server/db/doc123" in md_output
     assert captured["text_area"]["value"] == "This is a test."
