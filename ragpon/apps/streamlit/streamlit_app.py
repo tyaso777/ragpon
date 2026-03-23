@@ -2152,72 +2152,76 @@ def render_chat_messages(
                 st.rerun()
 
             referenced_ranks = extract_referenced_rag_ranks(msg.content)
-            if referenced_ranks:
+            context_rows = system_rows_by_round.get(msg.round_id, [])
+            if not isinstance(context_rows, list) or not context_rows:
+                st.caption(WARNING_LABELS.NO_CONTEXT)
+            else:
                 rank_key = f"selected_rag_rank_{current_session_id}_{msg.round_id}"
                 current_selected_rank = st.session_state.get(rank_key)
-                if current_selected_rank is None:
+                if current_selected_rank is None and referenced_ranks:
                     current_selected_rank = referenced_ranks[0]
                     st.session_state[rank_key] = current_selected_rank
                 with st.container(border=True):
                     st.markdown(LABELS.VIEW_SOURCES)
-                    rank_label_col, *rank_button_cols = st.columns(
-                        [1.5] + [1] * len(referenced_ranks) + [0.25, 0.8, 0.8]
-                    )
-                    rank_label_col.markdown("**RAG_RANK:**")
-                    rank_cols = rank_button_cols[:-3]
-                    divider_col = rank_button_cols[-3]
-                    prev_col = rank_button_cols[-2]
-                    next_col = rank_button_cols[-1]
-                    divider_col.markdown(
-                        "<div style='text-align:center;font-size:1.25rem;line-height:2.2;'>|</div>",
-                        unsafe_allow_html=True,
-                    )
+                    if referenced_ranks:
+                        rank_label_col, *rank_button_cols = st.columns(
+                            [1.5] + [1] * len(referenced_ranks) + [0.25, 0.8, 0.8]
+                        )
+                        rank_label_col.markdown("**RAG_RANK:**")
+                        rank_cols = rank_button_cols[:-3]
+                        divider_col = rank_button_cols[-3]
+                        prev_col = rank_button_cols[-2]
+                        next_col = rank_button_cols[-1]
+                        divider_col.markdown(
+                            "<div style='text-align:center;font-size:1.25rem;line-height:2.2;'>|</div>",
+                            unsafe_allow_html=True,
+                        )
 
-                    current_rank_index = (
-                        referenced_ranks.index(current_selected_rank)
-                        if current_selected_rank in referenced_ranks
-                        else 0
-                    )
+                        current_rank_index = (
+                            referenced_ranks.index(current_selected_rank)
+                            if current_selected_rank in referenced_ranks
+                            else 0
+                        )
 
-                    for idx, rank in enumerate(referenced_ranks):
-                        if rank_cols[idx].button(
-                            str(rank),
-                            key=f"rag_rank_button_{current_session_id}_{msg.round_id}_{rank}",
-                            disabled=disabled_ui,
-                            type=(
-                                "primary"
-                                if current_selected_rank == rank
-                                else "secondary"
-                            ),
+                        for idx, rank in enumerate(referenced_ranks):
+                            if rank_cols[idx].button(
+                                str(rank),
+                                key=f"rag_rank_button_{current_session_id}_{msg.round_id}_{rank}",
+                                disabled=disabled_ui,
+                                type=(
+                                    "primary"
+                                    if current_selected_rank == rank
+                                    else "secondary"
+                                ),
+                            ):
+                                st.session_state[rank_key] = rank
+                                st.rerun()
+
+                        if prev_col.button(
+                            "◁",
+                            key=f"rag_rank_button_prev_{current_session_id}_{msg.round_id}",
+                            disabled=disabled_ui or current_rank_index in (None, 0),
+                            type="secondary",
                         ):
-                            st.session_state[rank_key] = rank
+                            st.session_state[rank_key] = referenced_ranks[
+                                current_rank_index - 1
+                            ]
                             st.rerun()
 
-                    if prev_col.button(
-                        "◁",
-                        key=f"rag_rank_button_prev_{current_session_id}_{msg.round_id}",
-                        disabled=disabled_ui or current_rank_index in (None, 0),
-                        type="secondary",
-                    ):
-                        st.session_state[rank_key] = referenced_ranks[
-                            current_rank_index - 1
-                        ]
-                        st.rerun()
-
-                    if next_col.button(
-                        "▷",
-                        key=f"rag_rank_button_next_{current_session_id}_{msg.round_id}",
-                        disabled=disabled_ui
-                        or current_rank_index is None
-                        or current_rank_index == len(referenced_ranks) - 1,
-                        type="secondary",
-                    ):
-                        st.session_state[rank_key] = referenced_ranks[
-                            current_rank_index + 1
-                        ]
-                        st.rerun()
+                        if next_col.button(
+                            "▷",
+                            key=f"rag_rank_button_next_{current_session_id}_{msg.round_id}",
+                            disabled=disabled_ui
+                            or current_rank_index is None
+                            or current_rank_index == len(referenced_ranks) - 1,
+                            type="secondary",
+                        ):
+                            st.session_state[rank_key] = referenced_ranks[
+                                current_rank_index + 1
+                            ]
+                            st.rerun()
                     render_system_context_rows(
-                        system_rows_by_round.get(msg.round_id, []),
+                        context_rows,
                         user_id,
                         current_session_id,
                         msg.round_id,
