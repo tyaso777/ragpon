@@ -11,6 +11,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Final
 
+from markdown_it import MarkdownIt
 import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
@@ -64,6 +65,7 @@ def svg_text_to_data_uri(svg_text: str) -> str:
 
 
 ICON_DATA_URI = svg_text_to_data_uri(MINIFIED_COMPASS_SVG)
+SOURCE_TEXT_MARKDOWN = MarkdownIt("commonmark", {"html": False}).enable("table")
 
 
 @dataclass(frozen=True)
@@ -957,16 +959,35 @@ def hide_streamlit_menu() -> None:
 
 
 def inject_source_text_css() -> None:
-    """Make citation text easier to read inside disabled text areas."""
+    """Style citation blocks for readability."""
     st.markdown(
         """
         <style>
-            textarea[aria-label^="source_text_"] {
-                color: #1f1f1f !important;
-                -webkit-text-fill-color: #1f1f1f !important;
-                opacity: 1 !important;
-                font-weight: 400;
-                cursor: text !important;
+            .source-text-block {
+                color: #1f1f1f;
+                background: #f3f5f9;
+                border-radius: 0.75rem;
+                padding: 0.85rem 1rem;
+                overflow-y: auto;
+            }
+
+            .source-text-block > *:first-child {
+                margin-top: 0;
+            }
+
+            .source-text-block > *:last-child {
+                margin-bottom: 0;
+            }
+
+            .source-text-block table {
+                width: 100%;
+                border-collapse: collapse;
+            }
+
+            .source-text-block th,
+            .source-text-block td {
+                padding: 0.35rem 0.5rem;
+                border: 1px solid #d8dde6;
             }
         </style>
         """,
@@ -2001,22 +2022,20 @@ def render_system_context_rows(
                 wrapped_line_count = 0
                 for line in logical_lines:
                     wrapped_line_count += max(1, (len(line) // 45) + 1)
-                text_area_height = min(400, max(180, 80 + wrapped_line_count * 24))
-
+                text_block_height = min(400, max(180, 80 + wrapped_line_count * 24))
                 st.markdown(
                     f"**Source:** {display_title}\n"
                     f"\n{notes_link_line}"
                 )
-                st.text_area(
-                    label=f"source_text_{idx + 1}",
-                    value=raw_text,
-                    height=text_area_height,
-                    disabled=True,
-                    key=(
-                        f"source_text_{session_id}_{round_id or 'unknown'}_"
-                        f"{idx}_{doc_id or 'unknown'}"
+                rendered_html = SOURCE_TEXT_MARKDOWN.render(raw_text)
+                st.markdown(
+                    (
+                        "<div class='source-text-block' "
+                        f"style='max-height:{text_block_height}px;'>"
+                        f"{rendered_html}"
+                        "</div>"
                     ),
-                    label_visibility="collapsed",
+                    unsafe_allow_html=True,
                 )
                 if idx < len(rows_to_render) - 1:
                     st.divider()

@@ -23,17 +23,15 @@ def test_empty_rows(monkeypatch: Any) -> None:
 
 
 def test_render_single_row_with_notes_link(monkeypatch: Any) -> None:
-    captured: dict[str, Any] = {}
+    captured: dict[str, Any] = {"markdowns": []}
 
-    def fake_markdown(md_str: str) -> None:
-        captured["markdown"] = md_str
+    def fake_markdown(md_str: str, **kwargs: Any) -> None:
+        captured["markdowns"].append(md_str)
 
-    def fake_text_area(**kwargs: Any) -> None:
-        captured["text_area"] = kwargs
+    monkeypatch.setattr(streamlit_app.st, "container", lambda *args, **kwargs: nullcontext())
 
     monkeypatch.setattr(streamlit_app.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(streamlit_app.st, "markdown", fake_markdown)
-    monkeypatch.setattr(streamlit_app.st, "text_area", fake_text_area)
     monkeypatch.setattr(streamlit_app.st, "divider", lambda: None)
     streamlit_app.st.session_state["selected_rag_rank_s_1"] = 1
 
@@ -47,10 +45,10 @@ def test_render_single_row_with_notes_link(monkeypatch: Any) -> None:
 
     render_system_context_rows([row], user_id="u", session_id="s", round_id=1)
 
-    md_output = captured.get("markdown", "")
-    assert "**Source:** doc123" in md_output
-    assert "notes://server/db/doc123" in md_output
-    assert captured["text_area"]["value"] == "This is a test."
+    joined_output = "\n".join(captured["markdowns"])
+    assert "**Source:** doc123" in joined_output
+    assert "notes://server/db/doc123" in joined_output
+    assert "This is a test." in joined_output
 
 
 def test_filtered_rows_show_no_context(monkeypatch: Any) -> None:
