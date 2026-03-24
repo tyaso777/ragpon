@@ -969,6 +969,8 @@ def inject_source_text_css() -> None:
                 border-radius: 0.75rem;
                 padding: 0.85rem 1rem;
                 overflow-y: auto;
+                resize: vertical;
+                position: relative;
             }
 
             .source-text-block > *:first-child {
@@ -2031,7 +2033,7 @@ def render_system_context_rows(
                 st.markdown(
                     (
                         "<div class='source-text-block' "
-                        f"style='max-height:{text_block_height}px;'>"
+                        f"style='height:{text_block_height}px;min-height:180px;max-height:1000px;'>"
                         f"{rendered_html}"
                         "</div>"
                     ),
