@@ -36,6 +36,7 @@
 - `source_file_path` と `source_file_modified_at` も DataFrame 列として持たせる方針にする。
 - 第一候補:
   - `source_doc_id`
+  - `database_title`
   - `subject`
   - `body_text`
   - `notes_link`
@@ -58,6 +59,7 @@
 
 - `doc_id` -> `source_doc_id` の元データとして使う
 - `metadata.subject` -> `subject`
+- `metadata.database_title` -> `database_title`
 - `body_text` -> `body_text`
 - `metadata.notes_link` -> `notes_link`
 - `metadata.http_link` -> `http_link`
@@ -190,6 +192,7 @@ doc_service.process_dataframe_with_chunking(
 - XML由来JSON 専用 metadata:
   - `source_doc_id`
   - `record_index`
+  - `database_title`
   - `subject`
   - `http_link`
   - `notes_link`
@@ -223,6 +226,7 @@ doc_service.process_dataframe_with_chunking(
     - `chunk_index_in_page`
   - XML由来JSON で追加する項目
     - `source_doc_id`
+    - `database_title`
     - `notes_link`
     - `http_link`
     - `subject`
@@ -253,6 +257,7 @@ doc_service.process_dataframe_with_chunking(
 | `page_number` | `metadata` | ページ/段落単位の番号 | `process_file` | 維持。XML由来JSON では既定値 `1` を入れる | 常に `1` | 既存通り |
 | `chunk_index_in_page` | `metadata` | ページ内 chunk 番号 | `process_file` | 維持。XML由来JSON では `serial_number` と同じ値を入れる | `serial_number` と同じ値 | 既存通り |
 | `source_doc_id` | `metadata` 追加候補 | chunk の親になる元ドキュメントID | 新規 | 追加 | JSON内の元 `doc_id` | ファイル名などファイル由来ID |
+| `database_title` | `metadata` 追加候補 | 元DB/NSF のタイトル | 新規 | 追加。将来のフィルター候補 | JSONの `metadata.database_title` | 空 |
 | `source_file_modified_at` | `metadata` 追加候補 | 元データファイルの更新日時 | 新規 | 追加 | JSONファイル更新日時 | 必要ならファイル更新日時、未使用なら空 |
 | `notes_link` | `metadata` 追加候補 | Notes 参照リンク | 新規 | 追加 | JSONの `metadata.notes_link` | 空 |
 | `http_link` | `metadata` 追加候補 | HTTP参照リンク | 新規 | 追加候補 | JSONの `metadata.http_link` | 空 |
@@ -301,6 +306,7 @@ doc_service.process_dataframe_with_chunking(
 ```python
 {
     "source_doc_id": "4925766C003A0765:F3A1B2C4D5E6F7890123456789ABCDEF",
+    "database_title": "社内規程サンプルDB",
     "subject": "旅費規程",
     "body_text": "第1章 総則 ... 長文 ...",
     "notes_link": "notes://server/db/4925766C003A0765/0/F3A1B2C4D5E6F7890123456789ABCDEF",
@@ -328,6 +334,7 @@ BaseDocument(
         "page_number": 1,
         "chunk_index_in_page": 0,
         "source_doc_id": "4925766C003A0765:F3A1B2C4D5E6F7890123456789ABCDEF",
+        "database_title": "社内規程サンプルDB",
         "source_file_modified_at": "2026-03-23T10:00:00+09:00",
         "notes_link": "notes://server/db/4925766C003A0765/0/F3A1B2C4D5E6F7890123456789ABCDEF",
         "http_link": "https://example.com/db/4925766C003A0765/0/F3A1B2C4D5E6F7890123456789ABCDEF",

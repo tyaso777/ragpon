@@ -88,7 +88,10 @@ class Labels:
     SESSION_LIST: str = "## 👉セッション一覧"
     SELECT_SESSION: str = "セッションを選択してください："
     RAG_MODE_SECTION: str = "## 🔍社内情報の検索方法の設定"
+    FILTER_SECTION: str = "## 🗂️ 検索条件の設定"
     CHOOSE_RAG_MODE: str = "検索モードを選択してください："
+    DATABASE_TITLE_FILTER_INPUT: str = "データベースタイトルで絞り込む："
+    DATABASE_TITLE_FILTER_ALL: str = "指定なし"
     RAG_MODE_HELP_TITLE: str = "💡 検索モードとは？"
     RAG_MODE_HELP: str = (
         "**Pro Mode**：AI がこれまでの会話内容をもとにクエリ（資料検索用の文章）を自動生成し、資料を検索します。検索結果をふまえてAI があなたの質問に回答します。\n\n"
@@ -567,6 +570,24 @@ def fetch_session_history(
     return messages, has_more
 
 
+def fetch_database_title_options(server_url: str, app_name: str) -> list[str]:
+    """Fetch distinct database_title values for sidebar filtering."""
+    endpoint = f"{server_url}/apps/{app_name}/metadata/database-titles"
+    try:
+        response = requests.get(endpoint)
+        response.raise_for_status()
+        payload = response.json()
+        titles = payload.get("database_titles", [])
+        if not isinstance(titles, list):
+            raise ValueError("database_titles is not a list")
+        return [str(title) for title in titles if str(title).strip()]
+    except Exception:
+        logger.exception(
+            "[fetch_database_title_options] Failed to fetch options from %s", endpoint
+        )
+        return []
+
+
 def post_query_to_fastapi(
     server_url: str,
     user_id: str,
@@ -579,6 +600,7 @@ def post_query_to_fastapi(
     round_id: int,
     rag_mode: RagModeEnum,
     use_reranker: bool,
+    database_title: str | None = None,
 ) -> requests.Response:
     """
     Sends a POST request to FastAPI's RAG+LLM endpoint with stream=True.
@@ -619,6 +641,7 @@ def post_query_to_fastapi(
         "round_id": round_id,
         "rag_mode": rag_mode.value,
         "use_reranker": use_reranker,
+        "database_title": database_title,
     }
 
     logger.debug(
@@ -2439,6 +2462,22 @@ def render_user_chat_input(
     with st.sidebar.expander(LABELS.RAG_MODE_HELP_TITLE, expanded=False):
         st.markdown(LABELS.RAG_MODE_HELP)
 
+    st.sidebar.write(LABELS.FILTER_SECTION)
+    database_title_options = [LABELS.DATABASE_TITLE_FILTER_ALL]
+    database_title_options.extend(fetch_database_title_options(server_url, app_name))
+    selected_database_title = st.sidebar.selectbox(
+        LABELS.DATABASE_TITLE_FILTER_INPUT,
+        options=database_title_options,
+        index=0,
+        key="database_title_filter_selectbox",
+        disabled=disabled_ui,
+    )
+    database_title_filter = (
+        None
+        if selected_database_title == LABELS.DATABASE_TITLE_FILTER_ALL
+        else selected_database_title
+    )
+
     # reranker option
     # st.sidebar.write(LABELS["reranker_section"])
     # use_reranker: bool = st.sidebar.radio(
@@ -2553,6 +2592,7 @@ def render_user_chat_input(
                     round_id=new_round_id,
                     rag_mode=rag_mode,
                     use_reranker=use_reranker,
+                    database_title=database_title_filter,
                 )
 
                 # ✨  Handle non-200 status codes early

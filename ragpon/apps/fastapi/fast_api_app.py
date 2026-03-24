@@ -2081,6 +2081,7 @@ class QueryRequest:
     messages: list[dict]
     rag_mode: RagModeEnum
     use_reranker: bool
+    database_title: str | None
 
 
 def _parse_request(data: dict, user_id: str, session_id: str) -> QueryRequest:
@@ -2118,12 +2119,42 @@ def _parse_request(data: dict, user_id: str, session_id: str) -> QueryRequest:
             messages=list(data["messages"]),
             rag_mode=RagModeEnum(data.get("rag_mode", RagModeEnum.OPTIMIZED.value)),
             use_reranker=bool(data.get("use_reranker", False)),
+            database_title=(
+                str(data["database_title"]).strip()
+                if data.get("database_title") is not None
+                and str(data["database_title"]).strip()
+                else None
+            ),
         )
     except (KeyError, ValueError, TypeError) as exc:
         logger.exception(
             f"[_parse_request] Failed to parse query request for user_id={user_id}, session_id={session_id}"
         )
         raise HTTPException(status_code=400, detail="Invalid query payload") from exc
+
+
+def _build_metadata_filters(req: QueryRequest) -> dict[str, Any] | None:
+    """Build exact-match metadata filters for repository search."""
+    filters: dict[str, Any] = {}
+    if req.database_title:
+        filters["database_title"] = req.database_title
+    return filters or None
+
+
+def _list_database_titles_from_chroma() -> list[str]:
+    """Return distinct non-empty database_title values from Chroma metadata."""
+    if chroma_repo is None:
+        return []
+    result = chroma_repo.collection.get(include=["metadatas"])
+    metadatas = result.get("metadatas") or []
+    return sorted(
+        {
+            title
+            for metadata in metadatas
+            if isinstance(metadata, dict)
+            and (title := str(metadata.get("database_title", "")).strip())
+        }
+    )
 
 
 async def _build_retrieval_queries(
@@ -2679,11 +2710,14 @@ async def _search_chroma_async(
     query: str,
     qvec: list[float],
     top_k: int,
+    where: dict[str, Any] | None = None,
 ) -> list[Document]:
     """Call Chroma search off the loop with a limiter."""
 
     def _do() -> list[Document]:
-        return chroma_repo.search(query, top_k=top_k, query_embeddings=qvec)
+        return chroma_repo.search(
+            query, top_k=top_k, query_embeddings=qvec, where=where
+        )
 
     return await anyio.to_thread.run_sync(_do, limiter=SEARCH_LIMITER)
 
@@ -2692,11 +2726,22 @@ async def _search_bm25_async(
     bm25_repo: Any,
     query: str,
     top_k: int,
+    metadata_filters: dict[str, Any] | None = None,
 ) -> list[Document]:
     """Call BM25 search off the loop with a limiter."""
 
     def _do() -> list[Document]:
-        return bm25_repo.search(query, top_k=top_k)
+        results = bm25_repo.search(query, top_k=top_k)
+        if not metadata_filters:
+            return results
+        return [
+            doc
+            for doc in results
+            if all(
+                str(doc.base_document.metadata.get(key, "")).strip() == str(value)
+                for key, value in metadata_filters.items()
+            )
+        ]
 
     return await anyio.to_thread.run_sync(_do, limiter=SEARCH_LIMITER)
 
@@ -2710,6 +2755,7 @@ async def _search_repositories(
     top_k_chroma: int,
     top_k_bm25: int,
     over_fetch_factor: int,
+    metadata_filters: dict[str, Any] | None,
     user_id: str,
     session_id: str,
     round_id: int,
@@ -2762,7 +2808,11 @@ async def _search_repositories(
                 async def _run_chroma(query=q, vec=v) -> None:
                     try:
                         hits = await _search_chroma_async(
-                            chroma_repo, query, vec, per_query_k_chroma
+                            chroma_repo,
+                            query,
+                            vec,
+                            per_query_k_chroma,
+                            where=metadata_filters,
                         )
                         results["chroma"].extend(hits)
                     except Exception:
@@ -2782,7 +2832,10 @@ async def _search_repositories(
                 async def _run_bm25(query=q) -> None:
                     try:
                         hits = await _search_bm25_async(
-                            bm25_repo, query, per_query_k_bm25
+                            bm25_repo,
+                            query,
+                            per_query_k_bm25,
+                            metadata_filters=metadata_filters,
                         )
                         results["bm25"].extend(hits)
                     except Exception:
@@ -3079,6 +3132,22 @@ def _enhance_results(
     return enhanced
 
 
+@app.get("/apps/{app_name}/metadata/database-titles")
+async def get_database_titles(app_name: str) -> JSONResponse:
+    """Return distinct database_title options for Streamlit filters."""
+    del app_name
+    try:
+        titles = await run_sync_kw(
+            _list_database_titles_from_chroma, limiter=SEARCH_LIMITER
+        )
+        return JSONResponse({"database_titles": titles})
+    except Exception as exc:
+        logger.exception("[get_database_titles] Failed to load database_title options")
+        raise HTTPException(
+            status_code=500, detail="Failed to load database title options"
+        ) from exc
+
+
 @app.post("/users/{user_id}/apps/{app_name}/sessions/{session_id}/queries")
 async def handle_query(
     user_id: str, app_name: str, session_id: str, request: Request
@@ -3183,6 +3252,7 @@ async def handle_query(
         model_name=resolved_model_name,
         model_type=OPENAI_TYPE,
     )
+    metadata_filters = _build_metadata_filters(req)
 
     search_results = await _search_repositories(
         queries=queries,
@@ -3192,6 +3262,7 @@ async def handle_query(
         top_k_chroma=DEFAULT_TOP_K_CHROMA,
         top_k_bm25=DEFAULT_TOP_K_BM25,
         over_fetch_factor=OVER_FETCH_FACTOR,
+        metadata_filters=metadata_filters,
         user_id=user_id,
         session_id=session_id,
         round_id=req.round_id,

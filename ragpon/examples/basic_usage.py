@@ -44,6 +44,7 @@ def load_xml_json_as_dataframe(json_path: str | Path) -> pd.DataFrame:
             rows.append(
                 {
                     "source_doc_id": record["doc_id"],
+                    "database_title": metadata.get("database_title", ""),
                     "subject": metadata.get("subject", ""),
                     "body_text": record.get("body_text", ""),
                     "notes_link": metadata.get("notes_link", ""),
@@ -237,6 +238,7 @@ xml_df = load_xml_json_as_dataframe(xml_json_path)
 xml_df[
     [
         "source_doc_id",
+        "database_title",
         "subject",
         "owner_department",
         "category_1",

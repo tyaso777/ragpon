@@ -13,6 +13,7 @@ def test_chunked_dataframe_pipeline_splits_rows_and_preserves_metadata() -> None
         [
             {
                 "source_doc_id": "doc-1",
+                "database_title": "社内規程DB",
                 "body_text": "abcdefghij",
                 "file_path": "/tmp/sample.json",
                 "page_number": 1,
@@ -39,5 +40,6 @@ def test_chunked_dataframe_pipeline_splits_rows_and_preserves_metadata() -> None
     assert all(m.metadata["file_path"] == "/tmp/sample.json" for m in metadata)
     assert all(m.metadata["notes_link"] == "notes://sample" for m in metadata)
     assert all(m.metadata["source_doc_id"] == "doc-1" for m in metadata)
+    assert all(m.metadata["database_title"] == "社内規程DB" for m in metadata)
     assert all(m.metadata["category_1"] == "規程" for m in metadata)
     assert all("body_text" not in m.metadata for m in metadata)

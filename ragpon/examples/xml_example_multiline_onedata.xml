@@ -1,0 +1,58 @@
+{
+  "doc_id": "4925766C003A0765:F3A1B2C4D5E6F7890123456789ABCDEF",
+  "metadata": {
+    "replica_id": "4925766C003A0765",
+    "unid": "F3A1B2C4D5E6F7890123456789ABCDEF",
+    "noteid": "1234",
+    "form": "fmRule",
+    "database_title": "社内規程サンプルDB",
+    "subject": "旅費規程",
+    "http_link": "https://example.com/db/4925766C003A0765/0/F3A1B2C4D5E6F7890123456789ABCDEF",
+    "notes_link": "notes://server/db/4925766C003A0765/0/F3A1B2C4D5E6F7890123456789ABCDEF",
+    "owner_department": "経理部",
+    "categories": [
+      "規程",
+      "経理",
+      "旅費"
+    ]
+  },
+  "body_text": "第1章 総則\n\n第1条 この規程は、社員の出張旅費に関する取扱いを定める。\n\n| 区分 | 支給内容 |\n| --- | --- |\n| 宿泊費 | 実費 |\n| 交通費 | 実費 |\n\n### 添付資料\n\n- 別紙1.xlsx\n- 出張精算フロー.docx\n\n#### ファイル\n\n- [別紙2.xlsx](attachments/4925766C003A0765_F3A1B2C4D5E6F7890123456789ABCDEF/att_0001_別紙2.xlsx)\n- [旅費精算書.docx](attachments/4925766C003A0765_F3A1B2C4D5E6F7890123456789ABCDEF/att_0002_旅費精算書.docx)",
+  "images": [
+    {
+      "image_id": "img_0001",
+      "rel_path": "images/4925766C003A0765_F3A1B2C4D5E6F7890123456789ABCDEF/img_0001.gif",
+      "content_hash": "9f4a0d9a20d8f0d04c5c6d3e1e4e7d3f7d6a6d7c6d8b1a2c3d4e5f60718293ab",
+      "mime": "image/gif",
+      "source_tag": "gif",
+      "size_bytes": 4821
+    }
+  ],
+  "attachments": [
+    {
+      "attachment_id": "att_0001",
+      "filename": "別紙2.xlsx",
+      "rel_path": "attachments/4925766C003A0765_F3A1B2C4D5E6F7890123456789ABCDEF/att_0001_別紙2.xlsx",
+      "sha256": "a2d4f6b8c0e1f23456789abcdef0123456789abcdef0123456789abcdef0123",
+      "size_bytes": 28092,
+      "declared_size": 28092,
+      "created": "20230426T130210,82+09",
+      "modified": "20230426T133540,22+09",
+      "hosttype": "msdos",
+      "flags": "storedindoc",
+      "compression": "none"
+    },
+    {
+      "attachment_id": "att_0002",
+      "filename": "旅費精算書.docx",
+      "rel_path": "attachments/4925766C003A0765_F3A1B2C4D5E6F7890123456789ABCDEF/att_0002_旅費精算書.docx",
+      "sha256": "b3e5f7c9d1f203456789abcdef0123456789abcdef0123456789abcdef0456",
+      "size_bytes": 45120,
+      "declared_size": 45120,
+      "created": "20230427T101500,00+09",
+      "modified": "20230427T101700,00+09",
+      "hosttype": "msdos",
+      "flags": "storedindoc",
+      "compression": "none"
+    }
+  ]
+}
