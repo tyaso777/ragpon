@@ -6,6 +6,8 @@ from ragpon.ml_models.embedding_model import (
     MultilingualE5LargeEmbedder,
     RuriLargeEmbedder,
     RuriLargeEmbedderCTranslate2,
+    RuriV3Embedder,
+    RuriV3EmbedderCTranslate2,
 )
 from ragpon.ml_models.large_language_model import (
     AbstractLargeLanguageModel,

@@ -43,6 +43,8 @@ __all__ = [
     "Reranker",
     "RuriLargeEmbedder",
     "RuriLargeEmbedderCTranslate2",
+    "RuriV3Embedder",
+    "RuriV3EmbedderCTranslate2",
     "RuriRerankerLargeEvaluator",
     # Repositories
     "AbstractRepository",
@@ -84,6 +86,8 @@ _lazy_imports: dict[str, str] = {
     "MultilingualE5LargeEmbedder": "ragpon.ml_models.embedding_model",
     "RuriLargeEmbedder": "ragpon.ml_models.embedding_model",
     "RuriLargeEmbedderCTranslate2": "ragpon.ml_models.embedding_model",
+    "RuriV3Embedder": "ragpon.ml_models.embedding_model",
+    "RuriV3EmbedderCTranslate2": "ragpon.ml_models.embedding_model",
     "AbstractLargeLanguageModel": "ragpon.ml_models.large_language_model",
     "Mixtral8x7BInstructV01": "ragpon.ml_models.large_language_model",
     "AbstractRelevanceEvaluator": "ragpon.ml_models.reranker",

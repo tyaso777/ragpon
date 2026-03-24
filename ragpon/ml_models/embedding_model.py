@@ -1,4 +1,5 @@
 # %%
+import importlib.util
 import os
 from abc import ABC, abstractmethod
 from typing import Sequence, Union
@@ -18,6 +19,14 @@ from ragpon.config import Config
 logger = get_library_logger(__name__)
 
 # ref: Japanese embedding model leaderboard: https://github.com/sbintuitions/JMTEB/blob/main/leaderboard.md
+
+
+def _ensure_sentencepiece_installed(model_name: str) -> None:
+    if importlib.util.find_spec("sentencepiece") is None:
+        raise RuntimeError(
+            f"{model_name} requires the 'sentencepiece' package. "
+            "Install dependencies again after adding sentencepiece."
+        )
 
 
 class AbstractEmbeddingModel(ABC):
@@ -333,6 +342,95 @@ class RuriLargeEmbedder(AbstractEmbeddingModel):
             raise
 
 
+class RuriV3Embedder(AbstractEmbeddingModel):
+    def __init__(
+        self,
+        config: Config,
+        query_prefix: str = "検索クエリ: ",
+        passage_prefix: str = "検索文書: ",
+    ):
+        """
+        Initializes the RuriV3Embedder using the "cl-nagoya/ruri-v3" model.
+
+        Args:
+            config (Config): Configuration object to load model paths.
+            query_prefix (str): Prefix to prepend to queries.
+            passage_prefix (str): Prefix to prepend to passages.
+        """
+        try:
+            _ensure_sentencepiece_installed("RuriV3Embedder")
+            model_path = config.get("MODELS.CL_NAGOYA_RURI_V3_MODEL_PATH")
+            if not model_path:
+                raise ValueError(
+                    "Model path for cl-nagoya-ruri-v3 is not set in the configuration."
+                )
+
+            logger.info(
+                "Initializing RuriV3Embedder with model path: %s",
+                model_path,
+            )
+
+            self.model = SentenceTransformer(model_path)
+            self.query_prefix = query_prefix
+            self.passage_prefix = passage_prefix
+            logger.info("RuriV3Embedder initialized successfully.")
+        except Exception as e:
+            logger.error(f"Failed to initialize RuriV3Embedder: {e}")
+            raise
+
+    def embed_single(self, text: str, use_prefix: str = "None") -> list[list[float]]:
+        """Embed a single text input with the ruri-v3 model."""
+        try:
+            if use_prefix not in {"query", "passage", "None"}:
+                raise ValueError(
+                    "Invalid use_prefix. Choose from 'query', 'passage', or 'None'."
+                )
+
+            if use_prefix == "query":
+                text = self.query_prefix + text
+            elif use_prefix == "passage":
+                text = self.passage_prefix + text
+
+            logger.info(f"Embedding single text input: {text}")
+            embedding = self.model.encode([text]).tolist()
+            logger.info("Single text embedded successfully.")
+            return embedding
+        except Exception as e:
+            logger.error(f"Error embedding single text: {e}")
+            raise
+
+    def embed_batch(
+        self, texts: list[str], use_prefix: str = "None"
+    ) -> list[list[float]]:
+        """Embed a batch of texts with the ruri-v3 model."""
+        try:
+            if not isinstance(texts, list) or not all(
+                isinstance(item, str) for item in texts
+            ):
+                raise ValueError("Input must be a list of strings")
+
+            if use_prefix not in {"query", "passage", "None"}:
+                raise ValueError(
+                    "Invalid use_prefix. Choose from 'query', 'passage', or 'None'."
+                )
+
+            logger.info("Embedding batch of texts with prefix: %s", use_prefix)
+
+            if use_prefix == "query":
+                texts = [self.query_prefix + text for text in texts]
+            elif use_prefix == "passage":
+                texts = [self.passage_prefix + text for text in texts]
+
+            logger.debug(f"Texts after prefix application: {texts}")
+
+            embeddings = self.model.encode(texts).tolist()
+            logger.info("Batch text embedding completed successfully.")
+            return embeddings
+        except Exception as e:
+            logger.error(f"Error embedding batch of texts: {e}")
+            raise
+
+
 class RuriLargeEmbedderCTranslate2(AbstractEmbeddingModel):
     def __init__(
         self,
@@ -415,6 +513,81 @@ class RuriLargeEmbedderCTranslate2(AbstractEmbeddingModel):
         Returns:
             list[list[float]]: List of embeddings.
         """
+        try:
+            if use_prefix == "query":
+                texts = [self.query_prefix + t for t in texts]
+            elif use_prefix == "passage":
+                texts = [self.passage_prefix + t for t in texts]
+
+            inputs = self.tokenizer(
+                texts, padding=True, truncation=True, return_tensors="np"
+            )
+            input_ids = inputs["input_ids"].tolist()
+            outputs = self.model.forward_batch(input_ids)
+            embeddings = np.mean(outputs.last_hidden_state, axis=1).tolist()
+
+            logger.info("Batch embedding with CTranslate2 completed successfully.")
+            return embeddings
+        except Exception as e:
+            logger.error(f"Error in batch embedding with CTranslate2: {e}")
+            raise
+
+
+class RuriV3EmbedderCTranslate2(AbstractEmbeddingModel):
+    def __init__(
+        self,
+        config: Config,
+        query_prefix: str = "検索クエリ: ",
+        passage_prefix: str = "検索文書: ",
+    ):
+        """
+        Initializes the RuriV3Embedder using the CTranslate2 converted version
+        of "cl-nagoya/ruri-v3".
+        """
+        try:
+            _ensure_sentencepiece_installed("RuriV3EmbedderCTranslate2")
+            base_model_path = config.get("MODELS.CL_NAGOYA_RURI_V3_MODEL_PATH")
+            model_path = os.path.join(base_model_path, "ct2-model")
+
+            if not base_model_path:
+                raise ValueError("Model path for cl-nagoya-ruri-v3 is not set.")
+
+            self.tokenizer = AutoTokenizer.from_pretrained(base_model_path)
+            self.model = ctranslate2.Encoder(model_path, device="cpu")
+
+            self.query_prefix = query_prefix
+            self.passage_prefix = passage_prefix
+
+            logger.info("RuriV3EmbedderCTranslate2 initialized successfully.")
+        except Exception as e:
+            logger.error(f"Failed to initialize RuriV3EmbedderCTranslate2: {e}")
+            raise
+
+    def embed_single(self, text: str, use_prefix: str = "None") -> list[list[float]]:
+        """Compute embedding for a single text input."""
+        try:
+            if use_prefix == "query":
+                text = self.query_prefix + text
+            elif use_prefix == "passage":
+                text = self.passage_prefix + text
+
+            inputs = self.tokenizer(
+                [text], padding=True, truncation=True, return_tensors="np"
+            )
+            input_ids = inputs["input_ids"].tolist()
+            outputs = self.model.forward_batch(input_ids)
+            embedding = np.mean(outputs.last_hidden_state, axis=1).tolist()
+
+            logger.info("Single text embedded successfully using CTranslate2.")
+            return embedding
+        except Exception as e:
+            logger.error(f"Error embedding single text: {e}")
+            raise
+
+    def embed_batch(
+        self, texts: list[str], use_prefix: str = "None"
+    ) -> list[list[float]]:
+        """Embed a batch of texts using the CTranslate2 embedding model."""
         try:
             if use_prefix == "query":
                 texts = [self.query_prefix + t for t in texts]

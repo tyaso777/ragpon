@@ -24,6 +24,7 @@ class Config:
         "MODELS": {
             "MULTILINGUAL_ES_LARGE_MODEL_PATH": "/default/path/to/multilingual-e5-large",
             "CL_NAGOYA_RURI_LARGE_MODEL_PATH": "/default/path/to/cl-nagoya-ruri-large",
+            "CL_NAGOYA_RURI_V3_MODEL_PATH": "/default/path/to/cl-nagoya-ruri-v3",
             "JAPANESE_RERANKER_CROSS_ENCODER_LARGE_V1_PATH": "/default/path/to/japanese-reranker-cross-encoder-large-v1",
             "RURI_RERANKER_LARGE_PATH": "/default/path/to/ruri-reranker-large",
             "MIXTRAL8X7BInstV01_MODEL_PATH": "/default/path/to/mixtral-8x7b-v01",

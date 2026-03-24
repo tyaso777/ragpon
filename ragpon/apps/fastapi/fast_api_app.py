@@ -42,7 +42,7 @@ from ragpon import (
     ChromaDBRepository,
     Config,
     Document,
-    RuriLargeEmbedder,
+    RuriV3Embedder,
 )
 from ragpon._utils.logging_helper import get_library_logger
 from ragpon.apps.chat_domain import (
@@ -287,7 +287,7 @@ else:
     use_chromadb = bool(raw_use_chromadb)
 
 try:
-    embedder = ChromaDBEmbeddingAdapter(RuriLargeEmbedder(config=config))
+    embedder = ChromaDBEmbeddingAdapter(RuriV3Embedder(config=config))
     logger.debug("[Startup] Embedder initialized successfully")
 except Exception:
     logger.exception("[Startup] Failed to initialize embedder")

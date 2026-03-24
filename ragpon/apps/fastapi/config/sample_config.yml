@@ -1,5 +1,5 @@
 MODELS:
-  CL_NAGOYA_RURI_LARGE_MODEL_PATH: "/app/ragpon/apps/fastapi/models/models--cl-nagoya--ruri-large/snapshots/b002b3abdd50a07f60b0b6776d09f549f9971a53"
+  CL_NAGOYA_RURI_V3_MODEL_PATH: "/app/ragpon/apps/fastapi/models/models--cl-nagoya--ruri-v3-310m/snapshots/18b60fb8c2b9df296fb4212bb7d23ef94e579cd3"
   RURI_RERANKER_LARGE_PATH: "/root/.cache/huggingface/models--cl-nagoya--ruri-reranker-large/snapshots/010b79ca3eb4d55b32abb63a1822278f29e9c809"
 
 DATABASES:

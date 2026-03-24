@@ -11,8 +11,7 @@ from ragpon import (
     Config,
     DocumentProcessingService,
     JAGinzaChunkProcessor,
-    RuriLargeEmbedder,
-    RuriLargeEmbedderCTranslate2,
+    RuriV3Embedder,
     RuriRerankerLargeEvaluator,
 )
 
@@ -202,7 +201,7 @@ reranked_results2
 # パターン3:
 # - フォルダにデータを格納：config設定
 # - 文章の区切りサイズを長文に：chunk_processorの設定
-# - embedding modelの変更: RuriLargeEmbedderの利用
+# - embedding modelの変更: RuriV3Embedderの利用
 
 # %%
 config = Config(config_path)
@@ -222,8 +221,7 @@ chunk_processor = JAGinzaChunkProcessor(chunk_size=300)
 # %%
 doc_service3 = DocumentProcessingService(
     config_or_config_path=config,
-    embedder=RuriLargeEmbedder(config=config),
-    # embedder=RuriLargeEmbedderCTranslate2(config=config),
+    embedder=RuriV3Embedder(config=config),
     chunk_processor=chunk_processor,
     relevance_evaluator=RuriRerankerLargeEvaluator(config=config),
 )
@@ -258,6 +256,7 @@ doc_service3.process_dataframe_with_chunking(
 # %%
 search_results = doc_service3.search("投資信託のリスク")
 enhanced_results = doc_service3.enhance_search_results(search_results)
+
 # %%
 reranked_results = doc_service3.rerank_results(
     query="投資信託のリスク", search_results=enhanced_results
