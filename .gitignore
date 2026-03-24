@@ -17,3 +17,11 @@ docs/build/
 
 # Ignore everything under ragpon/apps/fastapi/models
 ragpon/apps/fastapi/models/**
+
+# Logs
+*.log
+ragpon/apps/logs/
+
+# Local DB artifacts
+ragpon/examples/db/*
+!ragpon/examples/db/.gitkeep
