@@ -4,7 +4,7 @@
 
 # 1-3. copy models folder to ragpon/apps/fastapi/models from huggingface "models--cl-nagoya--ruri-large.
 
-# 2. to run POSTGRES
+# 2. to run POSTGRES (not used currently)
 
    podman rm -f postgres
    podman volume rm postgres
