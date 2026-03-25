@@ -42,7 +42,7 @@ def test_extension_based_factory_invalid_extension(mocker):
     mocker.patch("os.path.exists", return_value=True)
     factory = ExtensionBasedDocumentReaderFactory()
     with pytest.raises(ValueError, match="Unsupported file type"):
-        factory.get_document_reader("unsupported.docx")
+        factory.get_document_reader("unsupported.xlsx")
 
 
 def test_pdf_reader_pypdf_invalid_path():
@@ -182,7 +182,7 @@ def test_logger_on_error(mocker):
     """
     Test that the logger captures error messages when file not found or IO error.
     """
-    mock_logger = mocker.patch("ragpon.document_reader.logger")
+    mock_logger = mocker.patch("ragpon.domain.document_reader.logger")
     with pytest.raises(FileNotFoundError):
         _ = TXTReader("non_existent.txt")
 
