@@ -68,6 +68,13 @@ At minimum, review these keys:
 - `DATABASES.CHROMADB_COLLECTION_NAME`
 - `DATABASES.CHROMADB_FOLDER_PATH`
 
+When this repository is cloned from GitHub, local model files are not included.
+For the FastAPI app, prepare the Hugging Face model directory
+`models--cl-nagoya--ruri-v3-310m` under
+`ragpon/apps/fastapi/models/`, then point
+`MODELS.CL_NAGOYA_RURI_V3_MODEL_PATH` at its `snapshots/<revision>` directory.
+See [`ragpon/apps/fastapi/models/README.md`](/mnt/d/Users/AtsushiSuzuki/OneDrive/デスクトップ/test/ragpon/ragpon/apps/fastapi/models/README.md).
+
 LLM configuration is controlled through environment variables.
 
 ### Example: OpenAI

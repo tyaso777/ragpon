@@ -17,6 +17,7 @@ docs/build/
 
 # Ignore everything under ragpon/apps/fastapi/models
 ragpon/apps/fastapi/models/**
+!ragpon/apps/fastapi/models/README.md
 
 # Logs
 *.log
