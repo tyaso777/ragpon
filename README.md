@@ -85,7 +85,7 @@ export OPENAI_TYPE=azure
 export AZURE_OPENAI_ENDPOINT=YOUR_ENDPOINT
 export AZURE_OPENAI_API_KEY=YOUR_API_KEY
 export AZURE_OPENAI_DEPLOYMENT=YOUR_DEPLOYMENT
-export AZURE_OPENAI_MODEL=gpt-4o-mini
+export AZURE_OPENAI_MODEL=gpt-5.1
 ```
 
 ## Library Usage
@@ -152,6 +152,12 @@ Example environment variables:
 - `MYSQL_POOL_SIZE`
 - `MYSQL_AUTOCOMMIT`
 - `MYSQL_CHARSET`
+
+Azure OpenAI notes:
+
+- This project assumes Azure uses `gpt-5.1` through the Responses API.
+- Azure `gpt-5.1` is called through the Python SDK with `base_url=.../openai/v1/`.
+- `AZURE_OPENAI_DEPLOYMENT` should be the Azure deployment name passed to `client.responses.create(model=...)`.
 
 ### Using Compose
 

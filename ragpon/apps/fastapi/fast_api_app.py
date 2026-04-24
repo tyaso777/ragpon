@@ -32,7 +32,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from mysql.connector import Error as MySQLError
 from mysql.connector.pooling import MySQLConnectionPool
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
-from openai.types.chat import ChatCompletion
 from psycopg2.pool import SimpleConnectionPool
 
 from ragpon import (
@@ -69,6 +68,8 @@ from ragpon.apps.fastapi.openai.client_init import (
     call_llm_sync_with_handling,
     create_async_openai_client,
     create_openai_client,
+    extract_text_from_llm_response,
+    extract_tool_calls_from_llm_response,
 )
 from ragpon.apps.fastapi.prompts.prompts import (
     get_optimized_query_instruction,
@@ -176,10 +177,12 @@ SYSTEM_PROMPT_WITH_CONTEXT = get_system_prompt_with_context()
 OPTIMIZED_QUERY_INSTRUCTION = get_optimized_query_instruction()
 
 try:
-    # client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_openai_client()
-    client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE = create_async_openai_client()
+    # client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE, OPENAI_API_MODE = create_openai_client()
+    client, MODEL_NAME, DEPLOYMENT_ID, OPENAI_TYPE, OPENAI_API_MODE = (
+        create_async_openai_client()
+    )
     logger.debug(
-        f"[Startup] OpenAI client initialized: model={MODEL_NAME}, deployment={DEPLOYMENT_ID}, type={OPENAI_TYPE}"
+        f"[Startup] OpenAI client initialized: model={MODEL_NAME}, deployment={DEPLOYMENT_ID}, type={OPENAI_TYPE}, api_mode={OPENAI_API_MODE}"
     )
 except Exception:
     logger.exception("[Startup] Failed to initialize OpenAI client during startup")
@@ -685,20 +688,20 @@ async def generate_queries_from_history(
         frequency_penalty=0.0,
         stream=False,
         model_type=model_type,
+        api_mode=OPENAI_API_MODE,
         tools=tools,
         tool_choice={"type": "function", "function": {"name": "emit_queries"}},
         max_tokens=256,  # keep output compact and predictable
     )
-    chat = cast(ChatCompletion, response)
 
     # 4) Locate the correct tool call by name (not just index 0).
     try:
-        tool_calls = chat.choices[0].message.tool_calls or []
-    except (IndexError, AttributeError) as exc:
-        raise ValueError("Model response missing choices/tool_calls") from exc
+        tool_calls = extract_tool_calls_from_llm_response(response)
+    except ValueError as exc:
+        raise ValueError("Model response missing expected tool_calls") from exc
 
     emit_call = next(
-        (tc for tc in tool_calls if tc.function.name == "emit_queries"), None
+        (tc for tc in tool_calls if tc["name"] == "emit_queries"), None
     )
     if emit_call is None:
         logger.error(
@@ -706,13 +709,13 @@ async def generate_queries_from_history(
             "user_id=%s, session_id=%s, tool_calls=%s",
             user_id,
             session_id,
-            [tc.function.name for tc in tool_calls],
+            [tc["name"] for tc in tool_calls],
         )
         raise ValueError("Expected tool call 'emit_queries' but got none")
 
     # 5) Parse and validate arguments; fail closed on invalid JSON.
     try:
-        args = json.loads(emit_call.function.arguments)  # type: ignore[attr-defined]
+        args = json.loads(emit_call["arguments"])
     except json.JSONDecodeError as exc:
         logger.error(
             "[generate_queries_from_history] JSON parse error from tool call: "
@@ -720,7 +723,7 @@ async def generate_queries_from_history(
             user_id,
             session_id,
             exc,
-            emit_call.function.arguments[:500],  # type: ignore[attr-defined]
+            emit_call["arguments"][:500],
         )
         raise ValueError("Malformed JSON in tool call arguments") from exc
 
@@ -795,20 +798,16 @@ async def generate_session_title(
         temperature=0.0,
         stream=False,
         model_type=model_type,
+        api_mode=OPENAI_API_MODE,
     )
 
     try:
-        content = response.choices[0].message.content.strip()
-        if not content:
-            logger.exception(
-                f"[generate_session_title] OpenAI returned empty title for user_id={user_id}, session_id={session_id}"
-            )
-            raise ValueError("OpenAI returned empty title content")
+        content = extract_text_from_llm_response(response)
         logger.info(
             f"[generate_session_title] Title generated using OpenAI response for user_id={user_id}, session_id={session_id}, len(query)='{len(query)}'"
         )
         return content
-    except (IndexError, AttributeError) as exc:
+    except ValueError as exc:
         logger.exception(
             f"[generate_session_title] Failed to extract title using OpenAI response for user_id={user_id}, session_id={session_id}"
         )
@@ -900,6 +899,7 @@ async def stream_and_persist_chat_response(
             stream=True,
             temperature=0.7,
             model_type=model_type,
+            api_mode=OPENAI_API_MODE,
         )
 
         logger.debug(
@@ -3183,7 +3183,11 @@ async def handle_query(
     )
     user_query: str = extract_latest_user_message(req.messages, user_id, session_id)
 
-    resolved_model_name = MODEL_NAME if OPENAI_TYPE == "openai" else DEPLOYMENT_ID
+    resolved_model_name = (
+        MODEL_NAME
+        if OPENAI_TYPE == "openai"
+        else (DEPLOYMENT_ID or MODEL_NAME)
+    )
 
     logger.debug(
         f"[handle_query] Starting handle_query: user_id={user_id}, session_id={session_id}, round_id={req.round_id}"
